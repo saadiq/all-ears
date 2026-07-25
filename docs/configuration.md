@@ -164,7 +164,10 @@ model = ""               # optional model id override; empty = backend default
 compute = "automatic"    # "ane" | "gpu" | "cpu" | "automatic"
 ```
 
-With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAudio) as an offline pass over each multi-speaker far-end source (`system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams) and refines those turns into `<source> · Speaker N`. Source-of-origin stays the primary label; the diarizer only adds the within-source split. A diarizer that fails to load or run is non-fatal: the transcript falls back to source-only labels. The Sortformer model downloads automatically on first use.
+With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAudio) as an offline pass and refines multi-speaker turns into `<source> · Speaker N`. Source-of-origin stays the primary label; the diarizer only adds the within-source split. A diarizer that fails to load or run is non-fatal: the transcript falls back to source-only labels. The Sortformer model downloads automatically on first use.
+
+- **Captured audio** (`--last`/`--from`/`--to`, `--session`, `--meeting`): only multi-speaker far-end sources are diarized — `system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams (each already a single speaker).
+- **Standalone files** (`--file`): the whole file is treated as one multi-speaker source and always diarized when a backend is configured, since a file carries no source-of-origin separation. Example: `transcribe --file meeting.m4a`.
 
 ## Conventions
 

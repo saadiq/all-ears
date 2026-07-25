@@ -155,6 +155,65 @@ struct TranscribeFilePipelineTests {
     #expect(exitCode == 1)
     #expect(messages.all.contains { $0.contains("no such file") })
   }
+
+  @Test("a configured diarizer refines the file's turns into <source> · Speaker N")
+  func fileDiarizationRefinesLabels() async throws {
+    let directory = makeTempDirectory("diarize")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fileURL = directory.appendingPathComponent("meeting.m4a")
+    FileManager.default.createFile(atPath: fileURL.path, contents: Data())
+
+    // One whole-file slice of 1s (fakeReader); the ASR yields one turn over it,
+    // and the diarizer attributes that second to Speaker 1.
+    let scripted = ScriptedTranscriber(results: [[Segment(start: 0, end: 1, text: "hello world")]])
+    let stub = StubFileDiarizer(spans: [SpeakerSpan(start: 0, end: 1, speaker: "Speaker 1")])
+    var deps = dependencies(scripted)
+    deps.diarizerFactory = { @Sendable in stub }
+
+    let exitCode = await TranscribeFilePipeline.run(
+      inputs: .init(files: [fileURL.path], out: nil),
+      backendName: "fluidaudio",
+      dependencies: deps,
+      fileReader: fakeReader())
+
+    #expect(exitCode == 0)
+    let markdown = try String(
+      contentsOf: directory.appendingPathComponent("meeting.transcript.md"), encoding: .utf8)
+    // Source attribution stays primary; the diarizer only adds the sub-label.
+    #expect(markdown.contains("meeting · Speaker 1"))
+    // The Markdown frontmatter records the diarization backend that ran
+    // (`diarization: { enabled: true, backend: stub-diarizer }`).
+    #expect(markdown.contains("stub-diarizer"))
+  }
+
+  @Test("with no diarizer configured, file labels are unchanged (source only)")
+  func fileWithoutDiarizerKeepsSourceLabel() async throws {
+    let directory = makeTempDirectory("no-diarize")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fileURL = directory.appendingPathComponent("memo.m4a")
+    FileManager.default.createFile(atPath: fileURL.path, contents: Data())
+
+    let scripted = ScriptedTranscriber(results: [[Segment(start: 0, end: 1, text: "hello")]])
+    let exitCode = await TranscribeFilePipeline.run(
+      inputs: .init(files: [fileURL.path], out: nil),
+      backendName: "fluidaudio",
+      dependencies: dependencies(scripted),
+      fileReader: fakeReader())
+
+    #expect(exitCode == 0)
+    let markdown = try String(
+      contentsOf: directory.appendingPathComponent("memo.transcript.md"), encoding: .utf8)
+    #expect(!markdown.contains("Speaker"))
+  }
+}
+
+/// A ``Diarizer`` returning fixed spans, so the file pipeline's diarization
+/// wiring is proven without a real model.
+private struct StubFileDiarizer: Diarizer {
+  let info = DiarizerInfo(name: "stub-diarizer", version: "0")
+  let spans: [SpeakerSpan]
+  func load(_ options: LoadOptions) throws {}
+  func diarize(_ audio: AudioBuffer) throws -> [SpeakerSpan] { spans }
 }
 
 /// A tiny `Sendable` collector for stderr lines a test wants to assert on

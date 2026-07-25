@@ -189,6 +189,7 @@ Rules:
 ```jsonc
 {
   "schema": 1,
+  "diarization": { "enabled": false },        // { enabled, backend? } — mirrors the frontmatter
   "segments": [
     {
       "start": 604.14, "end": 611.88,          // seconds from range start

@@ -51,6 +51,10 @@ struct TranscriptSidecarJSONTests {
     let expected = """
       {
         "schema": 1,
+        "diarization": {
+          "enabled": true,
+          "backend": "pyannote"
+        },
         "segments": [
           {
             "start": 604.14,
@@ -72,6 +76,37 @@ struct TranscriptSidecarJSONTests {
 
       """
     #expect(rendered == expected)
+  }
+
+  @Test("diarization state is rendered; a disabled run omits the backend key")
+  func diarizationBlock() {
+    // The shared document has diarization enabled with a backend.
+    let enabled = TranscriptRenderer.renderJSON(Self.document(segments: []))
+    #expect(enabled.contains("\"enabled\": true"))
+    #expect(enabled.contains("\"backend\": \"pyannote\""))
+
+    // A run with diarization off renders `enabled: false` and no backend key.
+    let offDocument = TranscriptDocument(
+      frontmatter: TranscriptFrontmatter(
+        schema: 1,
+        kind: .transcript,
+        session: "s",
+        sources: ["mic"],
+        range: TimeRange(
+          start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 1)),
+        model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
+        diarization: TranscriptDiarizationInfo(enabled: false),
+        generated: Instant(secondsSinceEpoch: 1),
+        durationSeconds: 1,
+        speechSeconds: 0,
+        wordCount: 0,
+        vocab: []
+      ),
+      segments: []
+    )
+    let off = TranscriptRenderer.renderJSON(offDocument)
+    #expect(off.contains("\"enabled\": false"))
+    #expect(!off.contains("backend"))
   }
 
   @Test("a word with no confidence omits the conf key")

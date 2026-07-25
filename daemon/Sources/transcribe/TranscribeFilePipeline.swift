@@ -68,11 +68,26 @@ enum TranscribeFilePipeline {
     let modelInfo = TranscriptModelInfo(
       name: transcriber.info.name, backend: backendName, version: transcriber.info.version)
 
+    // Optional diarizer (`[diarize].backend`), loaded once for every file like
+    // the transcriber. Best-effort and non-fatal, exactly as in
+    // ``TranscribePipeline``: a load failure logs and degrades to source-only
+    // labels rather than failing the transcription.
+    var diarizer: (any Diarizer)?
+    if let factory = dependencies.diarizerFactory {
+      do {
+        let loaded = try factory()
+        try loaded.load(dependencies.diarizerLoadOptions)
+        diarizer = loaded
+      } catch {
+        dependencies.log("diarizer.load failed: \(error); continuing without diarization")
+      }
+    }
+
     for path in inputs.files {
       let code = transcribeFile(
         path: path, out: inputs.out, targetSampleRate: targetSampleRate,
-        transcriber: transcriber, modelInfo: modelInfo, fileReader: fileReader,
-        dependencies: dependencies)
+        transcriber: transcriber, modelInfo: modelInfo, diarizer: diarizer,
+        fileReader: fileReader, dependencies: dependencies)
       guard code == 0 else { return code }
     }
     return 0
@@ -84,6 +99,7 @@ enum TranscribeFilePipeline {
     targetSampleRate: Int,
     transcriber: any Transcriber,
     modelInfo: TranscriptModelInfo,
+    diarizer: (any Diarizer)?,
     fileReader: FileAudioReader,
     dependencies: TranscribePipeline.Dependencies
   ) -> Int32 {
@@ -119,6 +135,22 @@ enum TranscribeFilePipeline {
       }
     }
 
+    // A standalone file is one whole recording, so — unlike the captured path,
+    // which skips the single-speaker `mic`/`browser:*` sources — diarization
+    // always applies here when a diarizer is configured: treat the file as one
+    // multi-speaker source and split its turns into `Speaker N`. Best-effort:
+    // a diarization failure logs and falls back to the file's source label.
+    var diarization: [SourceID: [SpeakerSpan]] = [:]
+    if let diarizer, !slices.isEmpty {
+      do {
+        let spans = try TranscribePipeline.diarizeSource(
+          slices: slices, requestedStart: anchor, diarizer: diarizer)
+        if !spans.isEmpty { diarization[sourceID] = spans }
+      } catch {
+        dependencies.log("diarize failed for '\(path)': \(error)")
+      }
+    }
+
     let duration = slices.last.map { $0.range.end.interval(since: anchor) } ?? 0
     let requested = TimeRange(start: anchor, end: anchor.advanced(by: duration))
     let generated = dependencies.clock.now()
@@ -127,6 +159,8 @@ enum TranscribeFilePipeline {
       transcriptions: [SourceTranscription(sourceID: sourceID, segments: segments)],
       requested: requested,
       sessionIdentifier: sourceID.rawValue,
+      diarization: diarization,
+      diarizationBackend: diarizer?.info.name,
       model: modelInfo,
       generated: generated,
       speechSeconds: speechSeconds)

@@ -11,12 +11,29 @@
 /// - `WordTiming.text`/`.confidence` are keyed `text`/`confidence` by
 ///   `Codable`, but the wire format uses the short keys `w`/`conf`.
 enum SidecarJSONRenderer {
-  static func render(_ segments: [TranscriptSegment]) -> String {
+  static func render(
+    _ segments: [TranscriptSegment], diarization: TranscriptDiarizationInfo
+  ) -> String {
     let root = JSONValue.object([
       ("schema", .int(1)),
+      ("diarization", diarizationValue(diarization)),
       ("segments", .array(segments.map(segmentValue))),
     ])
     return JSON.render(root) + "\n"
+  }
+
+  /// The run-level diarization state, mirroring the Markdown frontmatter's
+  /// `diarization` mapping so the two artifacts agree: `{ enabled, backend? }`.
+  /// `backend` is omitted when diarization did not run (nil), exactly as the
+  /// frontmatter omits the key.
+  private static func diarizationValue(_ diarization: TranscriptDiarizationInfo) -> JSONValue {
+    var pairs: [(key: String, value: JSONValue)] = [
+      ("enabled", .bool(diarization.enabled))
+    ]
+    if let backend = diarization.backend {
+      pairs.append(("backend", .string(backend)))
+    }
+    return .object(pairs)
   }
 
   private static func segmentValue(_ turn: TranscriptSegment) -> JSONValue {
