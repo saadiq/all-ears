@@ -75,9 +75,13 @@ enum TranscribePipeline {
       // macOS 14 Core ML SIGBUS this serializes against is process-wide, so
       // Parakeet and Sortformer must never run inference concurrently.
       let gate = ANEInferenceGate()
+      // The closure is annotated `@Sendable` explicitly: inference does not
+      // propagate the optional's `@Sendable` element type through the ternary
+      // to a bare closure literal (it does for the direct `transcriberFactory:`
+      // argument below, which is why that one needs no annotation).
       let diarizerFactory: (@Sendable () throws -> any Diarizer)? =
         diarizeBackendName == "sortformer"
-        ? { SortformerDiarizerBackend(gate: gate) }
+        ? { @Sendable in SortformerDiarizerBackend(gate: gate) }
         : nil
       return Dependencies(
         clock: SystemClock(),
