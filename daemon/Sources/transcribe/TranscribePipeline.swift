@@ -1,5 +1,6 @@
 import EarsCore
 import EarsDataStore
+import EarsDiarizeKit
 import EarsTranscribeKit
 import Foundation
 
@@ -34,6 +35,13 @@ enum TranscribePipeline {
     var clock: any NowProviding
     var transcriberFactory: @Sendable () throws -> any Transcriber
     var loadOptions: LoadOptions
+    /// The optional diarization backend (`docs/specs/model-interface.md`'s
+    /// `Diarizer`). `nil` ⇒ diarization is off (the default): segments keep
+    /// source-only labels, exactly as before. When present, each multi-speaker
+    /// far-end source is refined into `Speaker N` (the offline/stabilised pass).
+    var diarizerFactory: (@Sendable () throws -> any Diarizer)? = nil
+    /// Model/compute selection for the diarizer, resolved from `[diarize]`.
+    var diarizerLoadOptions: LoadOptions = LoadOptions()
     var log: @Sendable (String) -> Void
     var writeStderr: @Sendable (String) -> Void
     /// Structured headline counts for the final `run.summary` (segments,
@@ -58,13 +66,29 @@ enum TranscribePipeline {
     /// before for any caller that doesn't need them.
     static func production(
       loadOptions: LoadOptions = LoadOptions(),
+      diarizeBackendName: String = "none",
+      diarizerLoadOptions: LoadOptions = LoadOptions(),
       onError: (@Sendable (String) -> Void)? = nil,
       onSummary: (@Sendable ([LogField]) -> Void)? = nil
     ) -> Dependencies {
-      Dependencies(
+      // One shared ANE gate for both the ASR and diarization backends: the
+      // macOS 14 Core ML SIGBUS this serializes against is process-wide, so
+      // Parakeet and Sortformer must never run inference concurrently.
+      let gate = ANEInferenceGate()
+      // The closure is annotated `@Sendable` explicitly: inference does not
+      // propagate the optional's `@Sendable` element type through the ternary
+      // to a bare closure literal (it does for the direct `transcriberFactory:`
+      // argument below, which is why that one needs no annotation).
+      let diarizerFactory: (@Sendable () throws -> any Diarizer)? =
+        diarizeBackendName == "sortformer"
+        ? { @Sendable in SortformerDiarizerBackend(gate: gate) }
+        : nil
+      return Dependencies(
         clock: SystemClock(),
-        transcriberFactory: { ParakeetTranscriber() },
+        transcriberFactory: { ParakeetTranscriber(gate: gate) },
         loadOptions: loadOptions,
+        diarizerFactory: diarizerFactory,
+        diarizerLoadOptions: diarizerLoadOptions,
         log: { message in
           FileHandle.standardError.write(Data(("transcribe: " + message + "\n").utf8))
         },
@@ -250,7 +274,28 @@ enum TranscribePipeline {
       return 1
     }
 
+    // Optional diarizer (`[diarize].backend`). Loading it is best-effort and
+    // never fatal: a diarization failure degrades to source-only labels rather
+    // than failing the whole transcript (the ASR output is the load-bearing
+    // artifact). A `nil` factory means diarization is off.
+    var diarizer: (any Diarizer)?
+    if let factory = dependencies.diarizerFactory {
+      do {
+        let loaded = try factory()
+        try loaded.load(dependencies.diarizerLoadOptions)
+        diarizer = loaded
+      } catch {
+        dependencies.log(
+          "diarizer.load failed: \(error); continuing without diarization")
+        diarizer = nil
+      }
+    }
+
     var transcriptions: [SourceTranscription] = []
+    // Per-source speaker spans from the offline diarization pass, on the shared
+    // (range-relative) timeline; empty when diarization is off or a source is
+    // single-speaker.
+    var diarization: [SourceID: [SpeakerSpan]] = [:]
     var speechSeconds: Double = 0
     // Per-source read outcome, for the segments=0 reason lines below.
     var readOutcomes: [ReadOutcome] = []
@@ -333,6 +378,21 @@ enum TranscribePipeline {
       }
 
       transcriptions.append(SourceTranscription(sourceID: sourceID, segments: segments))
+
+      // Diarization refines a *multi-speaker far-end* source into `Speaker N`;
+      // it never runs on the mic (you) or an already-per-participant browser
+      // stream (single speaker each). A failure here is logged and skipped, so
+      // the source keeps its source-only label rather than failing the run.
+      if let diarizer, shouldDiarize(sourceID), !slices.isEmpty {
+        do {
+          let spans = try diarizeSource(
+            slices: slices, requestedStart: requestedRange.start, diarizer: diarizer)
+          if !spans.isEmpty { diarization[sourceID] = spans }
+        } catch {
+          dependencies.log(
+            "diarize failed for source '\(sourceID.rawValue)': \(error)")
+        }
+      }
     }
 
     let generated = dependencies.clock.now()
@@ -370,6 +430,8 @@ enum TranscribePipeline {
       sessionIdentifier: sessionIdentifier,
       meeting: meetingRecord?.id,
       speakers: speakers,
+      diarization: diarization,
+      diarizationBackend: diarizer?.info.name,
       model: modelInfo,
       generated: generated,
       speechSeconds: speechSeconds,
@@ -544,5 +606,71 @@ enum TranscribePipeline {
       return shiftedWord
     }
     return result
+  }
+
+  /// Which sources the diarizer refines into `Speaker N`. Source-of-origin is
+  /// the primary label, so single-speaker sources are left alone: the `mic`
+  /// (you) and each per-participant `browser:*` stream (one named speaker each)
+  /// are never diarized. Everything else — `system`, `app:*`, `device:*` — is a
+  /// potentially multi-speaker far end worth splitting. (This coarse rule is a
+  /// documented first cut; see `docs/plans/diarization-sortformer.md`.)
+  static func shouldDiarize(_ sourceID: SourceID) -> Bool {
+    let raw = sourceID.rawValue
+    return raw != "mic" && !raw.hasPrefix("browser:")
+  }
+
+  /// Runs the offline diarization pass over one source and returns its speaker
+  /// spans on the shared (range-relative) timeline.
+  ///
+  /// The reader hands back VAD-gated speech slices, not one contiguous buffer.
+  /// Diarizing each slice independently would reset `Speaker N` per slice, so
+  /// instead the slices are **concatenated** into one buffer (the diarizer sees
+  /// only speech, which is what it wants) and diarized in a single call, keeping
+  /// speaker identity stable across the whole source. Each returned span, in
+  /// concatenated time, is then clipped back to the slice(s) it overlaps and
+  /// translated to the slice's real offset from the requested range start — so a
+  /// span that would straddle a removed silence gap is split at that gap, which
+  /// is the correct behaviour (the gap was silence).
+  static func diarizeSource(
+    slices: [AudioSlice], requestedStart: Instant, diarizer: any Diarizer
+  ) throws -> [SpeakerSpan] {
+    struct Placement {
+      let concatStart: Double
+      let concatEnd: Double
+      let realStart: Double
+    }
+    var samples: [Float] = []
+    var placements: [Placement] = []
+    var sampleRate = 16_000
+    var cursor = 0.0
+    for slice in slices {
+      sampleRate = slice.audio.sampleRate
+      let duration = slice.audio.duration
+      placements.append(
+        Placement(
+          concatStart: cursor,
+          concatEnd: cursor + duration,
+          realStart: slice.range.start.interval(since: requestedStart)))
+      samples.append(contentsOf: slice.audio.samples)
+      cursor += duration
+    }
+    guard !samples.isEmpty else { return [] }
+
+    let rawSpans = try diarizer.diarize(AudioBuffer(samples: samples, sampleRate: sampleRate))
+
+    var spans: [SpeakerSpan] = []
+    for span in rawSpans {
+      for placement in placements {
+        let start = max(span.start, placement.concatStart)
+        let end = min(span.end, placement.concatEnd)
+        guard end > start else { continue }
+        spans.append(
+          SpeakerSpan(
+            start: placement.realStart + (start - placement.concatStart),
+            end: placement.realStart + (end - placement.concatStart),
+            speaker: span.speaker))
+      }
+    }
+    return spans.sorted { $0.start < $1.start }
   }
 }

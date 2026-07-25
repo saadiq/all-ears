@@ -47,20 +47,31 @@ Integration specifics that are load-bearing (each maps to a real crash or qualit
 
 A planned second backend wraps any external model speaking an audio-in / JSON-out contract (Python NeMo, `whisper.cpp`), so new models can be trialled without touching Swift. The known discipline for it, when built: stdout = JSON results and stderr = logs, strictly separated; drain both pipes before waiting on exit (64 KB pipe-buffer deadlock); supervise long-lived children with health checks, backoff restart, and a parent-PID watchdog; pin weights to exact upstream commits.
 
-## Diarization protocol (no shipping backend yet)
+## Diarization protocol
 
-Diarization is a separate, optional stage with its own interface:
+Diarization is a separate, optional stage, with the same capability-by-protocol shape as the ASR side: a small base protocol (the offline/batch pass) plus an optional streaming capability.
 
 ```swift
+// Base: the offline (batch) pass every diarizer provides.
 protocol Diarizer {
     var info: DiarizerInfo { get }
+    func load(_ options: LoadOptions) throws                     // reuse the ASR LoadOptions
     func diarize(_ audio: AudioBuffer) throws -> [SpeakerSpan]   // {start, end, speaker}
+}
+
+// Optional capability — a backend opts in for the fast live pass.
+protocol StreamingDiarizer: Diarizer {                          // info.supportsStreaming
+    func step(_ frames: AudioBuffer, state: inout DiarizerState) throws -> [SpeakerSpan]
 }
 ```
 
-The protocol exists with a test-support null conformer only; no real backend ships, and `transcribe` currently labels segments by source alone. Design constraints for the eventual implementation:
+**Shipping backend: Sortformer via FluidAudio** (`EarsDiarizeKit.SortformerDiarizer`, the sibling of `EarsTranscribeKit.ParakeetTranscriber`). NVIDIA Sortformer through FluidAudio's Core ML/ANE pipeline, selected by `[diarize].backend = "sortformer"` (off by default). This first cut is **offline-only** — it conforms to `Diarizer` (`info.supportsStreaming = false`); the live streaming pass is the tracked follow-up. Every ANE call shares the *same* `ANEInferenceGate` as the ASR backend (the macOS 14 SIGBUS is process-wide).
 
-- **Channel-of-origin is the primary label; the diarizer only refines.** Source separation already gives you-vs-them; the diarizer splits a multi-speaker source (typically the far end) into `Speaker N`. It never overrides source attribution.
-- **Two-pass:** a fast streaming pass for live attribution, an offline batch pass to stabilise speaker IDs; the durable transcript reflects the stabilised pass.
+Design constraints, all honoured by the implementation:
+
+- **Channel-of-origin is the primary label; the diarizer only refines.** Source separation already gives you-vs-them; the diarizer splits a multi-speaker source (typically the far end) into `Speaker N` and never overrides source attribution — `transcribe` refines only `system`/`app:*`/`device:*` sources, never the `mic` or per-participant `browser:*` streams, and renders `<source> · Speaker N`.
+- **Two-pass:** a fast streaming pass for live attribution, an offline batch pass to stabilise speaker IDs; the durable transcript reflects the stabilised pass. Phase 1 ships the offline pass; `StreamingDiarizer` is the seam for the live pass (`--follow`).
 - Labels are stable within a transcript and remappable to names (see [speaker attribution](../data-formats.md#speaker-attribution)).
 - **Anti-pattern:** faking diarization by concatenating per-source transcripts and asking an LLM to guess speakers — that is not attribution.
+
+See `docs/plans/diarization-sortformer.md` for the implementation plan and open questions.

@@ -202,6 +202,7 @@ public enum EarsdConfigSchema {
     passthroughKeys: [
       "schema",
       "transcribe",
+      "diarize",
       "llm",
       "cleanup",
       "summarize",

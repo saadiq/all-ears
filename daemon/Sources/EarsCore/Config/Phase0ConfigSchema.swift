@@ -49,6 +49,7 @@ public enum Phase0ConfigSchema {
       "schema",
       "earsd",
       "transcribe",
+      "diarize",
       "llm",
       "cleanup",
       "summarize",

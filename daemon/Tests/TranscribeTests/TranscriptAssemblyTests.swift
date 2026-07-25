@@ -246,6 +246,109 @@ struct TranscriptAssemblyTests {
     #expect(document.frontmatter.wordCount == 2)
   }
 
+  // MARK: - Diarization refinement
+
+  @Test("refinedLabel appends the covering span's Speaker N to the base label")
+  func refinedLabelUsesCoveringSpan() {
+    let spans = [
+      SpeakerSpan(start: 0, end: 5, speaker: "Speaker 1"),
+      SpeakerSpan(start: 5, end: 10, speaker: "Speaker 2"),
+    ]
+    // Midpoint 3 falls in Speaker 1's span; midpoint 7 in Speaker 2's.
+    #expect(
+      TranscriptAssembly.refinedLabel(
+        base: "app:us.zoom.xos", segment: Segment(start: 2, end: 4, text: "a"), spans: spans)
+        == "app:us.zoom.xos · Speaker 1")
+    #expect(
+      TranscriptAssembly.refinedLabel(
+        base: "app:us.zoom.xos", segment: Segment(start: 6, end: 8, text: "b"), spans: spans)
+        == "app:us.zoom.xos · Speaker 2")
+  }
+
+  @Test("refinedLabel returns the base label unchanged when there are no spans")
+  func refinedLabelNoSpansIsBase() {
+    #expect(
+      TranscriptAssembly.refinedLabel(
+        base: "You", segment: Segment(start: 0, end: 2, text: "hi"), spans: [])
+        == "You")
+  }
+
+  @Test("refinedLabel falls back to the maximum-overlap span when none covers the midpoint")
+  func refinedLabelMaxOverlapFallback() {
+    // Segment 0–10 has midpoint 5, which no span covers (there is a gap at 5);
+    // it overlaps Speaker 2 (4–4.9 → 0.9s) more than Speaker 1 (0–4 → 4s)? No:
+    // Speaker 1 overlap is 4s, Speaker 2 overlap is 0.9s, so Speaker 1 wins.
+    let spans = [
+      SpeakerSpan(start: 0, end: 4, speaker: "Speaker 1"),
+      SpeakerSpan(start: 4, end: 4.9, speaker: "Speaker 2"),
+    ]
+    #expect(
+      TranscriptAssembly.refinedLabel(
+        base: "system", segment: Segment(start: 0, end: 10, text: "x"), spans: spans)
+        == "system · Speaker 1")
+  }
+
+  @Test("diarization refines a far-end source's turns while the mic is untouched")
+  func diarizationRefinesFarEndNotMic() {
+    let zoom = SourceTranscription(
+      sourceID: "app:us.zoom.xos",
+      segments: [
+        Segment(start: 0, end: 2, text: "hello"),
+        Segment(start: 6, end: 8, text: "goodbye"),
+      ])
+    let mic = SourceTranscription(
+      sourceID: "mic",
+      segments: [Segment(start: 3, end: 4, text: "ok")])
+
+    let document = TranscriptAssembly.assemble(
+      sourceIDs: [SourceID("app:us.zoom.xos"), SourceID("mic")],
+      transcriptions: [zoom, mic],
+      requested: requested,
+      sessionIdentifier: "id",
+      diarization: [
+        SourceID("app:us.zoom.xos"): [
+          SpeakerSpan(start: 0, end: 3, speaker: "Speaker 1"),
+          SpeakerSpan(start: 5, end: 9, speaker: "Speaker 2"),
+        ]
+      ],
+      diarizationBackend: "sortformer-fluidaudio",
+      model: model,
+      generated: start,
+      speechSeconds: 5
+    )
+
+    // Ordered by start: zoom@0 (Speaker 1), mic@3 (untouched You), zoom@6 (Speaker 2).
+    #expect(
+      document.segments.map(\.speaker) == [
+        "app:us.zoom.xos · Speaker 1", "You", "app:us.zoom.xos · Speaker 2",
+      ])
+    #expect(document.frontmatter.diarization.enabled)
+    #expect(document.frontmatter.diarization.backend == "sortformer-fluidaudio")
+  }
+
+  @Test("empty diarization leaves labels and frontmatter exactly as the non-diarized path")
+  func emptyDiarizationIsInert() {
+    let zoom = SourceTranscription(
+      sourceID: "app:us.zoom.xos",
+      segments: [Segment(start: 0, end: 2, text: "hello")])
+
+    let document = TranscriptAssembly.assemble(
+      sourceIDs: [SourceID("app:us.zoom.xos")],
+      transcriptions: [zoom],
+      requested: requested,
+      sessionIdentifier: "id",
+      diarization: [:],
+      diarizationBackend: "sortformer-fluidaudio",
+      model: model,
+      generated: start,
+      speechSeconds: 2
+    )
+
+    #expect(document.segments.map(\.speaker) == ["app:us.zoom.xos"])
+    // No spans ⇒ disabled, and backend omitted even though a name was passed.
+    #expect(document.frontmatter.diarization == TranscriptDiarizationInfo(enabled: false))
+  }
+
   @Test("frontmatter fields carry through unchanged from the given parameters")
   func frontmatterFieldsCarryThrough() {
     let document = TranscriptAssembly.assemble(
