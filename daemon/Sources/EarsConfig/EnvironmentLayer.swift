@@ -24,47 +24,9 @@ public func configLayer(fromEnvironment environment: [String: String]) -> Config
     guard !remainder.isEmpty else { continue }
 
     let pathComponents = remainder.components(separatedBy: "__").map { $0.lowercased() }
-    insert(coerce(rawValue), at: pathComponents, into: &root)
+    ConfigPathInsertion.insert(
+      ConfigPathInsertion.coerce(rawValue), at: pathComponents, into: &root)
   }
 
   return .table(root)
-}
-
-private func insert(
-  _ value: ConfigValue, at path: [String], into table: inout [String: ConfigValue]
-) {
-  guard let first = path.first else { return }
-
-  guard path.count > 1 else {
-    table[first] = value
-    return
-  }
-
-  var nested: [String: ConfigValue] = [:]
-  if case .table(let existing)? = table[first] {
-    nested = existing
-  }
-  insert(value, at: Array(path.dropFirst()), into: &nested)
-  table[first] = .table(nested)
-}
-
-private func coerce(_ rawValue: String) -> ConfigValue {
-  if let boolValue = boolLiteral(rawValue) {
-    return .bool(boolValue)
-  }
-  if let intValue = Int(rawValue) {
-    return .int(intValue)
-  }
-  if let doubleValue = Double(rawValue) {
-    return .double(doubleValue)
-  }
-  return .string(rawValue)
-}
-
-private func boolLiteral(_ rawValue: String) -> Bool? {
-  switch rawValue.lowercased() {
-  case "true": return true
-  case "false": return false
-  default: return nil
-  }
 }
