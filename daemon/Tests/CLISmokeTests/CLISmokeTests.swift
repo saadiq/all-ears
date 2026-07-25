@@ -549,6 +549,21 @@ struct CLISmokeTests {
     #expect(missing.stdout.contains("no config file found"))
   }
 
+  @Test(
+    "ears config describe lists settings from every tool with types, defaults, and descriptions")
+  func earsConfigDescribeListsEverySetting() throws {
+    let result = try Self.runEars(["config", "describe"])
+    #expect(result.exitCode == 0)
+    // A shared Phase-0 key, an earsd key, an LLM-stage key, and a transcribe
+    // key — proving the listing spans every tool's slice, not just one.
+    #expect(result.stdout.contains("log.level : string"))
+    #expect(result.stdout.contains("[earsd]"))
+    #expect(result.stdout.contains("llm.model : string"))
+    #expect(result.stdout.contains("transcribe.backend : string = \"fluidaudio\""))
+    // A declared description surfaces alongside the key.
+    #expect(result.stdout.contains("Speaker-diarization backend"))
+  }
+
   @Test("ears with no subcommand is a pure dispatcher: it prints help, not a stub run")
   func earsRootIsAPureDispatcher() throws {
     let result = try Self.runEars([])

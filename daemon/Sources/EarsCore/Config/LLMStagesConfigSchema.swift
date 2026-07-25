@@ -36,8 +36,9 @@ public enum LLMStagesConfigSchema {
   /// Schema for a single `[[summarize.preset]]` element.
   private static let presetElementSchema = ConfigSchema(
     fields: [
-      "name": ConfigSchema.Field(type: .string),
-      "prompt_file": ConfigSchema.Field(type: .string),
+      "name": ConfigSchema.Field(type: .string, description: "Preset name, selected via --preset."),
+      "prompt_file": ConfigSchema.Field(
+        type: .string, description: "Path to this preset's summary prompt."),
     ]
   )
 
@@ -47,37 +48,51 @@ public enum LLMStagesConfigSchema {
         type: .table,
         children: ConfigSchema(
           fields: [
-            "backend": ConfigSchema.Field(type: .string),
-            "model": ConfigSchema.Field(type: .string),
-            "command": ConfigSchema.Field(type: .string),
+            "backend": ConfigSchema.Field(
+              type: .string, description: "LLM backend: \"llm-cli\" or \"command\"."),
+            "model": ConfigSchema.Field(
+              type: .string, description: "Model id passed to the backend; empty uses its default."),
+            "command": ConfigSchema.Field(
+              type: .string,
+              description:
+                "Shell command template (backend=\"command\" only): prompt on stdin, completion on stdout."
+            ),
           ]
-        )
-      ),
+        ),
+        description: "Shared LLM backend used by cleanup and summarize."),
       "cleanup": ConfigSchema.Field(
         type: .table,
         children: ConfigSchema(
           fields: [
-            "prompt_file": ConfigSchema.Field(type: .string),
-            "use_vocab": ConfigSchema.Field(type: .bool),
+            "prompt_file": ConfigSchema.Field(
+              type: .string,
+              description: "Path to a custom cleanup system prompt; empty uses the built-in prompt."
+            ),
+            "use_vocab": ConfigSchema.Field(
+              type: .bool, description: "Apply the vocabulary list as a correction backstop."),
           ]
-        )
-      ),
+        ),
+        description: "Transcript-cleanup stage settings."),
       "summarize": ConfigSchema.Field(
         type: .table,
         children: ConfigSchema(
           fields: [
-            "preset": ConfigSchema.Field(type: .array, elementSchema: presetElementSchema)
+            "preset": ConfigSchema.Field(
+              type: .array, elementSchema: presetElementSchema,
+              description: "Named summary presets, each a name and a prompt_file.")
           ]
-        )
-      ),
+        ),
+        description: "Summary stage settings."),
       "vocab": ConfigSchema.Field(
         type: .table,
         children: ConfigSchema(
           fields: [
-            "global": ConfigSchema.Field(type: .string)
+            "global": ConfigSchema.Field(
+              type: .string,
+              description: "Global vocabulary list, relative to data_root; empty means none.")
           ]
-        )
-      ),
+        ),
+        description: "Vocabulary lists that back transcript correction."),
     ]
   )
 
