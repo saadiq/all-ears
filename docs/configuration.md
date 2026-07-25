@@ -7,9 +7,36 @@ Layered, highest wins:
 1. **Built-in defaults** — every setting has one; the suite runs with no config file.
 2. **Config file** — TOML at a standard path.
 3. **Environment variables** — prefix `EARS_`, nested keys joined by `__` (e.g. `EARS_LOG__LEVEL`).
-4. **CLI flags** — per-invocation overrides.
+4. **CLI flags** — per-invocation overrides: the typed flags (`--log-level`, `--log-file`), then the generic `--set`/`--set-string` on top.
 
-Example for the data root: default `~/Library/Application Support/ears` → `data_root` in TOML → `EARS_DATA_ROOT` → `--data-root`.
+Example for the data root: default `~/Library/Application Support/ears` → `data_root` in TOML → `EARS_DATA_ROOT` → `--set data_root=/path`.
+
+## Overriding any setting from the CLI
+
+Every tool accepts `--set <dotted.key>=<value>` (repeatable) to override any config setting for one invocation, without a dedicated flag per key — the CLI-side twin of the `EARS_*` environment variables, and the highest-precedence layer:
+
+```
+transcribe --set transcribe.backend=parakeet --set diarize.backend=sortformer
+earsd --set earsd.vad.min_silence_ms=500 --set log.level=debug
+cleanup notes.transcript.md --set llm.model=claude-opus-4-8
+```
+
+- **Typed values.** `true`/`false`, integers, and floats are coerced to their type, matching the `EARS_*` layer. Use `--set-string <key>=<value>` to force a literal string (a version like `1.0`, a numeric id).
+- **The value may contain `=`.** Only the first `=` splits key from value, so `--set llm.command='llm -m gpt'` works.
+- **Validated.** An override is merged then checked against the schema, so a typo'd key or a wrong-typed value is rejected with a precise message, never silently dropped. A malformed `--set` (no `=`) fails the invocation.
+- **Arrays replace wholesale.** Setting an array-valued key replaces the whole array; there is no element-wise patch.
+
+The typed convenience flags (`--log-level`, `--log-file`, and `cleanup`'s `--model`/`--prompt`/`--vocab`/`--no-vocab`) remain; `--set` reaches everything else.
+
+## Discovering settings
+
+`ears config describe` lists every setting across all tools — dotted key, type, default, and a one-line description — rendered from the schema itself, so it never drifts from the code:
+
+```
+ears config describe
+```
+
+Two companions show the resolved values rather than the reference: `ears config show` (or any tool's `--print-config`) prints the merged config as TOML, and `ears config path` (or `--config-path`) reports which file was loaded.
 
 ## File location
 
@@ -63,7 +90,7 @@ evict_after_transcript_seconds = 7200    # 2h after a successful transcript
 max_audio_age_seconds          = 604800  # 7d hard cap for never-transcribed meetings
 
 [earsd.vad]
-backend        = "energy"  # currently ignored: an energy-threshold VAD is always used
+backend        = "silero"  # currently ignored: an energy-threshold VAD is always used
 speech_pad_ms  = 300       # pad around detected speech spans
 min_silence_ms = 700       # gap before declaring silence
 
@@ -108,7 +135,7 @@ label = "Zoom"
 
 # --- Auto-triggers ---
 [triggers]
-enabled = true
+enabled = false   # default off; set true to enable the app-signal rules below
 transcribe_on_browser_session_close = true  # transcribe when a browser meeting ends (default: true; set false to disable)
 
 [[triggers.rule]]
@@ -141,7 +168,7 @@ prompt_file = "prompts/action-items.md"
 
 # --- Vocabulary ---
 [vocab]
-global = "vocab/global.txt"   # relative to data_root
+global = ""   # relative to data_root; empty (the default) => no global list. e.g. "vocab/global.txt"
 ```
 
 Transcription uses Parakeet via FluidAudio on the Apple Neural Engine, with VAD silence-skipping on. The `[transcribe]` table selects the backend/model/compute (all optional — the defaults above are assumed):
@@ -174,4 +201,5 @@ With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAud
 - **Paths** support `~` expansion and resolve relative to `data_root` when not absolute (except `data_root`/`output_root` themselves).
 - **Zero-config:** with no file present, the daemon captures `mic` with the defaults above and the LLM stages use the `llm` CLI.
 - **Validation:** each tool validates its config at startup and exits non-zero with a precise message (key path + reason) on any unknown key or invalid value. No silent fallback.
-- **Discovery:** every tool prints the resolved, merged config and reports which file was loaded. The single-purpose tools spell it `--print-config` / `--config-path`; `ears` spells it `ears config show` / `ears config path`.
+- **Discovery:** every tool prints the resolved, merged config and reports which file was loaded. The single-purpose tools spell it `--print-config` / `--config-path`; `ears` spells it `ears config show` / `ears config path`. `ears config describe` lists every setting with its type, default, and description (see "Discovering settings").
+- **Overrides:** every setting can be overridden per-invocation with `--set <dotted.key>=<value>` (typed) or `--set-string` (literal), the highest-precedence layer (see "Overriding any setting from the CLI").

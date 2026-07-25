@@ -39,20 +39,78 @@ public enum EarsCLI {
     public var logLevel: String?
     /// `--log-file <path>`: overrides `[log].file` for this invocation.
     public var logFile: String?
+    /// `--set <dotted.key=value>` (repeatable): generic, typed config
+    /// overrides, the highest-precedence layer. See
+    /// ``configLayer(fromCLIOverrides:stringOverrides:)``.
+    public var set: [String]
+    /// `--set-string <dotted.key=value>` (repeatable): like ``set`` but the
+    /// value is always stored as a literal string, never coerced.
+    public var setString: [String]
 
     public init(
       config: String? = nil,
       printConfig: Bool = false,
       configPath: Bool = false,
       logLevel: String? = nil,
-      logFile: String? = nil
+      logFile: String? = nil,
+      set: [String] = [],
+      setString: [String] = []
     ) {
       self.config = config
       self.printConfig = printConfig
       self.configPath = configPath
       self.logLevel = logLevel
       self.logFile = logFile
+      self.set = set
+      self.setString = setString
     }
+  }
+
+  /// A ready-to-print failure from ``resolveLoadInputs(_:environment:homeDirectory:)``
+  /// — currently only a malformed `--set` override. Its ``message`` is already
+  /// prefixed `error:`, so a caller writes it straight to stderr.
+  public struct InputError: Error, Sendable, Equatable {
+    public var message: String
+
+    public init(message: String) {
+      self.message = message
+    }
+  }
+
+  /// Builds the ``ConfigLoadInputs`` every tool feeds to
+  /// ``loadConfig(_:defaults:schema:)`` from its parsed ``Arguments``: the
+  /// `--config` file selection, the process environment, and the combined
+  /// highest-precedence flags layer — the `--log-level`/`--log-file` flags
+  /// merged with the generic `--set`/`--set-string` overrides on top, so an
+  /// explicit `--set log.level=…` wins over `--log-level` for the same key.
+  ///
+  /// This is the single construction site the shared CLI bootstrap and every
+  /// tool's runtime re-load call, so the same flags layer (including `--set`
+  /// overrides) applies identically no matter which schema slice the caller
+  /// validates against. Returns `.failure` with a ready-to-print message when
+  /// a `--set` argument is malformed, so the caller rejects the whole
+  /// invocation rather than loading config that silently dropped an override.
+  public static func resolveLoadInputs(
+    _ arguments: Arguments, environment: [String: String], homeDirectory: String
+  ) -> Result<ConfigLoadInputs, InputError> {
+    let logLayer = configLayer(
+      fromCLIFlags: CLILogFlags(level: arguments.logLevel, file: arguments.logFile))
+    let overrideLayer: ConfigValue
+    switch configLayer(fromCLIOverrides: arguments.set, stringOverrides: arguments.setString) {
+    case .success(let value):
+      overrideLayer = value
+    case .failure(let error):
+      let joined = error.invalidArguments.joined(separator: ", ")
+      return .failure(
+        InputError(message: "error: invalid --set override (expected key.path=value): \(joined)"))
+    }
+    let flags = mergeConfigValues(base: logLayer, overlay: overrideLayer)
+    return .success(
+      ConfigLoadInputs(
+        configFlag: arguments.config,
+        environment: environment,
+        homeDirectory: homeDirectory,
+        flags: flags))
   }
 
   /// Runs the shared config/logging lifecycle for `tool` and returns the
@@ -82,14 +140,16 @@ public enum EarsCLI {
       return 0
     }
 
-    let flagsLayer = configLayer(
-      fromCLIFlags: CLILogFlags(level: arguments.logLevel, file: arguments.logFile))
-    let inputs = ConfigLoadInputs(
-      configFlag: arguments.config,
-      environment: environment,
-      homeDirectory: homeDirectory,
-      flags: flagsLayer
-    )
+    let inputs: ConfigLoadInputs
+    switch resolveLoadInputs(
+      arguments, environment: environment, homeDirectory: homeDirectory)
+    {
+    case .success(let value):
+      inputs = value
+    case .failure(let error):
+      writeStderr(error.message)
+      return 1
+    }
 
     let loaded: LoadedConfig
     switch loadConfig(inputs) {

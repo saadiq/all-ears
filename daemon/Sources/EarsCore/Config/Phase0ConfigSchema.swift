@@ -27,23 +27,38 @@ public enum Phase0ConfigSchema {
 
   public static let schema = ConfigSchema(
     fields: [
-      "data_root": ConfigSchema.Field(type: .string),
-      "output_root": ConfigSchema.Field(type: .string),
-      "socket_path": ConfigSchema.Field(type: .string),
+      "data_root": ConfigSchema.Field(
+        type: .string,
+        description: "Root directory for captured audio, indexes, and session state."),
+      "output_root": ConfigSchema.Field(
+        type: .string, description: "Directory where transcripts and summaries are written."),
+      "socket_path": ConfigSchema.Field(
+        type: .string,
+        description: "Control-socket path; empty derives <data_root>/runtime/earsd.sock."),
       "log": ConfigSchema.Field(
         type: .table,
         children: ConfigSchema(
           fields: [
-            "level": ConfigSchema.Field(type: .string),
-            "file": ConfigSchema.Field(type: .string),
-            "format": ConfigSchema.Field(type: .string),
-            "oslog": ConfigSchema.Field(type: .bool),
-            "subsystem": ConfigSchema.Field(type: .string),
-            "rotate_max_bytes": ConfigSchema.Field(type: .int),
-            "rotate_max_files": ConfigSchema.Field(type: .int),
+            "level": ConfigSchema.Field(
+              type: .string, description: "Effective log level: debug, info, notice, or error."),
+            "file": ConfigSchema.Field(
+              type: .string,
+              description:
+                "JSON Lines log file path; empty derives a per-tool path under data_root."
+            ),
+            "format": ConfigSchema.Field(
+              type: .string, description: "Log format: \"auto\", \"json\", or \"text\"."),
+            "oslog": ConfigSchema.Field(
+              type: .bool, description: "Mirror logs to the unified logging system (os_log)."),
+            "subsystem": ConfigSchema.Field(
+              type: .string, description: "Unified-logging subsystem identifier."),
+            "rotate_max_bytes": ConfigSchema.Field(
+              type: .int, description: "Rotate the log file once it exceeds this many bytes."),
+            "rotate_max_files": ConfigSchema.Field(
+              type: .int, description: "Number of rotated log files to keep."),
           ]
-        )
-      ),
+        ),
+        description: "Logging destinations, level, and rotation. See docs/logging.md."),
     ],
     passthroughKeys: [
       "schema",

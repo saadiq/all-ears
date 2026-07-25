@@ -84,8 +84,24 @@ struct ConfigCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "config",
     abstract: "Inspect config discovery and the resolved, merged config.",
-    subcommands: [ConfigShowCommand.self, ConfigPathCommand.self]
+    subcommands: [ConfigShowCommand.self, ConfigPathCommand.self, ConfigDescribeCommand.self]
   )
+}
+
+struct ConfigDescribeCommand: AsyncParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "describe",
+    abstract:
+      "List every config setting across all tools with its type, default, and description.")
+
+  func run() async throws {
+    // A static reference rendered from the schema itself — every tool's slice
+    // composed into one listing — so a user can discover which keys exist,
+    // what they mean, and their defaults without reading the source or the
+    // docs. The current resolved value of each key is `ears config show`'s job;
+    // this answers "what can I set, and to what?", including via `--set`.
+    print(describeConfig(schema: FullConfigSchema.schema, defaults: FullConfigSchema.defaults))
+  }
 }
 
 struct ConfigShowCommand: AsyncParsableCommand {

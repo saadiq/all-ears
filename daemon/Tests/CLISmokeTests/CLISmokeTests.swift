@@ -226,6 +226,42 @@ struct CLISmokeTests {
     #expect(flagResult.stdout.contains("level = 'error'"))
   }
 
+  @Test("--set overrides the config file and the env layer, and rejects a malformed value")
+  func setOverridesEveryLowerLayer() throws {
+    let temp = TempDirectory()
+    let configPath = temp.write(
+      """
+      [log]
+      level = "debug"
+
+      [earsd.vad]
+      min_silence_ms = 700
+      """,
+      named: "config.toml"
+    )
+
+    // --set beats both the file's "debug" and the env layer's "notice", and
+    // reaches a nested key with a coerced integer value.
+    let result = try Self.runEarsd(
+      [
+        "--config", configPath, "--print-config",
+        "--set", "log.level=error",
+        "--set", "earsd.vad.min_silence_ms=250",
+      ],
+      environment: ["EARS_LOG__LEVEL": "notice"]
+    )
+    #expect(result.exitCode == 0)
+    #expect(result.stdout.contains("level = 'error'"))
+    #expect(result.stdout.contains("min_silence_ms = 250"))
+
+    // A malformed --set is a precise, non-zero failure, never a silent drop.
+    let malformed = try Self.runEarsd(
+      ["--config", configPath, "--print-config", "--set", "log.level"])
+    #expect(malformed.exitCode != 0)
+    #expect(malformed.stderr.contains("invalid --set override"))
+    #expect(malformed.stderr.contains("log.level"))
+  }
+
   @Test("--config-path reports the resolved file when one exists")
   func configPathReportsResolvedFile() throws {
     let temp = TempDirectory()
@@ -511,6 +547,21 @@ struct CLISmokeTests {
     #expect(missing.exitCode == 0)
     #expect(missing.stdout.contains(missingPath))
     #expect(missing.stdout.contains("no config file found"))
+  }
+
+  @Test(
+    "ears config describe lists settings from every tool with types, defaults, and descriptions")
+  func earsConfigDescribeListsEverySetting() throws {
+    let result = try Self.runEars(["config", "describe"])
+    #expect(result.exitCode == 0)
+    // A shared Phase-0 key, an earsd key, an LLM-stage key, and a transcribe
+    // key — proving the listing spans every tool's slice, not just one.
+    #expect(result.stdout.contains("log.level : string"))
+    #expect(result.stdout.contains("[earsd]"))
+    #expect(result.stdout.contains("llm.model : string"))
+    #expect(result.stdout.contains("transcribe.backend : string = \"fluidaudio\""))
+    // A declared description surfaces alongside the key.
+    #expect(result.stdout.contains("Speaker-diarization backend"))
   }
 
   @Test("ears with no subcommand is a pure dispatcher: it prints help, not a stub run")

@@ -44,13 +44,29 @@ struct Earsd: AsyncParsableCommand {
   @Option(name: .customLong("log-file"), help: "Override the JSON Lines log file path.")
   var logFile: String?
 
+  @Option(
+    name: .customLong("set"),
+    help:
+      "Override any config setting: --set path.to.key=value (repeatable). Values are typed (true/false, ints, floats); use --set-string to force a string."
+  )
+  var set: [String] = []
+
+  @Option(
+    name: .customLong("set-string"),
+    help:
+      "Like --set but the value is always a string: --set-string path.to.key=value (repeatable)."
+  )
+  var setString: [String] = []
+
   func run() async throws {
     let arguments = EarsCLI.Arguments(
       config: config,
       printConfig: printConfig,
       configPath: configPath,
       logLevel: logLevel,
-      logFile: logFile
+      logFile: logFile,
+      set: set,
+      setString: setString
     )
 
     let exitCode = await EarsCLI.run(tool: "earsd", version: "0.1.0", arguments: arguments)

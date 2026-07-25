@@ -14,15 +14,25 @@ public struct ConfigSchema: Sendable {
     /// `nil` for arrays of scalars, which are left unvalidated element-wise —
     /// only `type == .array` is checked for those.
     public var elementSchema: ConfigSchema?
+    /// A one-line, human-readable description of what this setting does, so the
+    /// schema doubles as the single source of truth for `ears config describe`
+    /// (see `describeConfig`) and any generated docs — a setting's meaning is
+    /// recorded next to its type here, not only in prose in
+    /// `docs/configuration.md` that can drift out of sync. `nil` for a field
+    /// not yet documented here; a `.table` or array-of-tables field describes
+    /// the group while its children carry their own leaf descriptions.
+    public var description: String?
 
     public init(
       type: ConfigValueKind,
       children: ConfigSchema? = nil,
-      elementSchema: ConfigSchema? = nil
+      elementSchema: ConfigSchema? = nil,
+      description: String? = nil
     ) {
       self.type = type
       self.children = children
       self.elementSchema = elementSchema
+      self.description = description
     }
   }
 

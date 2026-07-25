@@ -61,14 +61,15 @@ enum EarsdRuntime {
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
 
-    let flagsLayer = configLayer(
-      fromCLIFlags: CLILogFlags(level: arguments.logLevel, file: arguments.logFile))
-    let inputs = ConfigLoadInputs(
-      configFlag: arguments.config,
-      environment: environment,
-      homeDirectory: homeDirectory,
-      flags: flagsLayer
-    )
+    let inputs: ConfigLoadInputs
+    switch EarsCLI.resolveLoadInputs(
+      arguments, environment: environment, homeDirectory: homeDirectory)
+    {
+    case .success(let value): inputs = value
+    case .failure(let error):
+      writeStderr(error.message)
+      return 1
+    }
 
     let loaded: LoadedConfig
     switch loadConfig(
