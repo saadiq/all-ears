@@ -46,6 +46,20 @@ struct Transcribe: AsyncParsableCommand {
   @Option(name: .customLong("log-file"), help: "Override the JSON Lines log file path.")
   var logFile: String?
 
+  @Option(
+    name: .customLong("set"),
+    help:
+      "Override any config setting: --set path.to.key=value (repeatable). Values are typed (true/false, ints, floats); use --set-string to force a string."
+  )
+  var set: [String] = []
+
+  @Option(
+    name: .customLong("set-string"),
+    help:
+      "Like --set but the value is always a string: --set-string path.to.key=value (repeatable)."
+  )
+  var setString: [String] = []
+
   @Option(name: .customLong("last"), help: "Range ending now (e.g. 30m, 2h).")
   var last: String?
 
@@ -93,7 +107,9 @@ struct Transcribe: AsyncParsableCommand {
       printConfig: printConfig,
       configPath: configPath,
       logLevel: logLevel,
-      logFile: logFile
+      logFile: logFile,
+      set: set,
+      setString: setString
     )
 
     // Pure argument-combination validation runs first, as usage errors: they

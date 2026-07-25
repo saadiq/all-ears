@@ -25,14 +25,15 @@ enum FollowRuntime {
   ) async -> RunOutcome {
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
-    let flagsLayer = configLayer(
-      fromCLIFlags: CLILogFlags(level: arguments.logLevel, file: arguments.logFile))
-    let loadInputs = ConfigLoadInputs(
-      configFlag: arguments.config,
-      environment: environment,
-      homeDirectory: homeDirectory,
-      flags: flagsLayer
-    )
+    let loadInputs: ConfigLoadInputs
+    switch EarsCLI.resolveLoadInputs(
+      arguments, environment: environment, homeDirectory: homeDirectory)
+    {
+    case .success(let value): loadInputs = value
+    case .failure(let error):
+      writeStderr(error.message)
+      return RunOutcome(exitCode: 1, error: error.message)
+    }
 
     let loaded: LoadedConfig
     switch loadConfig(loadInputs) {

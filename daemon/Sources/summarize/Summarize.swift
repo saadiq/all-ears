@@ -57,13 +57,29 @@ struct Summarize: AsyncParsableCommand {
   @Option(name: .customLong("model"), help: "Override the LLM model for this run.")
   var model: String?
 
+  @Option(
+    name: .customLong("set"),
+    help:
+      "Override any config setting: --set path.to.key=value (repeatable). Values are typed (true/false, ints, floats); use --set-string to force a string."
+  )
+  var set: [String] = []
+
+  @Option(
+    name: .customLong("set-string"),
+    help:
+      "Like --set but the value is always a string: --set-string path.to.key=value (repeatable)."
+  )
+  var setString: [String] = []
+
   func run() async throws {
     let arguments = EarsCLI.Arguments(
       config: config,
       printConfig: printConfig,
       configPath: configPath,
       logLevel: logLevel,
-      logFile: logFile
+      logFile: logFile,
+      set: set,
+      setString: setString
     )
 
     // Snapshot the flags into locals the `@Sendable` work closure captures.
