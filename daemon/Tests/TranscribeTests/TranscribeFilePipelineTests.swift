@@ -181,10 +181,9 @@ struct TranscribeFilePipelineTests {
       contentsOf: directory.appendingPathComponent("meeting.transcript.md"), encoding: .utf8)
     // Source attribution stays primary; the diarizer only adds the sub-label.
     #expect(markdown.contains("meeting · Speaker 1"))
-    // The sidecar frontmatter records the diarization backend that ran.
-    let sidecar = try String(
-      contentsOf: directory.appendingPathComponent("meeting.transcript.json"), encoding: .utf8)
-    #expect(sidecar.contains("stub-diarizer"))
+    // The Markdown frontmatter records the diarization backend that ran
+    // (`diarization: { enabled: true, backend: stub-diarizer }`).
+    #expect(markdown.contains("stub-diarizer"))
   }
 
   @Test("with no diarizer configured, file labels are unchanged (source only)")
