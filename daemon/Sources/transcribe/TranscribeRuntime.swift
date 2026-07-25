@@ -124,6 +124,13 @@ enum TranscribeRuntime {
     let compute = computePreference(
       stringValue(root, ["transcribe", "compute"], default: "automatic"))
 
+    // Same `[diarize]` resolution as `run(arguments:inputs:)` — a standalone
+    // file diarizes too when `[diarize].backend = "sortformer"`.
+    let diarizeBackend = stringValue(root, ["diarize", "backend"], default: "none")
+    let diarizeModel = stringValue(root, ["diarize", "model"])
+    let diarizeCompute = computePreference(
+      stringValue(root, ["diarize", "compute"], default: "automatic"))
+
     let code = await TranscribeFilePipeline.run(
       inputs: inputs,
       backendName: backendName,
@@ -131,6 +138,10 @@ enum TranscribeRuntime {
         loadOptions: LoadOptions(
           modelIdentifier: modelIdentifier.isEmpty ? nil : modelIdentifier,
           compute: compute),
+        diarizeBackendName: diarizeBackend,
+        diarizerLoadOptions: LoadOptions(
+          modelIdentifier: diarizeModel.isEmpty ? nil : diarizeModel,
+          compute: diarizeCompute),
         onError: { diagnostics.recordError($0) }))
     return diagnostics.outcome(exitCode: code)
   }
