@@ -27,6 +27,14 @@ All logic with no I/O lives in the pure `EarsCore` library: VAD-index reading an
 - **CI runs the suite on every commit** (`.github/workflows/ci.yml`: `swift format lint --strict`, build, full tests). Model-accuracy benchmarks (WER for ASR, DER for diarization) should gate model-path changes the same way; they are not wired into CI yet.
 - Claims no automated test can establish (multi-day memory flatness, real sleep/wake) get a manual runbook instead — see [operations](./operations/capture-soak-runbook.md) — and are never described as automated.
 
+### Opt-in model + audio fixtures
+
+Tier-2/3 suites that need real Core ML/ANE inference (and, for some, an internet download) are gated behind `EARS_LIVE_MODEL_TEST=1` so the default `swift test` stays hermetic. Run them with, e.g., `EARS_LIVE_MODEL_TEST=1 swift test --filter AMIDiarizationLiveTests`. Audio fixtures are **not** committed (the repo carries no Git LFS and no binaries over ~100 KB); each is fetched on demand from a stable public URL, pinned by SHA-256, and cached under `~/Library/Caches` (see `IntegrationFixture`). A hash mismatch fails loudly rather than silently testing the wrong audio. Current fixtures, all freely licensed:
+
+- **ASR + word timings** — LibriSpeech `1089-134686-0000` (CC BY 4.0), a ~10 s single-speaker clip.
+- **Diarization** — the first 5 min of AMI meeting `ES2004a` `Mix-Headset` (CC BY 4.0), a real multi-speaker meeting with a hand-annotated RTTM reference.
+- **Diarization (local)** — `DipanshuDiarizeLiveTests` runs against a local file via `EARS_DIARIZE_TEST_FILE` (default `~/Downloads/Dipanshu.m4a`); the suite stays disabled unless that file is present.
+
 ## Small, incremental commits
 
 Work proceeds in small, self-contained commits, each of which builds, passes the full test suite, and represents one coherent step.
