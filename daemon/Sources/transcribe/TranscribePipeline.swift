@@ -77,7 +77,7 @@ enum TranscribePipeline {
       let gate = ANEInferenceGate()
       let diarizerFactory: (@Sendable () throws -> any Diarizer)? =
         diarizeBackendName == "sortformer"
-        ? { SortformerDiarizer(gate: gate) }
+        ? { SortformerDiarizerBackend(gate: gate) }
         : nil
       return Dependencies(
         clock: SystemClock(),

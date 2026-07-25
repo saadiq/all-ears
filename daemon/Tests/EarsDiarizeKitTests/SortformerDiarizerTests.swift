@@ -8,7 +8,7 @@ import Testing
 struct SortformerDiarizerTests {
   @Test("info reports the Sortformer backend as offline-only for this first cut")
   func infoIsOfflineOnly() {
-    let info = SortformerDiarizer().info
+    let info = SortformerDiarizerBackend().info
     #expect(info.name == "sortformer-fluidaudio")
     // Streaming (the live `--follow` pass) is deferred to a follow-up, so the
     // shim must not advertise a capability it does not yet conform to.
