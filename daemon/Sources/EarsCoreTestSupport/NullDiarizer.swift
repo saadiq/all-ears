@@ -9,6 +9,8 @@ public struct NullDiarizer: Diarizer {
     self.info = info
   }
 
+  public func load(_ options: LoadOptions) throws {}
+
   public func diarize(_ audio: AudioBuffer) throws -> [SpeakerSpan] {
     []
   }

@@ -44,6 +44,33 @@ enum TranscriptAssembly {
     return sourceID == SourceID("mic") ? "You" : sourceID.rawValue
   }
 
+  /// Refines a source's base speaker label with the diarizer's within-source
+  /// `Speaker N` split, per `docs/specs/model-interface.md`: **source
+  /// attribution stays primary; the diarizer only adds a sub-label.** A segment
+  /// is attributed to the ``SpeakerSpan`` covering its midpoint (falling back to
+  /// the maximum-overlap span), yielding e.g. `Priya's call · Speaker 2`. With
+  /// no spans for the source (mic, per-participant browser streams, or
+  /// diarization off), or a segment no span covers, the base label is returned
+  /// unchanged — so a non-diarized transcript is byte-identical to before.
+  static func refinedLabel(
+    base: String, segment: Segment, spans: [SpeakerSpan]
+  ) -> String {
+    guard !spans.isEmpty else { return base }
+    let midpoint = (segment.start + segment.end) / 2
+    if let covering = spans.first(where: { $0.start <= midpoint && midpoint < $0.end }) {
+      return "\(base) · \(covering.speaker)"
+    }
+    var best: (span: SpeakerSpan, overlap: Double)?
+    for span in spans {
+      let overlap = min(segment.end, span.end) - max(segment.start, span.start)
+      if overlap > 0, best == nil || overlap > best!.overlap {
+        best = (span, overlap)
+      }
+    }
+    if let best { return "\(base) · \(best.span.speaker)" }
+    return base
+  }
+
   static func assemble(
     sourceIDs: [SourceID],
     transcriptions: [SourceTranscription],
@@ -51,6 +78,8 @@ enum TranscriptAssembly {
     sessionIdentifier: String,
     meeting: String? = nil,
     speakers: [String: String] = [:],
+    diarization: [SourceID: [SpeakerSpan]] = [:],
+    diarizationBackend: String? = nil,
     model: TranscriptModelInfo,
     generated: Instant,
     speechSeconds: Double,
@@ -58,12 +87,13 @@ enum TranscriptAssembly {
   ) -> TranscriptDocument {
     var turns: [TranscriptSegment] = []
     for transcription in transcriptions {
-      let speaker = speakerLabel(for: transcription.sourceID, speakers: speakers)
+      let base = speakerLabel(for: transcription.sourceID, speakers: speakers)
+      let spans = diarization[transcription.sourceID] ?? []
       for segment in transcription.segments {
         turns.append(
           TranscriptSegment(
             source: transcription.sourceID,
-            speaker: speaker,
+            speaker: refinedLabel(base: base, segment: segment, spans: spans),
             segment: segment,
             sourceProvenance: false
           ))
@@ -91,7 +121,9 @@ enum TranscriptAssembly {
       sources: sourceIDs,
       range: requested,
       model: model,
-      diarization: TranscriptDiarizationInfo(enabled: false, backend: nil),
+      diarization: TranscriptDiarizationInfo(
+        enabled: !diarization.isEmpty,
+        backend: diarization.isEmpty ? nil : diarizationBackend),
       generated: generated,
       durationSeconds: requested.duration,
       speechSeconds: speechSeconds,

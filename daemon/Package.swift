@@ -148,6 +148,20 @@ let package = Package(
       ]
     ),
 
+    // The native diarization backend shim (`docs/specs/model-interface.md`'s
+    // `Diarizer` protocol): NVIDIA Sortformer via FluidAudio's Core ML/ANE
+    // pipeline. The exact sibling of `EarsTranscribeKit` for the ASR side --
+    // only this target touches FluidAudio's diarizer API directly, keeping the
+    // FluidAudio dependency behind `EarsCore.Diarizer` per the tier-2 rule in
+    // `docs/engineering-practices.md`.
+    .target(
+      name: "EarsDiarizeKit",
+      dependencies: [
+        "EarsCore",
+        .product(name: "FluidAudio", package: "FluidAudio"),
+      ]
+    ),
+
     // MARK: - Executables
 
     .executableTarget(
@@ -221,6 +235,10 @@ let package = Package(
         // For ParakeetTranscriber, the real FluidAudio-backed Transcriber
         // TranscribePipeline.Dependencies.production() wires in.
         "EarsTranscribeKit",
+        // For SortformerDiarizer, the real FluidAudio-backed Diarizer
+        // TranscribePipeline.Dependencies.production() wires in when
+        // `[diarize].backend = "sortformer"`.
+        "EarsDiarizeKit",
         // For ControlSocketClient: `--follow` publishes each finalised
         // segment back to the daemon's live feed via `segment.publish`
         // (SegmentEventPublisher), best-effort per the notification-only
@@ -312,6 +330,10 @@ let package = Package(
     .testTarget(
       name: "EarsTranscribeKitTests",
       dependencies: ["EarsTranscribeKit", "EarsCoreTestSupport"]
+    ),
+    .testTarget(
+      name: "EarsDiarizeKitTests",
+      dependencies: ["EarsDiarizeKit", "EarsCoreTestSupport"]
     ),
     // Depends on the `transcribe` executable target (not just `EarsCore`/
     // `EarsDataStore`) so its pure decision logic -- range resolution,

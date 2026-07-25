@@ -208,7 +208,7 @@ The Markdown is rendered from the same data the sidecar holds, so the two never 
 Two independent layers:
 
 1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side; each `browser:<platform>:<participant>` source maps to one named participant. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
-2. **Diarization (not yet implemented):** a diarization stage will assign stable `Speaker N` labels within a multi-speaker source, with an optional per-session name map (`Speaker 2` → `Priya`) applied at or after `cleanup`, never mutating timings.
+2. **Diarization (offline pass implemented):** an opt-in diarization stage (`[diarize].backend = "sortformer"`) assigns stable `Speaker N` labels within a multi-speaker source, rendered as `<source> · Speaker N` so source attribution stays primary. An optional per-session name map (`Speaker 2` → `Priya`) applied at or after `cleanup`, never mutating timings, remains future work; the live (streaming) pass is a follow-up to the offline pass that ships today.
 
 ## Vocabulary / known-word lists
 

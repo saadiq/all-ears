@@ -1,9 +1,17 @@
 # Plan: diarization (Sortformer via FluidAudio)
 
-Status: proposed. Implements the diarization stage that `docs/specs/model-interface.md`
-has specified-but-unimplemented since the protocol seam landed. First backend:
-NVIDIA **Sortformer** streaming diarizer, via FluidAudio (same dependency and
-Core ML/ANE path already used for Parakeet ASR).
+Status: **Phase 1 implemented** (offline pass). Implements the diarization stage that
+`docs/specs/model-interface.md` had specified-but-unimplemented since the protocol
+seam landed. First backend: NVIDIA **Sortformer** via FluidAudio (same dependency and
+Core ML/ANE path already used for Parakeet ASR). Phase 2 (the live `--follow` streaming
+pass over `StreamingDiarizer`) remains the tracked follow-up.
+
+Shipped in this change: `EarsCore` seams (`Diarizer.load`, `StreamingDiarizer`,
+`DiarizerState`); the `EarsDiarizeKit` target with `SortformerDiarizer`; the `[diarize]`
+config table; the `transcribe` pipeline wiring (config-selected factory, per-source
+offline diarize with graceful fallback, span-stitching across VAD slices); and
+span-aware label refinement in `TranscriptAssembly`. Build/behaviour is verified on
+macOS CI (the package targets macOS 15 + Apple Silicon ANE and cannot build on Linux).
 
 This plan follows the codebase's existing shape exactly: **capability-by-protocol
 seams in `EarsCore`, a thin tier-2 backend shim in its own target, config-selected

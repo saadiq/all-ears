@@ -144,7 +144,27 @@ prompt_file = "prompts/action-items.md"
 global = "vocab/global.txt"   # relative to data_root
 ```
 
-Transcription itself has no config table yet: `transcribe` always uses Parakeet via FluidAudio on the Apple Neural Engine, with VAD silence-skipping on. Model, backend, and diarization settings will get a `[transcribe]` table when there is more than one choice to make.
+Transcription uses Parakeet via FluidAudio on the Apple Neural Engine, with VAD silence-skipping on. The `[transcribe]` table selects the backend/model/compute (all optional — the defaults above are assumed):
+
+```toml
+# --- Transcription ---
+[transcribe]
+backend = "fluidaudio"   # ASR backend
+model = ""               # optional model id (e.g. "parakeet-tdt-v3"); empty = backend default
+compute = "automatic"    # "ane" | "gpu" | "cpu" | "automatic"
+```
+
+**Diarization** (splitting a multi-speaker far-end source into `Speaker N`) is a separate, opt-in stage — off by default, since it downloads a model and costs ANE time:
+
+```toml
+# --- Diarization ---
+[diarize]
+backend = "none"         # "none" (default) | "sortformer"
+model = ""               # optional model id override; empty = backend default
+compute = "automatic"    # "ane" | "gpu" | "cpu" | "automatic"
+```
+
+With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAudio) as an offline pass over each multi-speaker far-end source (`system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams) and refines those turns into `<source> · Speaker N`. Source-of-origin stays the primary label; the diarizer only adds the within-source split. A diarizer that fails to load or run is non-fatal: the transcript falls back to source-only labels. The Sortformer model downloads automatically on first use.
 
 ## Conventions
 

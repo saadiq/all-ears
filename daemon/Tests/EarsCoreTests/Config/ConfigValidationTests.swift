@@ -96,7 +96,8 @@ struct ConfigValidationTests {
   @Test(
     "keys from not-yet-implemented sections pass through unvalidated",
     arguments: [
-      "earsd", "transcribe", "llm", "cleanup", "summarize", "triggers", "vocab", "schema",
+      "earsd", "transcribe", "diarize", "llm", "cleanup", "summarize", "triggers", "vocab",
+      "schema",
     ]
   )
   func passthroughSectionsAreNotRejected(sectionKey: String) {

@@ -56,6 +56,13 @@ enum TranscribeRuntime {
     let compute = computePreference(
       stringValue(root, ["transcribe", "compute"], default: "automatic"))
 
+    // Diarization is opt-in (`[diarize].backend`, default "none"): it downloads
+    // a model and costs ANE time, so off by default per the zero-config rule.
+    let diarizeBackend = stringValue(root, ["diarize", "backend"], default: "none")
+    let diarizeModel = stringValue(root, ["diarize", "model"])
+    let diarizeCompute = computePreference(
+      stringValue(root, ["diarize", "compute"], default: "automatic"))
+
     // Same precedence and default as `ears`/`earsd` — for the best-effort
     // `job.publish` progress feed a `--meeting` run reports through.
     let socketPath =
@@ -72,6 +79,10 @@ enum TranscribeRuntime {
         loadOptions: LoadOptions(
           modelIdentifier: modelIdentifier.isEmpty ? nil : modelIdentifier,
           compute: compute),
+        diarizeBackendName: diarizeBackend,
+        diarizerLoadOptions: LoadOptions(
+          modelIdentifier: diarizeModel.isEmpty ? nil : diarizeModel,
+          compute: diarizeCompute),
         onError: { diagnostics.recordError($0) },
         onSummary: { diagnostics.recordSummary($0) })
     )
