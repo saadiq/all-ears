@@ -288,6 +288,117 @@ struct TranscriptAssemblyTests {
         == "system · Speaker 1")
   }
 
+  // MARK: - Per-speaker segment splitting (diarizedTurns)
+
+  /// A word-timed segment: one word per second, text = index, so a split's
+  /// piece boundaries are easy to read off the word list.
+  private func wordTimedSegment(words: [(String, Double, Double)]) -> Segment {
+    Segment(
+      start: words.first?.1 ?? 0,
+      end: words.last?.2 ?? 0,
+      text: words.map(\.0).joined(separator: " "),
+      words: words.map { WordTiming(text: $0.0, start: $0.1, end: $0.2) })
+  }
+
+  @Test("a single word-timed segment is split into one turn per speaker run")
+  func diarizedTurnsSplitsOneSegmentAcrossSpeakers() {
+    // Six words, 0–6s; Sortformer says 0–2 is Speaker 1, 2–4 Speaker 2, 4–6
+    // Speaker 1 again. This is the file-input bug: one whole-file ASR segment
+    // that must fan out into three speaker turns instead of collapsing to one.
+    let segment = wordTimedSegment(words: [
+      ("w0", 0, 1), ("w1", 1, 2), ("w2", 2, 3), ("w3", 3, 4), ("w4", 4, 5), ("w5", 5, 6),
+    ])
+    let spans = [
+      SpeakerSpan(start: 0, end: 2, speaker: "Speaker 1"),
+      SpeakerSpan(start: 2, end: 4, speaker: "Speaker 2"),
+      SpeakerSpan(start: 4, end: 6, speaker: "Speaker 1"),
+    ]
+
+    let turns = TranscriptAssembly.diarizedTurns(
+      source: "Dipanshu", base: "Dipanshu", segment: segment, spans: spans)
+
+    #expect(
+      turns.map(\.speaker) == [
+        "Dipanshu · Speaker 1", "Dipanshu · Speaker 2", "Dipanshu · Speaker 1",
+      ])
+    #expect(turns.map(\.segment.text) == ["w0 w1", "w2 w3", "w4 w5"])
+    // The split covers exactly the segment's own bounds, edge to edge.
+    #expect(turns.first?.segment.start == 0)
+    #expect(turns.last?.segment.end == 6)
+    // No word is lost across the split.
+    #expect(turns.flatMap(\.segment.words).count == segment.words.count)
+  }
+
+  @Test("a word in a gap between spans folds into the current speaker's turn")
+  func diarizedTurnsFoldsGapWords() {
+    // Word w2 (2–3s) lands in a silence gap the spans don't cover; it must join
+    // Speaker 1's ongoing turn rather than break out as a bare, speaker-less
+    // one-word fragment.
+    let segment = wordTimedSegment(words: [
+      ("w0", 0, 1), ("w1", 1, 2), ("w2", 2, 3), ("w3", 3, 4),
+    ])
+    let spans = [
+      SpeakerSpan(start: 0, end: 2, speaker: "Speaker 1"),
+      SpeakerSpan(start: 3, end: 4, speaker: "Speaker 1"),
+    ]
+
+    let turns = TranscriptAssembly.diarizedTurns(
+      source: "Dipanshu", base: "Dipanshu", segment: segment, spans: spans)
+
+    #expect(turns.count == 1)
+    #expect(turns.first?.speaker == "Dipanshu · Speaker 1")
+    #expect(turns.first?.segment.text == "w0 w1 w2 w3")
+  }
+
+  @Test("a single-speaker segment keeps its original authoritative text")
+  func diarizedTurnsSingleSpeakerKeepsSegment() {
+    // Every word resolves to Speaker 2, so the whole segment stays one turn and
+    // keeps its own `text` (not text re-joined from words).
+    let segment = Segment(
+      start: 0, end: 2, text: "hello, world!",
+      words: [
+        WordTiming(text: "hello", start: 0, end: 1), WordTiming(text: "world", start: 1, end: 2),
+      ])
+    let spans = [SpeakerSpan(start: 0, end: 2, speaker: "Speaker 2")]
+
+    let turns = TranscriptAssembly.diarizedTurns(
+      source: "call", base: "call", segment: segment, spans: spans)
+
+    #expect(turns.count == 1)
+    #expect(turns.first?.speaker == "call · Speaker 2")
+    #expect(turns.first?.segment.text == "hello, world!")
+  }
+
+  @Test("a wordless segment cannot be split and falls back to the midpoint label")
+  func diarizedTurnsWordlessFallsBackToMidpoint() {
+    // No word timings ⇒ no boundaries to cut on ⇒ one whole turn, labelled by
+    // the segment midpoint exactly as refinedLabel would.
+    let segment = Segment(start: 0, end: 6, text: "a whole wordless block")
+    let spans = [
+      SpeakerSpan(start: 0, end: 2, speaker: "Speaker 1"),
+      SpeakerSpan(start: 2, end: 6, speaker: "Speaker 2"),
+    ]
+
+    let turns = TranscriptAssembly.diarizedTurns(
+      source: "Dipanshu", base: "Dipanshu", segment: segment, spans: spans)
+
+    #expect(turns.count == 1)
+    #expect(turns.first?.speaker == "Dipanshu · Speaker 2")
+    #expect(turns.first?.segment.text == "a whole wordless block")
+  }
+
+  @Test("no spans leaves a word-timed segment as one unchanged base-labelled turn")
+  func diarizedTurnsNoSpansIsInert() {
+    let segment = wordTimedSegment(words: [("hi", 0, 1), ("there", 1, 2)])
+
+    let turns = TranscriptAssembly.diarizedTurns(
+      source: "mic", base: "You", segment: segment, spans: [])
+
+    #expect(turns.count == 1)
+    #expect(turns.first?.speaker == "You")
+    #expect(turns.first?.segment.text == "hi there")
+  }
+
   @Test("diarization refines a far-end source's turns while the mic is untouched")
   func diarizationRefinesFarEndNotMic() {
     let zoom = SourceTranscription(

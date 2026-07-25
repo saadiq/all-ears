@@ -5,21 +5,23 @@ import Testing
 
 @Suite("ParakeetTranscriber")
 struct ParakeetTranscriberTests {
-  @Test("advertises streaming (and only streaming) among the capability flags")
+  @Test("advertises streaming and word timings (not biasing) among the capability flags")
   func infoFlags() {
     let transcriber = ParakeetTranscriber()
     #expect(transcriber.info.supportsStreaming)
     #expect(!transcriber.info.supportsBiasing)
-    #expect(!transcriber.info.wordTimings)
+    // Word timings are reconstructed from FluidAudio's token timings so the
+    // diarizer's spans can split a segment by speaker.
+    #expect(transcriber.info.wordTimings)
     #expect(transcriber.info.languages == ["en"])
   }
 
-  @Test("capability casts match the info flags: streaming yes, the rest no")
+  @Test("capability casts match the info flags: streaming and word timings yes, biasing no")
   func capabilityConformancesMatchFlags() {
     let transcriber: any Transcriber = ParakeetTranscriber()
     #expect(transcriber as? StreamingTranscriber != nil)
     #expect(transcriber as? BiasingTranscriber == nil)
-    #expect(transcriber as? WordTimingTranscriber == nil)
+    #expect(transcriber as? WordTimingTranscriber != nil)
   }
 
   @Test("transcribing before load throws .notLoaded rather than touching FluidAudio")

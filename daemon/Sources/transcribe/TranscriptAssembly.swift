@@ -55,14 +55,82 @@ enum TranscriptAssembly {
   static func refinedLabel(
     base: String, segment: Segment, spans: [SpeakerSpan]
   ) -> String {
+    label(base: base, start: segment.start, end: segment.end, spans: spans)
+  }
+
+  /// Splits one source segment into per-speaker turns using the diarizer's
+  /// within-source `Speaker N` spans. Each word is attributed to the span
+  /// covering its midpoint (maximum-overlap fallback); a run of consecutive
+  /// words sharing a speaker becomes one turn, its text synthesised from those
+  /// words. This is what makes diarization visible when a single ``Transcriber``
+  /// segment covers a whole multi-speaker recording — e.g. a standalone `.m4a`
+  /// file, decoded as one slice, whose 4-speaker Sortformer output would
+  /// otherwise collapse to whichever speaker owns the segment's midpoint.
+  ///
+  /// Returns a single turn — the **original** segment untouched — when the
+  /// segment has no words, no spans cover it, or every word resolves to the
+  /// same speaker. So a single-speaker segment keeps its authoritative text
+  /// (not text re-joined from words), and a non-diarized transcript stays
+  /// byte-identical to before.
+  static func diarizedTurns(
+    source: SourceID, base: String, segment: Segment, spans: [SpeakerSpan]
+  ) -> [TranscriptSegment] {
+    func turn(_ speaker: String, _ seg: Segment) -> TranscriptSegment {
+      TranscriptSegment(source: source, speaker: speaker, segment: seg, sourceProvenance: false)
+    }
+    guard !spans.isEmpty, !segment.words.isEmpty else {
+      return [turn(refinedLabel(base: base, segment: segment, spans: spans), segment)]
+    }
+
+    // Group consecutive words by the speaker label covering each word, so an
+    // uninterrupted run by one speaker stays a single turn.
+    var groups: [(speaker: String, words: [WordTiming])] = []
+    for word in segment.words {
+      var speaker = label(base: base, start: word.start, end: word.end, spans: spans)
+      // A word landing in a silence gap *between* spans resolves to `base` (no
+      // `· Speaker N`). Rather than break the flow into a bare one-word turn,
+      // fold it into whoever is currently talking — the gap is a pause within
+      // their turn, not a new speaker. A leading gap (before any span) has no
+      // prior speaker and stays `base`.
+      if speaker == base, let last = groups.last { speaker = last.speaker }
+      if let lastIndex = groups.indices.last, groups[lastIndex].speaker == speaker {
+        groups[lastIndex].words.append(word)
+      } else {
+        groups.append((speaker, [word]))
+      }
+    }
+
+    // One speaker across the whole segment: keep the original segment (and its
+    // authoritative text), exactly as the midpoint-based label did.
+    guard groups.count > 1 else { return [turn(groups[0].speaker, segment)] }
+
+    // Preserve the segment's own outer bounds on the first/last pieces so the
+    // split covers exactly the original span with no gaps at the edges.
+    var result: [TranscriptSegment] = []
+    for (index, group) in groups.enumerated() {
+      let start = index == 0 ? segment.start : group.words[0].start
+      let end = index == groups.count - 1 ? segment.end : group.words[group.words.count - 1].end
+      result.append(turn(group.speaker, slice(segment, words: group.words, start: start, end: end)))
+    }
+    return result
+  }
+
+  /// The `base · Speaker N` label for the interval `[start, end)`: the span
+  /// covering its midpoint wins, else the maximum-overlap span, else `base`
+  /// unchanged (no spans, or none overlap). The shared core of both
+  /// ``refinedLabel`` (whole-segment) and per-word attribution in
+  /// ``diarizedTurns``.
+  private static func label(
+    base: String, start: Double, end: Double, spans: [SpeakerSpan]
+  ) -> String {
     guard !spans.isEmpty else { return base }
-    let midpoint = (segment.start + segment.end) / 2
+    let midpoint = (start + end) / 2
     if let covering = spans.first(where: { $0.start <= midpoint && midpoint < $0.end }) {
       return "\(base) · \(covering.speaker)"
     }
     var best: (span: SpeakerSpan, overlap: Double)?
     for span in spans {
-      let overlap = min(segment.end, span.end) - max(segment.start, span.start)
+      let overlap = min(end, span.end) - max(start, span.start)
       if overlap > 0, best == nil || overlap > best!.overlap {
         best = (span, overlap)
       }
@@ -91,12 +159,8 @@ enum TranscriptAssembly {
       let spans = diarization[transcription.sourceID] ?? []
       for segment in transcription.segments {
         turns.append(
-          TranscriptSegment(
-            source: transcription.sourceID,
-            speaker: refinedLabel(base: base, segment: segment, spans: spans),
-            segment: segment,
-            sourceProvenance: false
-          ))
+          contentsOf: diarizedTurns(
+            source: transcription.sourceID, base: base, segment: segment, spans: spans))
       }
     }
     let ordered = interleave(turns)

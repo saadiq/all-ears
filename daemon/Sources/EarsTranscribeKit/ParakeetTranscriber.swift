@@ -3,6 +3,12 @@ import EarsCore
 import FluidAudio
 import Foundation
 
+// Both `EarsCore` and `FluidAudio` export a `WordTiming`; a scoped import makes
+// an unqualified `WordTiming` in this file resolve to ours (the same
+// disambiguation `FileAudioReader` uses for `AudioBuffer`). FluidAudio's own
+// `WordTiming` is only ever named via `buildWordTimings`'s inferred return type.
+import struct EarsCore.WordTiming
+
 /// Errors specific to ``ParakeetTranscriber`` itself (as opposed to errors
 /// FluidAudio's `AsrManager` throws, which are propagated as-is).
 public enum ParakeetTranscriberError: Error, Sendable, Equatable {
@@ -24,13 +30,15 @@ public enum ParakeetTranscriberError: Error, Sendable, Equatable {
 ///
 /// - Conforms to ``Transcriber`` plus ``StreamingTranscriber`` (Phase 6:
 ///   ``step(_:state:)`` below, threading FluidAudio's real `TdtDecoderState`
-///   through ``DecoderState/backend``). It does **not** conform to
-///   ``BiasingTranscriber`` or ``WordTimingTranscriber`` yet, even though
-///   FluidAudio's `ASRResult` already carries `TokenTiming`s a later pass
-///   can reconstruct word timings from.
+///   through ``DecoderState/backend``) and ``WordTimingTranscriber``: both the
+///   batch and streaming decodes reconstruct per-word `[start, end)` spans from
+///   FluidAudio's `ASRResult.tokenTimings` (`reconstructWordTimings`), which is
+///   what lets the diarizer's `Speaker N` spans split a segment by speaker
+///   (``TranscriptAssembly/diarizedTurns``) and the timeline interleave cut on
+///   word boundaries. It does **not** conform to ``BiasingTranscriber`` yet.
 /// - Deliberately **not implemented** in this pass (tracked as separate
-///   follow-up work per the roadmap's Phase 2): SentencePiece word-timing
-///   reconstruction, trailing-silence padding before *batch* TDT decode
+///   follow-up work per the roadmap's Phase 2):
+///   trailing-silence padding before *batch* TDT decode
 ///   (FluidAudio issue #562; the streaming path covers it -- `step` pads a
 ///   short buffer up to FluidAudio's minimum, and `transcribe --follow`'s
 ///   finalization pass appends real trailing silence per window), model-cache
@@ -86,7 +94,8 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
       name: "parakeet-tdt-fluidaudio",
       version: versionString(for: modelVersion),
       languages: ["en"],
-      supportsStreaming: true
+      supportsStreaming: true,
+      wordTimings: true
     )
   }
 
@@ -113,7 +122,8 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
       name: "parakeet-tdt-fluidaudio",
       version: versionString(for: resolvedVersion),
       languages: ["en"],
-      supportsStreaming: true
+      supportsStreaming: true,
+      wordTimings: true
     )
   }
 
@@ -147,6 +157,7 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
           start: 0,
           end: audio.duration,
           text: result.text,
+          words: reconstructWordTimings(from: result),
           confidence: Double(result.confidence)
         )
       ]
@@ -236,9 +247,29 @@ extension ParakeetTranscriber: StreamingTranscriber {
         start: 0,
         end: frames.duration,
         text: text,
+        words: reconstructWordTimings(from: outcome.result),
         confidence: Double(outcome.result.confidence)
       )
     ]
+  }
+}
+
+extension ParakeetTranscriber: WordTimingTranscriber {}
+
+/// Reconstructs `EarsCore.WordTiming`s from a FluidAudio `ASRResult`'s token
+/// timings, so a `Segment` carries the per-word `[start, end)` spans the
+/// diarization split (``TranscriptAssembly/diarizedTurns``) and word-boundary
+/// interleave rely on. FluidAudio's `buildWordTimings` does the SentencePiece
+/// merge (`▁`-prefixed sub-word tokens joined into words); this only maps its
+/// value type into ours. Token times are relative to the decoded buffer's
+/// start, matching ``Segment``'s "seconds from the range start" convention, so
+/// they need no shift. Returns `[]` when the backend reported no token timings
+/// (older models / a pure-silence decode), leaving the segment wordless exactly
+/// as before.
+private func reconstructWordTimings(from result: ASRResult) -> [WordTiming] {
+  guard let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty else { return [] }
+  return buildWordTimings(from: tokenTimings).map { word in
+    WordTiming(text: word.word, start: word.startTime, end: word.endTime)
   }
 }
 
