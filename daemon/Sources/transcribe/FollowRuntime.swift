@@ -36,7 +36,11 @@ enum FollowRuntime {
     }
 
     let loaded: LoadedConfig
-    switch loadConfig(loadInputs) {
+    switch loadConfig(
+      loadInputs,
+      defaults: TranscribeConfigSchema.effectiveDefaults,
+      schema: TranscribeConfigSchema.effectiveSchema
+    ) {
     case .success(let value): loaded = value
     case .failure(let error):
       let message = describe(error)
