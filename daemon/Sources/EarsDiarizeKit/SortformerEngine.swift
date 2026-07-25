@@ -54,17 +54,20 @@ final class SortformerEngine: @unchecked Sendable {
       finalizeOnCompletion: true,
       progressCallback: nil
     )
-    // Built with an explicit loop rather than a chained `.sorted{}.map{}`:
-    // the chained form pushed the Swift type-checker past its time budget
-    // ("unable to type-check this expression in reasonable time").
-    let segments = timeline.finalizedSegments
+    // `DiarizerTimeline` exposes finalized segments per speaker slot
+    // (`speakers: [Int: DiarizerSpeaker]`), not as one flat array. Build the
+    // spans with an explicit loop rather than a chained
+    // `flatMap{}.sorted{}.map{}` — the chained form pushed the Swift
+    // type-checker past its time budget.
     var spans: [SortformerRawSpan] = []
-    spans.reserveCapacity(segments.count)
-    for segment in segments {
-      let start = Double(segment.startTime)
-      let end = Double(segment.endTime)
-      spans.append(
-        SortformerRawSpan(start: start, end: end, speakerIndex: segment.speakerIndex))
+    for speaker in timeline.speakers.values {
+      let speakerIndex = speaker.index
+      for segment in speaker.finalizedSegments {
+        let start = Double(segment.startTime)
+        let end = Double(segment.endTime)
+        spans.append(
+          SortformerRawSpan(start: start, end: end, speakerIndex: speakerIndex))
+      }
     }
     spans.sort { $0.start < $1.start }
     return spans
