@@ -1,7 +1,8 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import { installHook, hookDebugState } from "../lib/rtc-hook";
+import { installHook, hookDebugState, setMeetGraphSinks } from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
+import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
@@ -48,6 +49,15 @@ export default defineContentScript({
   world: "MAIN",
   main() {
     installHook();
+    // Meet audio-graph probe plumbing (rtc-hook.ts §graph probe). rtc-hook
+    // cannot import perf-main or audio-tap (audio-tap imports rtc-hook), so
+    // this realm's entrypoint — which already imports both — injects the two
+    // capabilities the probe needs: shipping records into the perf ring, and
+    // feeding a bridged stream into the real capture pipeline.
+    setMeetGraphSinks({
+      emitPerf: (metric, fields) => mainPerf().emit(metric, fields),
+      bridgeStream: (stream, id) => __devCaptureStream(stream, id),
+    });
 
     const host = location.host;
     const adapter = selectAdapter(host);

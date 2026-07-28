@@ -155,6 +155,45 @@ own capture events with the same `browser:<platform>:<participant>` source, so
 the two log streams join on timestamp and source. See `docs/logging.md` for the
 daemon half.
 
+## Meet audio-graph probe
+
+Meet builds (rolled out per call, 2026-07-24 capture) decode participant Opus
+inside WASM (NetEQ over SharedArrayBuffer) and play out through
+`AudioWorkletNode(processor="neteq-processor")` — encoded frames never enter
+JS, the `createEncodedStreams` tee reads nothing, and the receiver tracks stay
+live-but-silent. The graph probe (`lib/rtc-hook.ts` §graph probe +
+`lib/meet-audio-graph.ts`) instruments the WebAudio graph those builds actually
+use, to answer one question: **is the decoded audio still per participant
+(capturable) or already mixed before anything tappable?**
+
+- **Graph mapping** (`localStorage.__earsDebugAudio = "1"`): pass-through wraps
+  on `AudioNode.prototype.connect`/`disconnect` and the `AudioWorkletNode`
+  constructor feed a bounded registry (`GRAPH_MAX_NODES`) of node types,
+  worklet processor names, `createMediaStreamSource` input track ids, and
+  fan-in/out. The native call always runs first and its result is returned
+  untouched; all bookkeeping is try/caught. Counters surface in the popup's
+  debug report (`hookDebugState().graph`, `webaudio.netEqWorkletNodes`).
+- **Per-node energy**: each worklet node's output is branched into an
+  `AnalyserNode` in its own context (capped at `GRAPH_ENERGY_MAX_NODES`, no
+  onward connection — no playback). A shared 1 s sampler emits perf records
+  into the IndexedDB perf ring — they survive Meet's post-call redirect:
+  `meet_graph_energy` (per-node rms/peak series), `meet_graph_onset`
+  (rising-edge timestamps, the raw material for the offline join against
+  collections unmute edges), `meet_graph_summary` every 15 s (`verdict` —
+  `per-participant` / `correlated-mix` / `single-active-node` /
+  `ambiguous` / `insufficient-data` — plus pairwise envelope correlations),
+  and `meet_graph_topology` every 30 s (the graph as flat fields).
+- **Capture bridge** (`localStorage.__earsGraphBridge = "1"`, OFF by default,
+  requires the probe flag too): each `neteq-processor` node is branched into a
+  `MediaStreamAudioDestinationNode` and its stream fed through the REAL
+  capture pipeline (`__devCaptureStream`) under `graphtap-<n>` ids (capped at
+  `GRAPH_BRIDGE_MAX_NODES`); an audio-kind `MediaStreamTrackGenerator` — a
+  `MediaStreamTrack` already — bridges directly as `graphgen-<n>`. Diagnostic
+  mode for one call: it records real audio under placeholder ids to prove the
+  path end to end.
+- Probe output carries node ids, track ids, processor names, and counts only —
+  never participant display names.
+
 ## Constraints & MUST-NOT
 
 1. No whole-tab/display capture (`tabCapture`, `getDisplayMedia`) — post-mix audio can't be separated per participant.
