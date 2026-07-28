@@ -43,11 +43,14 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 // text <-- {"ok":true,"data":{}}
 ```
 
-Audio is one binary frame per PCM chunk, multiplexed by `stream_id` — no sequence number, since WebSocket rides TCP:
+Audio is one binary frame per PCM chunk, multiplexed by `stream_id`. Two shapes, discriminated by the first byte (a zero first byte is impossible in the legacy shape, since stream ids are never empty):
 
 ```
-[ u8 idLen ][ stream_id : idLen ASCII bytes ][ pcm_s16le bytes (mono, little-endian) ]
+legacy:   [ u8 idLen>0 ][ stream_id : idLen ASCII ][ pcm_s16le (mono, LE) ]
+extended: [ 0x00 ][ u8 ver=1 ][ u8 idLen ][ stream_id ][ u32le seq ][ f64le sentAt ][ pcm_s16le ]
 ```
+
+The extension always sends the extended shape. `seq` is per-stream monotonic (wrapping at 2^32) and `sentAt` is epoch ms stamped in the MAIN world when the frame left the capture path — not for ordering (WebSocket rides TCP), but so the daemon can compute one-way delay and tell a silent speaker from a stalled capture path. Frames queued while an `ingest.open` is in flight keep their original stamp, not their replay time. `earsd` accepts both shapes.
 
 At ~10 frames/s/participant (~3 KB each), message size is never a concern.
 

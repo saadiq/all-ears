@@ -39,10 +39,58 @@ export const DEBUG_REPORT_KEY = "debugReportNonce";
 export const DEBUG_LOG_KEY = "debugLogging";
 
 /**
+ * Boolean flag (storage.local) gating perf instrumentation (perf.ts). Covers
+ * the cheap tier: long-task observation, WebRTC video receive stats, and the
+ * counters on the relay/transport hops. Defaults to ON — the whole point is to
+ * have the numbers already collected when a call turns out to be choppy, and
+ * the cost is one timer per context plus a `getStats()` poll every 5s.
+ */
+export const PERF_ENABLED_KEY = "perfLogging";
+
+/**
+ * Boolean flag (storage.local) gating the expensive tier: per-audio-frame
+ * stage timing inside the capture path, and JS heap sampling. Defaults to OFF.
+ * The stage timing adds two `performance.now()` calls per stage per frame —
+ * cheap individually, but it runs ~50×/s per active speaker on the same thread
+ * Meet renders video on, so it stays opt-in.
+ */
+export const PERF_DETAIL_KEY = "perfDetail";
+
+/**
+ * Minutes per A/B arm (storage.local, number). Zero — the default — disables
+ * the experiment. Non-zero makes the MAIN world alternate capture on and off
+ * on that period and tag every perf record with the live arm, so one call
+ * yields matched windows.
+ *
+ * This genuinely stops recording during "off" arms. It is a diagnostic mode,
+ * not a background behavior, which is why it defaults off and why the popup
+ * says so at the point of use.
+ */
+export const PERF_AB_KEY = "perfAbMinutes";
+
+/**
  * Resolve the raw stored value to the effective toggle state. Capture defaults
  * to ON: only an explicit stored `false` disables it, so a missing key (fresh
  * install), a failed read, or a corrupt value never silently kills capture.
  */
 export function resolveCaptureToggleState(raw: unknown): boolean {
   return raw !== false;
+}
+
+/** Perf collection defaults ON; only an explicit `false` disables it. */
+export function resolvePerfToggleState(raw: unknown): boolean {
+  return raw !== false;
+}
+
+/** Detail tier defaults OFF; only an explicit `true` enables it. */
+export function resolvePerfDetailState(raw: unknown): boolean {
+  return raw === true;
+}
+
+/** Minutes per A/B arm, or 0 when disabled/absent/invalid. Clamped to a sane
+ * range so a fat-fingered value can't suspend capture for a whole call. */
+export function resolvePerfAbMinutes(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.max(n, 1), 30);
 }

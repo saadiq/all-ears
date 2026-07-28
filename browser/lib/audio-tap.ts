@@ -9,6 +9,8 @@ import {
 } from "./rtc-hook";
 import type { PlatformAdapter } from "./identity/adapter";
 import { postToIsolated, type ParticipantId, type Platform } from "./protocol";
+import { mainPerf, perfDetailEnabled, perfEnabled } from "./perf-main";
+import type { Counter, Gauge, Histogram } from "./perf";
 
 // The per-epoch capture sink. Owns the N→N map: one live MediaStreamTrack →
 // one isolated pipeline. Identity resolves through the adapter, degrading to a
@@ -32,6 +34,54 @@ interface Pipeline {
   stop(): void;
   /** Whether this pipeline has decoded at least one audio frame (debug report). */
   receiving(): boolean;
+}
+
+// ── Capture-path instrumentation ─────────────────────────────────────────────
+//
+// One group shared by every pipeline, not one per participant: the question is
+// what the capture path costs this thread in total, and per-participant series
+// would multiply the record count by the tile count for no extra insight.
+//
+// Stage boundaries mirror consume()'s structure exactly, so a hot stage names
+// the code to look at. Everything here is resolved once and cached — the hot
+// path does two boolean reads and, when the detail tier is off, nothing else.
+
+interface CaptureMetrics {
+  frame: Histogram;
+  downmix: Histogram;
+  speaking: Histogram;
+  debugLog: Histogram;
+  resample: Histogram;
+  accumulate: Histogram;
+  post: Histogram;
+  frames: Counter;
+  samples: Counter;
+  posted: Counter;
+  tracks: Gauge;
+  decodeQueue: Gauge;
+}
+
+let metricsCache: CaptureMetrics | null = null;
+
+function captureMetrics(): CaptureMetrics {
+  if (!metricsCache) {
+    const g = mainPerf().group("capture");
+    metricsCache = {
+      frame: g.histogram("frame"),
+      downmix: g.histogram("downmix"),
+      speaking: g.histogram("speaking"),
+      debugLog: g.histogram("debuglog"),
+      resample: g.histogram("resample"),
+      accumulate: g.histogram("accumulate"),
+      post: g.histogram("post"),
+      frames: g.counter("frames"),
+      samples: g.counter("samples"),
+      posted: g.counter("posted"),
+      tracks: g.gauge("tracks"),
+      decodeQueue: g.gauge("decode_queue"),
+    };
+  }
+  return metricsCache;
 }
 
 interface CaptureConfig {
@@ -270,6 +320,10 @@ function reconcile(): void {
     if (!pipelines.has(track)) sink(track, rec.stream, rec.transceiver);
   }
   cfg.adapter?.pollIdentities?.();
+  // Piggy-backed on the existing 3s sweep rather than adding a timer: the
+  // pipeline count is what per-frame cost scales with, so it's the denominator
+  // for every capture-stage number.
+  if (perfEnabled()) captureMetrics().tracks.set(pipelines.size);
 }
 
 /** Adapter identity, else a stable speaker-<n> so audio never blocks. */
@@ -467,6 +521,10 @@ class TrackCapture {
   private vCount = 0;
   private speaking = false; // edge-detection state, see SPEAK_THRESHOLD above — always tracked, not debug-only
   private readonly trackId: string;
+  /** Monotonic per-participant frame counter stamped on every posted PCM frame
+   * (wraps at 2^32 — ~2.7 years at this frame rate). Paired with a send
+   * timestamp so earsd can distinguish silence from a stalled delivery path. */
+  private seq = 0;
 
   constructor(
     private readonly participantId: ParticipantId,
@@ -542,6 +600,13 @@ class TrackCapture {
       this.silentWatchdog.noteFrame();
       console.debug(`[ears][capture] ✓ ${this.participantId} first audio frame — capture confirmed live`);
     }
+    // Two boolean reads per frame. The `performance.now()` calls below are
+    // detail-gated: at ~50 frames/s per active speaker they are cheap but not
+    // free, and this runs on the thread Meet renders video on.
+    const metrics = perfEnabled() ? captureMetrics() : null;
+    const detail = metrics !== null && perfDetailEnabled();
+    const t0 = detail ? performance.now() : 0;
+
     const inRate = frame.sampleRate;
     const nFrames = frame.numberOfFrames;
     const nCh = frame.numberOfChannels;
@@ -564,16 +629,22 @@ class TrackCapture {
         mono[i] = s / nCh;
       }
     }
+    const tDownmix = detail ? performance.now() : 0;
 
     // Always tracked (not debug-gated): MeetAdapter's collections-datachannel
     // correlation needs a real speaking-edge signal, not just a debug log —
     // see lib/identity/meet.ts and PlatformAdapter.onTrackSpeaking.
     this.updateSpeaking(mono);
+    const tSpeaking = detail ? performance.now() : 0;
+
     if (DEBUG_AUDIO_NOW()) this.debugLog(mono, inRate);
+    const tDebugLog = detail ? performance.now() : 0;
 
     // Resample native → 16 kHz and slice into fixed frames.
     if (!this.resampler) this.resampler = new LinearResampler(inRate, TARGET_SAMPLE_RATE);
     const out = this.resampler.process(mono);
+    const tResample = detail ? performance.now() : 0;
+
     for (let i = 0; i < out.length; i++) this.acc.push(out[i]!);
 
     while (this.acc.length >= FRAME_SAMPLES) {
@@ -587,8 +658,36 @@ class TrackCapture {
       }
       this.ring.push(int16);
     }
+    const tAccumulate = detail ? performance.now() : 0;
+
     for (const f of this.ring.drain()) {
-      postToIsolated({ kind: "pcm", participantId: this.participantId, generation: this.currentGeneration(), samples: f });
+      // seq is per-participant and monotonic across the pipeline's life; the
+      // daemon uses the pair to tell a silent speaker from a stalled extension.
+      this.seq = (this.seq + 1) >>> 0;
+      postToIsolated({
+        kind: "pcm",
+        participantId: this.participantId,
+        generation: this.currentGeneration(),
+        samples: f,
+        seq: this.seq,
+        sentAt: Date.now(),
+      });
+      metrics?.posted.add();
+    }
+
+    if (metrics) {
+      metrics.frames.add();
+      metrics.samples.add(nFrames);
+      if (detail) {
+        const tPost = performance.now();
+        metrics.downmix.observe(tDownmix - t0);
+        metrics.speaking.observe(tSpeaking - tDownmix);
+        metrics.debugLog.observe(tDebugLog - tSpeaking);
+        metrics.resample.observe(tResample - tDebugLog);
+        metrics.accumulate.observe(tAccumulate - tResample);
+        metrics.post.observe(tPost - tAccumulate);
+        metrics.frame.observe(tPost - t0);
+      }
     }
   }
 
@@ -1124,6 +1223,13 @@ export class MeetDecodeSource implements FrameSource {
     try {
       // Opus has no inter-frame prediction — every chunk is a keyframe.
       this.decoder.decode(new this.chunkCtor({ type: "key", timestamp: frame.timestamp, data: frame.data }));
+      // A queue that grows means decode is falling behind delivery — the one
+      // capture-path backlog that isn't visible from timing the JS stages,
+      // because WebCodecs decodes off-thread.
+      if (perfEnabled()) {
+        const depth = (this.decoder as { decodeQueueSize?: number }).decodeQueueSize;
+        if (typeof depth === "number") captureMetrics().decodeQueue.set(depth);
+      }
     } catch (err) {
       this.onDecoderError(`decode() threw: ${String(err)}`);
     }

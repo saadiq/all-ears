@@ -253,6 +253,38 @@
       .debug-actions .debug-btn {
         margin-top: 0;
       }
+      /* ── Perf section ──────────────────────────────────────────────────── */
+      .section-rule {
+        margin: 16px 0 10px;
+        border: 0;
+        border-top: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+      }
+      .section-title {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .perf-ab-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 12px;
+        font-size: 13px;
+      }
+      .perf-ab-row select {
+        font: inherit;
+        padding: 3px 6px;
+        border-radius: 6px;
+      }
+      .perf-warn {
+        margin-top: 6px;
+        min-height: 14px;
+        font-size: 11px;
+        color: var(--warn, #a4571b);
+      }
     </style>
   </head>
   <body>
@@ -306,6 +338,36 @@
         <button type="button" id="clear-log" class="debug-btn">Clear log</button>
       </div>
       <div id="debug-report-note" class="debug-note" aria-live="polite"></div>
+
+      <!-- Performance instrumentation. Tier 1 (long tasks, video receive
+           stats, transport counters) runs by default and has no control here;
+           these two switches govern the parts that cost something. -->
+      <hr class="section-rule" />
+      <div class="section-title">Performance</div>
+      <label class="row debug-log-row">
+        <span class="switch">
+          <input type="checkbox" role="switch" id="perf-detail-toggle" disabled />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </span>
+        <span>Per-frame stage timing</span>
+      </label>
+      <!-- Alternates capture on/off so one call yields matched windows. This
+           is the only way to tell "all-ears made the call choppy" from "the
+           call was choppy"; it costs the audio in the off windows. -->
+      <div class="perf-ab-row">
+        <label for="perf-ab-select">A/B capture experiment</label>
+        <select id="perf-ab-select" disabled>
+          <option value="0">Off</option>
+          <option value="2">2 min arms</option>
+          <option value="5">5 min arms</option>
+          <option value="10">10 min arms</option>
+        </select>
+      </div>
+      <div id="perf-note" class="perf-warn" aria-live="polite"></div>
+      <div class="debug-actions">
+        <button type="button" id="download-perf" class="debug-btn">Download perf</button>
+        <button type="button" id="clear-perf" class="debug-btn">Clear perf</button>
+      </div>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>

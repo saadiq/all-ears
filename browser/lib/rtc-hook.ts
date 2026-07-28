@@ -48,6 +48,7 @@ interface HookWindow extends Window {
   __earsOnTrack?: TrackSink;
   __earsLiveTracks?: Map<MediaStreamTrack, TrackRecord>;
   __earsEncodedAudioListeners?: Map<MediaStreamTrack, EncodedAudioListener>;
+  __earsLivePCs?: Set<RTCPeerConnection>;
   RTCPeerConnection: typeof RTCPeerConnection;
 }
 
@@ -60,6 +61,30 @@ export function liveTracks(): Map<MediaStreamTrack, TrackRecord> {
   const g = hw();
   if (!g.__earsLiveTracks) g.__earsLiveTracks = new Map();
   return g.__earsLiveTracks;
+}
+
+/**
+ * The shared registry of peer connections this realm has constructed, kept so
+ * the perf collector can poll `getStats()` for inbound *video* receive quality
+ * (perf-sources.ts). The hook already sees every construction; nothing else in
+ * the capture path needs the connection objects themselves, which is why this
+ * registry did not exist before.
+ *
+ * Entries are dropped when the connection closes or fails, so a long call that
+ * renegotiates repeatedly doesn't accumulate dead objects.
+ */
+export function livePeerConnections(): Set<RTCPeerConnection> {
+  const g = hw();
+  if (!g.__earsLivePCs) g.__earsLivePCs = new Set();
+  return g.__earsLivePCs;
+}
+
+function registerPeerConnection(pc: RTCPeerConnection): void {
+  const registry = livePeerConnections();
+  registry.add(pc);
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "closed" || pc.connectionState === "failed") registry.delete(pc);
+  });
 }
 
 /** Point the singleton hook at the newest epoch's sink. */
@@ -82,6 +107,7 @@ function dispatchTrack(e: RTCTrackEvent): void {
 
 function onPeerConnection(pc: RTCPeerConnection): void {
   pc.addEventListener("track", dispatchTrack);
+  registerPeerConnection(pc);
   if (location.host === "meet.google.com") installMeetCollectionsTracer(pc);
   if (location.host === "meet.google.com" && debugChannelsEnabled()) installChannelTracer(pc);
 

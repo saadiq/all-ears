@@ -5,9 +5,17 @@ import { ControlSocket } from "../lib/control-transport";
 import { MeetingTracker, type BadgeState, type MeetingState } from "../lib/meeting-tracker";
 import { applyActionBadge } from "../lib/action-badge";
 import { KEEPALIVE_ALARM, SessionTracker } from "../lib/session-state";
-import { DEBUG_LOG_KEY } from "../lib/capture-toggle";
+import { DEBUG_LOG_KEY, PERF_ENABLED_KEY, resolvePerfToggleState } from "../lib/capture-toggle";
 import { createBatcher, installConsoleTap, type LogEntry } from "../lib/debug-log";
-import { appendEntries, clearEntries, readAllEntries } from "../lib/log-store";
+import {
+  appendEntries,
+  appendPerfRecords,
+  clearEntries,
+  clearPerfRecords,
+  readAllEntries,
+  readAllPerfRecords,
+} from "../lib/log-store";
+import { PerfCollector, type PerfRecord } from "../lib/perf";
 import type { PortMessage } from "../lib/protocol";
 
 // Background context: owns the two WebSockets to earsd. The ingest socket
@@ -113,6 +121,48 @@ export default defineBackground(() => {
     .then((v) => setDebugLogging((v as Record<string, unknown>)[DEBUG_LOG_KEY] === true))
     .catch(() => {});
 
+  // ── Perf: the store for every context's records, plus this one's own ──────
+  // The background is the only context with IndexedDB for the extension origin,
+  // so MAIN-world and relay records funnel here. It also owns the ingest socket,
+  // which makes it the only place that can see transport back-pressure.
+  let perfEnabled = true;
+  const perf = new PerfCollector("bg", (records) => void persistPerf(records));
+  const transportGroup = perf.group("transport");
+  const transport = {
+    buffered: transportGroup.gauge("buffered_bytes"),
+    sent: transportGroup.counter("frames_sent"),
+    bytes: transportGroup.counter("bytes_sent"),
+    dropped: transportGroup.counter("frames_dropped"),
+    queued: transportGroup.gauge("frames_queued"),
+  };
+  socket.perf = transport;
+
+  function persistPerf(records: PerfRecord[]): void {
+    if (!perfEnabled || records.length === 0) return;
+    void appendPerfRecords(records).catch(() => {});
+  }
+
+  function setPerfEnabled(on: boolean): void {
+    if (on === perfEnabled) return;
+    perfEnabled = on;
+    if (on) perf.start(1000);
+    else {
+      perf.stop();
+      perf.flush();
+    }
+  }
+
+  browser.storage.local
+    .get(PERF_ENABLED_KEY)
+    .then((v) => {
+      perfEnabled = false; // force setPerfEnabled to act on the resolved value
+      setPerfEnabled(resolvePerfToggleState((v as Record<string, unknown>)[PERF_ENABLED_KEY]));
+    })
+    .catch(() => {
+      perfEnabled = false;
+      setPerfEnabled(true);
+    });
+
   // v2 recovery loop: every (re)connect hands the tracker a fresh snapshot,
   // and it re-declares whatever the DOM says is live (meeting.start is
   // idempotent). Job telemetry drives the "transcribing" badge with real
@@ -164,6 +214,8 @@ export default defineBackground(() => {
     if (cc && Number.isInteger(Number(cc.newValue))) control.setPort(Number(cc.newValue));
     const dl = changes[DEBUG_LOG_KEY];
     if (dl) setDebugLogging(dl.newValue === true);
+    const pf = changes[PERF_ENABLED_KEY];
+    if (pf) setPerfEnabled(resolvePerfToggleState(pf.newValue));
   });
 
   const counts = new Map<string, number>();
@@ -217,6 +269,7 @@ export default defineBackground(() => {
             msg.platform,
             pcm,
             meetings.externalIdFor(portId, msg.platform),
+            { seq: msg.seq, sentAt: msg.sentAt },
           );
           const n = (counts.get(msg.participantId) ?? 0) + 1;
           counts.set(msg.participantId, n);
@@ -244,12 +297,43 @@ export default defineBackground(() => {
 
   // Popup queries and the pause-transcription toggle.
   browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    const m = msg as { kind?: string; paused?: boolean; entries?: LogEntry[] };
+    const m = msg as {
+      kind?: string;
+      paused?: boolean;
+      entries?: LogEntry[];
+      records?: PerfRecord[];
+      arm?: string;
+      cycle?: number;
+    };
     // Debug-log traffic: batches forwarded from the relay/hook, plus the
     // popup's export/clear requests.
     if (m.kind === "log-batch") {
       if (debugLogging && m.entries?.length) void appendEntries(m.entries).catch(() => {});
       return undefined; // fire-and-forget
+    }
+    // Perf traffic. Separate channel and separate ring from the console log —
+    // see perf.ts for why these must not share the console tap.
+    if (m.kind === "perf-batch") {
+      if (m.records?.length) persistPerf(m.records);
+      return undefined; // fire-and-forget
+    }
+    if (m.kind === "perf-arm") {
+      // Mirror the relay's A/B arm so this context's records carry it too.
+      perf.tag("arm", m.arm);
+      perf.tag("ab_cycle", m.cycle);
+      return undefined;
+    }
+    if (m.kind === "get-perf-log") {
+      readAllPerfRecords()
+        .then((records) => sendResponse({ records }))
+        .catch(() => sendResponse({ records: [] }));
+      return true;
+    }
+    if (m.kind === "clear-perf-log") {
+      clearPerfRecords()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
     }
     if (m.kind === "get-debug-log") {
       readAllEntries()

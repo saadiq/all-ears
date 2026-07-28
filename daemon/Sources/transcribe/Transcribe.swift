@@ -137,7 +137,7 @@ struct Transcribe: AsyncParsableCommand {
     let diagnostics = RunDiagnostics()
     let exitCode = await EarsCLI.run(
       tool: "transcribe", version: "0.1.0", arguments: arguments
-    ) { _ in
+    ) { bootstrap in
       if !files.isEmpty {
         return await TranscribeRuntime.runFiles(
           arguments: arguments,
@@ -150,12 +150,15 @@ struct Transcribe: AsyncParsableCommand {
           inputs: TranscribeFollowPipeline.Inputs(source: follow, json: json, out: out),
           diagnostics: diagnostics)
       }
+      // Stage spans go to the same sink as run.start/run.summary, so per-stage
+      // timing correlates with the run it belongs to (docs/logging.md).
       return await TranscribeRuntime.run(
         arguments: arguments,
         inputs: TranscribePipeline.Inputs(
           last: last, from: from, to: to, session: session, meeting: meeting, sourceIDs: sources,
           out: out),
-        diagnostics: diagnostics)
+        diagnostics: diagnostics,
+        spans: bootstrap.stageSpans(tool: "transcribe"))
     }
     guard exitCode == 0 else { throw ExitCode(exitCode) }
   }

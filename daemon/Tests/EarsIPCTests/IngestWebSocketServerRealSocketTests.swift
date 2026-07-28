@@ -83,7 +83,7 @@ struct IngestWebSocketServerRealSocketTests {
       listener: listener,
       allowedOrigins: ["test-origin"],
       onOpen: { source, _, _ in await sink.open(source) },
-      onPush: { _, _, _ in },
+      onPush: { _, _, _, _ in },
       onClose: { _ in })
     let runner = Task { await server.run() }
 

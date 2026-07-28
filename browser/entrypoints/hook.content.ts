@@ -6,6 +6,7 @@ import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
+import { perfTag, setPerfState } from "../lib/perf-main";
 // Side-effect imports: each adapter registers itself with selectAdapter.
 import "../lib/identity/meet";
 import "../lib/identity/zoom";
@@ -56,6 +57,34 @@ export default defineContentScript({
     let captureOn = false;
     let stopMeetingWatch: (() => void) | null = null;
     let lastMeetingId: string | null = null;
+    // A/B arm suspension is tracked separately from the user-facing toggle so
+    // neither can clobber the other: the experiment must never re-enable
+    // capture the user turned off, and clearing the experiment must restore
+    // whatever the user's own setting was.
+    let abSuspended = false;
+
+    perfTag("platform", platform);
+
+    /** Capture runs only when the user's toggle is on AND no A/B off-arm is
+     * active. Called on every change to either input; idempotent. */
+    const applyCaptureState = (): void => {
+      const shouldRun = captureOn && !abSuspended;
+      const running = stopMeetingWatch !== null;
+      if (shouldRun === running) return;
+      if (shouldRun) {
+        startEpoch(platform, adapter);
+        stopMeetingWatch = startMeetingWatch(platform, (id) => {
+          lastMeetingId = id;
+          perfTag("meeting", id);
+        });
+      } else {
+        stopCapture();
+        stopMeetingWatch?.();
+        stopMeetingWatch = null;
+        lastMeetingId = null;
+        perfTag("meeting", undefined);
+      }
+    };
 
     // On-demand state snapshot for the popup's "Report state" button. Dumps to
     // THIS tab's console (where the [ears] logs already live) so it can be read
@@ -104,18 +133,23 @@ export default defineContentScript({
         setDebugLogging(msg.enabled);
         return;
       }
+      if (msg.kind === "perf-state") {
+        setPerfState(msg.enabled, msg.detail);
+        return;
+      }
+      if (msg.kind === "capture-suspend") {
+        if (msg.suspended === abSuspended) return;
+        abSuspended = msg.suspended;
+        // Tag before applying, so the record covering the switch is already
+        // attributed to the arm it belongs to.
+        perfTag("arm", msg.arm);
+        console.debug(`[ears][perf] A/B arm ${msg.arm} — capture ${msg.suspended ? "suspended" : "resumed"}`);
+        applyCaptureState();
+        return;
+      }
       if (msg.kind !== "capture-state" || msg.enabled === captureOn) return;
       captureOn = msg.enabled;
-      if (captureOn) {
-        startEpoch(platform, adapter);
-        stopMeetingWatch?.();
-        stopMeetingWatch = startMeetingWatch(platform, (id) => (lastMeetingId = id));
-      } else {
-        stopCapture();
-        stopMeetingWatch?.();
-        stopMeetingWatch = null;
-        lastMeetingId = null;
-      }
+      applyCaptureState();
     });
 
     // Dev-only: simulate a re-injection (new epoch in the same realm) so the

@@ -139,7 +139,7 @@ struct IngestWebSocketServerTests {
       listener: listener,
       allowedOrigins: allowedOrigins,
       onOpen: { source, format, meeting in try await sink.open(source, format, meeting) },
-      onPush: { streamID, samples, rate in await sink.push(streamID, samples, rate) },
+      onPush: { streamID, samples, rate, _ in await sink.push(streamID, samples, rate) },
       onClose: { streamID in await sink.close(streamID) })
     return (server, listener)
   }

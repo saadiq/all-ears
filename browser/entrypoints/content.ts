@@ -4,10 +4,18 @@ import {
   CAPTURE_ENABLED_KEY,
   DEBUG_LOG_KEY,
   DEBUG_REPORT_KEY,
+  PERF_AB_KEY,
+  PERF_DETAIL_KEY,
+  PERF_ENABLED_KEY,
   resolveCaptureToggleState,
+  resolvePerfAbMinutes,
+  resolvePerfDetailState,
+  resolvePerfToggleState,
 } from "../lib/capture-toggle";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { ReconnectingPort } from "../lib/pcm-port";
+import { AbExperiment } from "../lib/perf-ab";
+import { Counter, Histogram, PerfCollector } from "../lib/perf";
 import {
   isMainEnvelope,
   postToMain,
@@ -74,6 +82,75 @@ export default defineContentScript({
       .then((v) => setDebugLogging((v as Record<string, unknown>)[DEBUG_LOG_KEY] === true))
       .catch(() => {});
 
+    // ── Perf instrumentation (perf.ts) ────────────────────────────────────────
+    // This world both relays the MAIN world's records and collects its own: the
+    // base64 hop below runs here, on the same thread as the page, so its cost
+    // belongs in the same picture as the capture path's.
+    const perf = new PerfCollector("relay", (records) =>
+      browser.runtime.sendMessage({ kind: "perf-batch", records }).catch(() => {}),
+    );
+    const relayGroup = perf.group("relay");
+    const relayMetrics: RelayMetrics = {
+      encode: relayGroup.histogram("encode"),
+      frames: relayGroup.counter("frames"),
+      bytes: relayGroup.counter("bytes"),
+      dropped: relayGroup.counter("dropped"),
+      unknownParticipant: relayGroup.counter("dropped_no_identity"),
+      detail: false,
+    };
+    let perfOn = false;
+    const applyPerfState = (enabled: boolean, detail: boolean): void => {
+      postToMain({ kind: "perf-state", enabled, detail });
+      relayMetrics.detail = enabled && detail;
+      if (enabled === perfOn) return;
+      perfOn = enabled;
+      if (enabled) perf.start(1000);
+      else {
+        perf.stop();
+        perf.flush();
+      }
+    };
+
+    // The A/B driver lives here rather than in the MAIN world because it needs
+    // storage, and it broadcasts each arm to both neighbours so every context's
+    // records carry the same tag.
+    let ab: AbExperiment | null = null;
+    const applyArm = (arm: { name: string; suspended: boolean; cycle: number }): void => {
+      perf.tag("arm", arm.name);
+      perf.tag("ab_cycle", arm.cycle);
+      postToMain({ kind: "capture-suspend", suspended: arm.suspended, arm: arm.name });
+      browser.runtime.sendMessage({ kind: "perf-arm", arm: arm.name, cycle: arm.cycle }).catch(() => {});
+    };
+    const applyAbMinutes = (minutes: number): void => {
+      if (ab?.running) ab.stop();
+      ab = null;
+      if (minutes <= 0) {
+        // stop() already restored the "on" arm; clear the tags so later records
+        // aren't attributed to an experiment that is no longer running.
+        perf.tag("arm", undefined);
+        perf.tag("ab_cycle", undefined);
+        return;
+      }
+      console.warn(
+        `[ears][perf] A/B capture experiment on: alternating every ${minutes} min. ` +
+          "Audio is NOT recorded during off arms.",
+      );
+      ab = new AbExperiment(minutes, applyArm);
+      ab.start();
+    };
+
+    browser.storage.local
+      .get([PERF_ENABLED_KEY, PERF_DETAIL_KEY, PERF_AB_KEY])
+      .then((v) => {
+        const record = v as Record<string, unknown>;
+        applyPerfState(
+          resolvePerfToggleState(record[PERF_ENABLED_KEY]),
+          resolvePerfDetailState(record[PERF_DETAIL_KEY]),
+        );
+        applyAbMinutes(resolvePerfAbMinutes(record[PERF_AB_KEY]));
+      })
+      .catch(() => applyPerfState(true, false)); // unreadable ⇒ tier 1 default
+
     browser.storage.local.onChanged?.addListener?.((changes) => {
       const c = changes[CAPTURE_ENABLED_KEY];
       if (c) publishToggle(c.newValue);
@@ -82,6 +159,20 @@ export default defineContentScript({
       if (changes[DEBUG_REPORT_KEY]) postToMain({ kind: "report-state" });
       const dl = changes[DEBUG_LOG_KEY];
       if (dl) setDebugLogging(dl.newValue === true);
+      if (changes[PERF_ENABLED_KEY] || changes[PERF_DETAIL_KEY]) {
+        void browser.storage.local
+          .get([PERF_ENABLED_KEY, PERF_DETAIL_KEY])
+          .then((v) => {
+            const record = v as Record<string, unknown>;
+            applyPerfState(
+              resolvePerfToggleState(record[PERF_ENABLED_KEY]),
+              resolvePerfDetailState(record[PERF_DETAIL_KEY]),
+            );
+          })
+          .catch(() => {});
+      }
+      const abChange = changes[PERF_AB_KEY];
+      if (abChange) applyAbMinutes(resolvePerfAbMinutes(abChange.newValue));
     });
 
     // Lifecycle facts this document knows, mirrored from the hook's messages:
@@ -127,10 +218,22 @@ export default defineContentScript({
     window.addEventListener("message", (event: MessageEvent) => {
       if (event.source !== window) return; // only same-window
       if (!isMainEnvelope(event.data)) return;
-      relay(event.data.msg, port, state);
+      relay(event.data.msg, port, state, relayMetrics, perf);
     });
   },
 });
+
+/** The relay hop's instruments, resolved once and handed to `relay()` so the
+ * per-frame path never looks anything up. `detail` gates the timing calls
+ * themselves — the counters are cheap enough to always run. */
+interface RelayMetrics {
+  encode: Histogram;
+  frames: Counter;
+  bytes: Counter;
+  dropped: Counter;
+  unknownParticipant: Counter;
+  detail: boolean;
+}
 
 interface RelayState {
   // participantId → identity, learned from participant-joined (which precedes
@@ -163,9 +266,16 @@ function groupRosterByPlatform(
   return byPlatform;
 }
 
-function relay(msg: MainMessage, port: ReconnectingPort, state: RelayState): void {
+function relay(
+  msg: MainMessage,
+  port: ReconnectingPort,
+  state: RelayState,
+  metrics: RelayMetrics,
+  perf: PerfCollector,
+): void {
   switch (msg.kind) {
     case "participant-joined":
+      perf.tag("platform", msg.platform);
       state.participants.set(msg.participantId, {
         platform: msg.platform,
         ...(msg.displayName ? { displayName: msg.displayName } : {}),
@@ -245,11 +355,36 @@ function relay(msg: MainMessage, port: ReconnectingPort, state: RelayState): voi
       });
       console.debug(`[ears][relay] meeting ended: ${msg.platform}/${msg.externalMeetingId}`);
       break;
+    case "perf":
+      // MAIN-world records; hand them straight to the background store. Kept
+      // off the console-tap path on purpose (see perf.ts).
+      if (msg.records.length) {
+        browser.runtime.sendMessage({ kind: "perf-batch", records: msg.records }).catch(() => {});
+      }
+      break;
     case "pcm": {
       const platform = state.participants.get(msg.participantId)?.platform;
-      if (!platform) return; // no join seen yet; drop until identity is known
+      if (!platform) {
+        metrics.unknownParticipant.add();
+        return; // no join seen yet; drop until identity is known
+      }
       const bytes = new Uint8Array(msg.samples.buffer, msg.samples.byteOffset, msg.samples.byteLength);
-      port.post({ type: "pcm", participantId: msg.participantId, platform, b64: bytesToBase64(bytes) });
+      // base64 allocates a string the size of the frame on this thread — the
+      // same thread the page renders on — so it is measured, not assumed cheap.
+      const started = metrics.detail ? performance.now() : 0;
+      const b64 = bytesToBase64(bytes);
+      if (metrics.detail) metrics.encode.observe(performance.now() - started);
+      metrics.frames.add();
+      metrics.bytes.add(bytes.byteLength);
+      const sent = port.post({
+        type: "pcm",
+        participantId: msg.participantId,
+        platform,
+        b64,
+        seq: msg.seq,
+        sentAt: msg.sentAt,
+      });
+      if (!sent) metrics.dropped.add();
       break;
     }
   }

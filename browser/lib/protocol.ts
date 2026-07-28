@@ -6,6 +6,7 @@
 // "win" = window.postMessage (main↔isolated). "rt" = chrome.runtime (browser.*).
 
 import type { LogEntry } from "./debug-log";
+import type { PerfRecord } from "./perf";
 
 /** Marker on every window.postMessage envelope crossing the world boundary. */
 export const EARS_MARKER = "__ears" as const;
@@ -44,7 +45,19 @@ export type MainMessage =
   // event): a roster entry carries only identity, so names reach the daemon even
   // for a participant whose track never correlated to a device id (issue #23).
   | { kind: "participant-roster"; platform: Platform; entries: RosterEntry[] }
-  | { kind: "pcm"; participantId: ParticipantId; generation: number; samples: Int16Array }
+  // `seq` is per-participant and monotonic from the first frame of the
+  // pipeline; `sentAt` is epoch ms at the moment the MAIN world handed the
+  // frame over. Both ride all the way to earsd (see encodeBinaryFrame), which
+  // uses them to tell a silent speaker apart from a stalled extension — a
+  // distinction the ingest wire previously could not express at all.
+  | {
+      kind: "pcm";
+      participantId: ParticipantId;
+      generation: number;
+      samples: Int16Array;
+      seq: number;
+      sentAt: number;
+    }
   // A confirmed identity for a participant whose capture pipeline can no
   // longer be restarted under the new id (the track died before the Meet
   // collections correlation confirmed — the Etel case). The audio already
@@ -69,7 +82,11 @@ export type MainMessage =
   // Debug logging only: a batch of the MAIN-world hook's tapped console
   // entries, which the isolated relay forwards to the background's log store.
   // The MAIN world has no extension APIs, so this is its only route to disk.
-  | { kind: "log"; entries: LogEntry[] };
+  | { kind: "log"; entries: LogEntry[] }
+  // A flush of the MAIN world's perf collector (perf.ts). Kept off the `log`
+  // channel on purpose: these must not pass through the console tap, whose
+  // synchronous serialization runs on the thread being measured.
+  | { kind: "perf"; records: PerfRecord[] };
 
 /** The envelope actually posted; `event.source === window` + marker gate it. */
 export interface MainEnvelope {
@@ -113,7 +130,17 @@ export type ControlMessage =
   // Debug logging flag, mirrored from storage.local (which the MAIN world
   // can't read) so the hook installs/removes its console tap. Same
   // storage ⇄ content ⇄ MAIN path as capture-state.
-  | { kind: "debug-log-state"; enabled: boolean };
+  | { kind: "debug-log-state"; enabled: boolean }
+  // Perf instrumentation flags, same mirroring path. `enabled` gates the
+  // whole collector (Tier 1: long tasks, video stats, counters); `detail`
+  // additionally gates the per-audio-frame stage timing and heap sampling,
+  // which cost more than they should to leave on unattended.
+  | { kind: "perf-state"; enabled: boolean; detail: boolean }
+  // A/B experiment arm. Suspending stops capture the same way toggling the
+  // user-facing switch off does, but is session-scoped and self-reverting, so
+  // one call yields matched on/off windows under identical conditions. Audio
+  // is genuinely not recorded while suspended — see perf-ab.ts.
+  | { kind: "capture-suspend"; suspended: boolean; arm: string };
 
 export interface ControlEnvelope {
   [EARS_CTL_MARKER]: true;
@@ -142,7 +169,14 @@ export function isControlEnvelope(data: unknown): data is ControlEnvelope {
  * binary. Lifecycle events share the port so the transport can ingest.close.
  */
 export type PortMessage =
-  | { type: "pcm"; participantId: ParticipantId; platform: Platform; b64: string }
+  | {
+      type: "pcm";
+      participantId: ParticipantId;
+      platform: Platform;
+      b64: string;
+      seq: number;
+      sentAt: number;
+    }
   // Participant identity (with display name, when the DOM knows it) — what
   // the background upserts onto the daemon meeting's roster.
   | { type: "joined"; participantId: ParticipantId; platform: Platform; displayName?: string }
@@ -285,15 +319,74 @@ export const controlRequest = {
 };
 
 /**
- * Binary PCM frame: [u8 idLen][stream_id ASCII][pcm_s16le bytes]. stream_id is
- * short (earsd assigns "s7"-style ids), so it always fits a u8 length.
+ * Binary PCM frame. Two wire shapes, distinguished by the first byte:
+ *
+ *   legacy:   [u8 idLen>0][stream_id ASCII][pcm_s16le]
+ *   extended: [0x00][u8 ver=1][u8 idLen][stream_id ASCII][u32le seq][f64le sentAt][pcm_s16le]
+ *
+ * A zero first byte is impossible in the legacy shape — earsd assigns non-empty
+ * "s7"-style stream ids — which is what makes it a safe discriminator. earsd
+ * parses both, so a daemon upgraded ahead of the extension keeps working.
+ *
+ * `seq` is per-stream and monotonic (wrapping at 2^32, ~2.7 years at 50 fps);
+ * `sentAt` is epoch ms. Together they let the daemon compute one-way delay and
+ * detect genuinely lost frames instead of inferring both from arrival times.
  */
-export function encodeBinaryFrame(streamId: string, pcm: Uint8Array): Uint8Array {
+export const INGEST_FRAME_VERSION = 1;
+
+export function encodeBinaryFrame(
+  streamId: string,
+  pcm: Uint8Array,
+  stamp?: { seq: number; sentAt: number },
+): Uint8Array {
   const idBytes = new TextEncoder().encode(streamId);
   if (idBytes.length > 255) throw new Error(`stream_id too long: ${streamId}`);
-  const out = new Uint8Array(1 + idBytes.length + pcm.length);
-  out[0] = idBytes.length;
-  out.set(idBytes, 1);
-  out.set(pcm, 1 + idBytes.length);
+  if (idBytes.length === 0) throw new Error("stream_id must not be empty");
+  if (!stamp) {
+    const out = new Uint8Array(1 + idBytes.length + pcm.length);
+    out[0] = idBytes.length;
+    out.set(idBytes, 1);
+    out.set(pcm, 1 + idBytes.length);
+    return out;
+  }
+  const headerLen = 3 + idBytes.length + 4 + 8;
+  const out = new Uint8Array(headerLen + pcm.length);
+  out[0] = 0;
+  out[1] = INGEST_FRAME_VERSION;
+  out[2] = idBytes.length;
+  out.set(idBytes, 3);
+  // Unaligned by construction; DataView handles that, a typed-array view would not.
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  view.setUint32(3 + idBytes.length, stamp.seq >>> 0, true);
+  view.setFloat64(3 + idBytes.length + 4, stamp.sentAt, true);
+  out.set(pcm, headerLen);
   return out;
+}
+
+/** Inverse of {@link encodeBinaryFrame}; exists for tests and for the dev
+ * harness, which replays captured frames without a daemon. */
+export function decodeBinaryFrame(
+  frame: Uint8Array,
+): { streamId: string; pcm: Uint8Array; seq?: number; sentAt?: number } | null {
+  if (frame.length < 1) return null;
+  const decoder = new TextDecoder();
+  const idLen = frame[0]!;
+  if (idLen > 0) {
+    if (frame.length < 1 + idLen) return null;
+    return {
+      streamId: decoder.decode(frame.subarray(1, 1 + idLen)),
+      pcm: frame.subarray(1 + idLen),
+    };
+  }
+  if (frame.length < 3 || frame[1] !== INGEST_FRAME_VERSION) return null;
+  const extLen = frame[2]!;
+  const headerLen = 3 + extLen + 12;
+  if (extLen === 0 || frame.length < headerLen) return null;
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  return {
+    streamId: decoder.decode(frame.subarray(3, 3 + extLen)),
+    seq: view.getUint32(3 + extLen, true),
+    sentAt: view.getFloat64(3 + extLen + 4, true),
+    pcm: frame.subarray(headerLen),
+  };
 }

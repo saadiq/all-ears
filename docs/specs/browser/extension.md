@@ -108,12 +108,52 @@ Two capture mechanisms, selected per platform, both terminating in the same down
 
 ## Messaging & state
 
-- **Main → isolated:** `window.postMessage({ __ears: true, ... })`, filtered on the marker and `event.source === window`. PCM frames carry `participantId`, `seq`, and the payload.
+- **Main → isolated:** `window.postMessage({ __ears: true, ... })`, filtered on the marker and `event.source === window`. PCM frames carry `participantId`, `seq`, `sentAt`, and the payload. `seq`/`sentAt` ride all the way to earsd on the extended ingest frame, which is what lets the daemon tell a silent speaker from a stalled extension.
 - **Isolated → main:** `{ __earsCtl: true, ... }` — mirrors the capture toggle (and every change) into the page realm as `capture-state` messages.
 - **Isolated → background:** PCM rides a dedicated long-lived `runtime.connect` port (`lib/pcm-port.ts`), reconnected **lazily** on the next post after a disconnect so an idle tab never traps a suspended worker in a wake loop. Control events use typed runtime messaging.
 - **Respawn replay:** the content relay keeps the durable copy of what the worker holds only in memory — the live meeting and current participants — and replays `meeting-started` + `joined` into every *fresh* port ahead of the message that triggered the reconnect. A respawned worker therefore re-learns which meeting the tab's audio belongs to (both verbs are idempotent daemon-side), so it can tag `ingest.open` with the meeting identity and send `meeting.end` when the tab goes away. Without the replay, an evicted-mid-call worker forwards PCM it can't attribute and has nothing to end — the stranded-active-meeting bug.
 - **Meeting lifecycle:** `meeting-tracker.ts` (in the background) resolves DOM-detected meetings via `meeting.resolve` and opens/closes daemon sessions over the `/control` WebSocket — including pause/resume emulated as session close/re-open under the same meeting id. ([Control protocol v2](../control-protocol.md) moves this state machine into the daemon when it lands.)
 - **Persisted state:** `storage.local` holds the user-facing capture toggle (explicit privacy intent — survives browser restart; missing/corrupt values default to ON so a failed read can't silently kill capture). `storage.session` holds worker-respawn recovery (active-session flag re-arms the `chrome.alarms` keepalive; session area so a fresh browser start can't resurrect a stale alarm). The keepalive is armed only while ≥1 participant is live — an idle extension schedules zero wakes.
+
+## Performance instrumentation
+
+Everything the capture path does runs in the MAIN world, on the same thread the
+meeting UI renders video on. These metrics exist to say whether that costs the
+user anything, and if so which stage. They land in their own IndexedDB ring
+(never the console ring, which would evict a call's log history) and export
+from the popup as `ears-perf-*.jsonl`.
+
+| Metric group | Fields | Tier |
+|--------------|--------|------|
+| `video` | `frames_dropped`, `frames_decoded`, `fps`, `freeze_count`, `freeze_ms`, `packets_lost`, `jitter_buffer_ms` | 1 |
+| `longtask` | `task_n`/`task_p95`/`task_max`, `blocking_ms` | 1 |
+| `capture` | per-stage histograms (`downmix`, `speaking`, `debuglog`, `resample`, `accumulate`, `post`, `frame`), `frames`, `posted`, `tracks`, `decode_queue` | stage timing is tier 2 |
+| `relay` | `encode` (base64 histogram), `frames`, `bytes`, `dropped` | 1, timing tier 2 |
+| `transport` | `buffered_bytes`, `frames_sent`, `frames_dropped`, `frames_queued` | 1 |
+| `heap` | `used_bytes`, `allocated_bytes`, `reclaimed_bytes`, `collections` | 2 |
+
+- **Tier 1** is on by default (`perfLogging`, defaults ON): one timer per
+  context plus a `getStats()` poll every 5s.
+- **Tier 2** (`perfDetail`, defaults OFF) adds `performance.now()` pairs inside
+  the per-audio-frame path and heap sampling. Cheap per call, but it runs ~50×/s
+  per active speaker on the render thread, so it stays opt-in.
+- Perf records **must not** go through the console tap (`debug-log.ts`), whose
+  synchronous serialization runs on the thread being measured. They travel as
+  structured objects on their own message kind.
+- Hot-path instruments **must not** allocate per observation — histograms are
+  preallocated typed arrays and objects are built only at flush.
+
+**A/B capture experiment** (`perfAbMinutes`, defaults 0/off). Alternates capture
+on and off within one call and tags every record with the arm, so `video` split
+by `arm` is a controlled comparison rather than two different calls. Nothing
+else answers "would this call have been smooth without us" — call conditions
+move far more than the extension does. Audio is genuinely not recorded during
+off arms, which is why it defaults off and the popup says so at the point of use.
+
+Records carry `platform`, `meeting`, and `arm` tags, and the daemon labels its
+own capture events with the same `browser:<platform>:<participant>` source, so
+the two log streams join on timestamp and source. See `docs/logging.md` for the
+daemon half.
 
 ## Constraints & MUST-NOT
 

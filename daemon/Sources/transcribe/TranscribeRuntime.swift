@@ -1,6 +1,7 @@
 import EarsCLISupport
 import EarsConfig
 import EarsCore
+import EarsLogging
 import Foundation
 
 /// `transcribe`'s real, normal-run (no `--print-config`/`--config-path`)
@@ -20,7 +21,8 @@ import Foundation
 enum TranscribeRuntime {
   static func run(
     arguments: EarsCLI.Arguments, inputs: TranscribePipeline.Inputs,
-    diagnostics: RunDiagnostics = RunDiagnostics()
+    diagnostics: RunDiagnostics = RunDiagnostics(),
+    spans: StageSpans? = nil
   ) async -> RunOutcome {
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
@@ -89,7 +91,8 @@ enum TranscribeRuntime {
           modelIdentifier: diarizeModel.isEmpty ? nil : diarizeModel,
           compute: diarizeCompute),
         onError: { diagnostics.recordError($0) },
-        onSummary: { diagnostics.recordSummary($0) })
+        onSummary: { diagnostics.recordSummary($0) },
+        spans: spans)
     )
     return diagnostics.outcome(exitCode: code)
   }

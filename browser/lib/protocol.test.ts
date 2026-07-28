@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   BROWSER_TRIGGER,
   controlRequest,
+  decodeBinaryFrame,
   encodeBinaryFrame,
   INGEST_FORMAT,
+  INGEST_FRAME_VERSION,
   PROTOCOL_VERSION,
   sanitizeLabel,
   sourceLabel,
@@ -77,6 +79,55 @@ describe("encodeBinaryFrame", () => {
 
   it("rejects an over-long stream id (u8 length)", () => {
     expect(() => encodeBinaryFrame("s".repeat(256), new Uint8Array(0))).toThrow();
+  });
+
+  it("rejects an empty stream id, which would collide with the extended marker", () => {
+    expect(() => encodeBinaryFrame("", new Uint8Array(0))).toThrow();
+  });
+});
+
+describe("encodeBinaryFrame (extended, stamped)", () => {
+  it("frames [0x00][ver][idLen][id][seq][sentAt][pcm]", () => {
+    const pcm = new Uint8Array([1, 2, 3, 4]);
+    const frame = encodeBinaryFrame("s7", pcm, { seq: 42, sentAt: 1_700_000_000_123 });
+    expect(frame[0]).toBe(0); // extended marker — impossible as a legacy idLen
+    expect(frame[1]).toBe(INGEST_FRAME_VERSION);
+    expect(frame[2]).toBe(2);
+    expect(frame.length).toBe(3 + 2 + 4 + 8 + 4);
+  });
+
+  it("round-trips seq and sentAt exactly", () => {
+    const pcm = new Uint8Array([0xff, 0x00, 0x10, 0x20]);
+    const frame = encodeBinaryFrame("s123", pcm, { seq: 4_294_967_295, sentAt: 1_700_000_000_123 });
+    const decoded = decodeBinaryFrame(frame);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.streamId).toBe("s123");
+    expect(decoded!.seq).toBe(4_294_967_295);
+    expect(decoded!.sentAt).toBe(1_700_000_000_123);
+    expect([...decoded!.pcm]).toEqual([...pcm]);
+  });
+
+  it("decodes a legacy frame with no stamp", () => {
+    const decoded = decodeBinaryFrame(encodeBinaryFrame("s7", new Uint8Array([9])));
+    expect(decoded!.streamId).toBe("s7");
+    expect(decoded!.seq).toBeUndefined();
+    expect(decoded!.sentAt).toBeUndefined();
+    expect([...decoded!.pcm]).toEqual([9]);
+  });
+
+  it("survives a stream id whose length would misalign the u32/f64 reads", () => {
+    // 3-byte header + 3-byte id puts seq at offset 6 and sentAt at 10 —
+    // neither 4- nor 8-byte aligned, which is why the codec uses DataView.
+    const frame = encodeBinaryFrame("abc", new Uint8Array([7]), { seq: 7, sentAt: 12345.5 });
+    const decoded = decodeBinaryFrame(frame);
+    expect(decoded!.seq).toBe(7);
+    expect(decoded!.sentAt).toBe(12345.5);
+  });
+
+  it("rejects a truncated or unknown-version extended frame", () => {
+    expect(decodeBinaryFrame(new Uint8Array([0, INGEST_FRAME_VERSION]))).toBeNull();
+    expect(decodeBinaryFrame(new Uint8Array([0, 99, 2, 115, 55]))).toBeNull();
+    expect(decodeBinaryFrame(new Uint8Array([]))).toBeNull();
   });
 });
 

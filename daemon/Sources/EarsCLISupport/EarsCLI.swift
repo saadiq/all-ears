@@ -211,6 +211,14 @@ public enum EarsCLI {
       self.subsystem = subsystem
       self.pid = pid
     }
+
+    /// A ``StageSpans`` emitter on this same sink, so `stage.start`/`stage.end`
+    /// land in the same file, subsystem, and category as `run.start`/
+    /// `run.summary` and correlate without any extra plumbing.
+    public func stageSpans(tool: String, clock: any NowProviding = SystemClock()) -> StageSpans {
+      StageSpans(
+        sink: sink, clock: clock, tool: tool, subsystem: subsystem, category: tool, pid: pid)
+    }
   }
 
   /// Builds the ``LogSink`` (JSON Lines file + stderr + unified-logging
