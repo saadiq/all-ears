@@ -104,31 +104,50 @@ public struct CommandLLMBackend: LLMBackend {
   /// signals completion via a continuation instead. Returns `nil` on timeout;
   /// otherwise the real exit code.
   ///
-  /// The timeout branch calls `process.terminate()` itself, *before* this
+  /// The two children return a typed `Outcome` rather than `Int32?` so the
+  /// timeout is decided by WHICH EVENT WON, not by which child's return value
+  /// happened to reach `group.next()` first. The previous shape terminated the
+  /// process inside the timeout child; the termination-handler child would then
+  /// resolve with the SIGTERM status and could win the race to `next()`,
+  /// misreporting a timeout as `nonZeroExit(15)`.
+  ///
+  /// The `.timedOut` branch calls `process.terminate()` itself, *before* this
   /// function returns — not the caller, afterward. `withTaskGroup` cannot leave
   /// its scope until every child task finishes, and `cancelAll()` only sets a
   /// flag a `withCheckedContinuation`-based task never observes; terminating the
-  /// process here is what actually resolves the other child's continuation
-  /// promptly. Terminating from the caller instead would make this function
-  /// block until the process finishes on its own — silently defeating the
-  /// timeout for a genuinely hung process.
+  /// process is what actually resolves the exit child's continuation promptly.
+  /// Terminating from the caller instead would make this function block until
+  /// the process finishes on its own — silently defeating the timeout for a
+  /// genuinely hung process.
   private static func waitWithTimeout(_ process: Process, timeout: Duration) async -> Int32? {
-    await withTaskGroup(of: Int32?.self) { group in
+    enum Outcome {
+      case exited(Int32)
+      case timedOut
+    }
+    return await withTaskGroup(of: Outcome.self) { group in
       group.addTask {
-        await withCheckedContinuation { continuation in
+        let status: Int32 = await withCheckedContinuation { continuation in
           process.terminationHandler = { finished in
             continuation.resume(returning: finished.terminationStatus)
           }
         }
+        return .exited(status)
       }
       group.addTask {
         try? await Task.sleep(for: timeout)
-        process.terminate()
-        return nil
+        return .timedOut
       }
-      let first = await group.next() ?? nil
-      group.cancelAll()
-      return first
+      switch await group.next() {
+      case .some(.exited(let status)):
+        group.cancelAll()  // unblock the sleeping timeout child
+        return status
+      case .some(.timedOut):
+        process.terminate()
+        _ = await group.next()  // drain the exit child the terminate resolves
+        return nil
+      case .none:
+        return nil  // unreachable: the group always has two children
+      }
     }
   }
 

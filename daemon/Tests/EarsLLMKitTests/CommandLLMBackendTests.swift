@@ -44,8 +44,13 @@ struct CommandLLMBackendTests {
 
   @Test("a process outliving the timeout is terminated and throws timedOut")
   func timesOut() async {
+    // `sleep 600`, not a small number: under CI's fully parallel suite the
+    // 200ms timeout task can be starved for SECONDS before it runs, and a
+    // short-lived child would exit 0 in that window — turning this test into
+    // "no error was thrown" flake. The child must outlive any plausible
+    // scheduling delay; it is SIGTERMed by the timeout path, never awaited.
     let backend = CommandLLMBackend(
-      info: LLMBackendInfo(name: "test"), command: "sleep 5", timeout: .milliseconds(200))
+      info: LLMBackendInfo(name: "test"), command: "sleep 600", timeout: .milliseconds(200))
     await #expect(throws: LLMBackendError.timedOut) {
       _ = try await backend.complete(LLMPrompt(stablePrefix: "", dynamicSuffix: "x"))
     }
