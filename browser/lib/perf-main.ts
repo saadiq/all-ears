@@ -25,6 +25,10 @@ let collector: PerfCollector | null = null;
 let enabled = false;
 let detail = false;
 let stopObservers: Array<() => void> = [];
+// The heap sampler's stop is held separately from stopObservers: it belongs to
+// the detail tier and must stop when detail turns off, not only when tier 1
+// does. (Folding it into stopObservers left it running after detail-off.)
+let stopHeap: (() => void) | null = null;
 
 /** The realm's collector, created on first call. Always non-null; callers still
  * gate their hot-path work on {@link perfEnabled} / {@link perfDetailEnabled}. */
@@ -89,10 +93,11 @@ export function setPerfState(nextEnabled: boolean, nextDetail: boolean): void {
   const wantHeap = enabled && nextDetail;
   detail = nextDetail;
   if (wantHeap && !hadHeap) {
-    const stop = startHeapSampler(perf);
-    if (stop) stopObservers.push(stop);
+    stopHeap = startHeapSampler(perf);
     console.debug("[ears][perf] detail tier on (per-frame stage timing, heap sampling)");
   } else if (!wantHeap && hadHeap) {
+    stopHeap?.();
+    stopHeap = null;
     console.debug("[ears][perf] detail tier off");
   }
 }
@@ -102,6 +107,8 @@ export function __resetPerfMain(): void {
   collector?.stop();
   for (const stop of stopObservers) stop();
   stopObservers = [];
+  stopHeap?.();
+  stopHeap = null;
   collector = null;
   enabled = false;
   detail = false;

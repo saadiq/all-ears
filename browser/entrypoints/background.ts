@@ -144,11 +144,15 @@ export default defineBackground(() => {
 
   function setPerfEnabled(on: boolean): void {
     if (on === perfEnabled) return;
-    perfEnabled = on;
-    if (on) perf.start(1000);
-    else {
+    if (on) {
+      perfEnabled = true;
+      perf.start(1000);
+    } else {
+      // Flush BEFORE flipping the gate: persistPerf checks `perfEnabled`, so
+      // disabling first would silently drop the final partial interval.
       perf.stop();
       perf.flush();
+      perfEnabled = false;
     }
   }
 

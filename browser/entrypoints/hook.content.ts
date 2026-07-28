@@ -138,11 +138,12 @@ export default defineContentScript({
         return;
       }
       if (msg.kind === "capture-suspend") {
+        // Tag before the idempotence check: the experiment's FIRST arm arrives
+        // with suspended=false — equal to the initial state — and skipping the
+        // tag there left every record of the first "on" window unattributed.
+        perfTag("arm", msg.arm);
         if (msg.suspended === abSuspended) return;
         abSuspended = msg.suspended;
-        // Tag before applying, so the record covering the switch is already
-        // attributed to the arm it belongs to.
-        perfTag("arm", msg.arm);
         console.debug(`[ears][perf] A/B arm ${msg.arm} — capture ${msg.suspended ? "suspended" : "resumed"}`);
         applyCaptureState();
         return;
