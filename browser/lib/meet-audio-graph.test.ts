@@ -1,16 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AudioGraphRegistry,
-  EnergyEnvelope,
   GRAPH_MAX_NODES,
   GRAPH_MAX_EDGES_PER_NODE,
-  energyVerdict,
-  isOnset,
-  pearson,
 } from "./meet-audio-graph";
 
 // Pure-logic half of the Meet audio-graph probe (rtc-hook.ts feeds it from the
-// pass-through wraps). The verdict math is what a live call's records get read
+// pass-through wraps). The topology map is what a live call's records get read
 // through, so it is pinned here rather than eyeballed from a console.
 
 describe("AudioGraphRegistry", () => {
@@ -93,95 +89,3 @@ describe("AudioGraphRegistry", () => {
   });
 });
 
-describe("EnergyEnvelope", () => {
-  it("is bounded and reports the newest samples oldest-first", () => {
-    const e = new EnergyEnvelope(3);
-    for (let i = 1; i <= 5; i++) e.push({ t: i, rms: i / 10, peak: i / 10 });
-    expect(e.length).toBe(3);
-    expect(e.recentRms(3)).toEqual([0.3, 0.4, 0.5]);
-  });
-
-  it("flags a rising onset edge exactly once per rise", () => {
-    const e = new EnergyEnvelope();
-    expect(e.push({ t: 1, rms: 0, peak: 0 })).toBe(false);
-    expect(e.push({ t: 2, rms: 0.1, peak: 0.3 })).toBe(true); // silent → loud
-    expect(e.push({ t: 3, rms: 0.1, peak: 0.4 })).toBe(false); // still loud
-    expect(e.push({ t: 4, rms: 0, peak: 0 })).toBe(false); // falling edge is not an onset
-    expect(e.push({ t: 5, rms: 0.1, peak: 0.3 })).toBe(true); // second rise
-  });
-
-  it("is inactive until any sample clears the silence floor", () => {
-    const e = new EnergyEnvelope();
-    e.push({ t: 1, rms: 0.0001, peak: 0.0005 });
-    expect(e.active()).toBe(false);
-    e.push({ t: 2, rms: 0.01, peak: 0.02 });
-    expect(e.active()).toBe(true);
-  });
-});
-
-describe("isOnset", () => {
-  it("requires crossing the threshold from below", () => {
-    expect(isOnset(0, 0.05)).toBe(true);
-    expect(isOnset(0.05, 0.5)).toBe(false); // already over
-    expect(isOnset(0, 0.01)).toBe(false); // never reaches it
-  });
-});
-
-describe("pearson", () => {
-  it("is 1 for identical movement and -1 for opposite movement", () => {
-    const up = [1, 2, 3, 4, 5, 6];
-    const down = [6, 5, 4, 3, 2, 1];
-    expect(pearson(up, up)).toBeCloseTo(1);
-    expect(pearson(up, down)).toBeCloseTo(-1);
-  });
-
-  it("returns null for short or variance-free series rather than guessing", () => {
-    expect(pearson([1, 2], [1, 2])).toBeNull();
-    expect(pearson([1, 1, 1, 1, 1, 1], [1, 2, 3, 4, 5, 6])).toBeNull();
-  });
-});
-
-describe("energyVerdict", () => {
-  const envelope = (values: number[]): EnergyEnvelope => {
-    const e = new EnergyEnvelope();
-    values.forEach((v, i) => e.push({ t: i, rms: v, peak: v }));
-    return e;
-  };
-
-  it("two active nodes with divergent envelopes ⇒ per-participant", () => {
-    // Turn-taking: node A speaks first, node B answers.
-    const a = envelope([0.3, 0.3, 0.3, 0.3, 0, 0, 0, 0]);
-    const b = envelope([0, 0, 0, 0, 0.3, 0.3, 0.3, 0.3]);
-    const v = energyVerdict(new Map([["n1", a], ["n2", b]]));
-    expect(v.verdict).toBe("per-participant");
-    expect(v.active).toBe(2);
-    expect(v.minCorr).toBeLessThan(0);
-  });
-
-  it("two active nodes moving in lockstep ⇒ correlated-mix", () => {
-    const series = [0.1, 0.4, 0.2, 0.5, 0.1, 0.3, 0.2, 0.4];
-    const v = energyVerdict(new Map([["n1", envelope(series)], ["n2", envelope(series)]]));
-    expect(v.verdict).toBe("correlated-mix");
-    expect(v.maxCorr).toBeCloseTo(1);
-  });
-
-  it("one active node ⇒ single-active-node (mixed if several people spoke)", () => {
-    const v = energyVerdict(
-      new Map([
-        ["n1", envelope([0.2, 0.4, 0.3, 0.2, 0.5, 0.1])],
-        ["n2", envelope([0, 0, 0, 0, 0, 0])],
-      ]),
-    );
-    expect(v.verdict).toBe("single-active-node");
-    expect(v.active).toBe(1);
-  });
-
-  it("nothing active, or series too short to correlate ⇒ insufficient-data", () => {
-    expect(energyVerdict(new Map()).verdict).toBe("insufficient-data");
-    const short = new Map([
-      ["n1", envelope([0.3, 0.2])],
-      ["n2", envelope([0.1, 0.4])],
-    ]);
-    expect(energyVerdict(short).verdict).toBe("insufficient-data");
-  });
-});

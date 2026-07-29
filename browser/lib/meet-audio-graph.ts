@@ -1,5 +1,4 @@
-// Meet WebAudio graph mapping + per-node energy correlation (journal #75,
-// dev/captures/2026-07-24-meet-collections-drift.md "Result 3").
+// Meet WebAudio graph mapping (journal #75, #93).
 //
 // Meet decodes participant Opus inside WASM (NetEQ over SharedArrayBuffer) and
 // plays out through `AudioWorkletNode(processor="neteq-processor")`, so encoded
@@ -9,16 +8,12 @@
 // (N tappable nodes), or is it ALREADY MIXED before anything tappable (one node
 // carrying everyone)?
 //
-// This module is the pure half of the answer: a bounded registry of the page's
-// audio graph (fed by rtc-hook.ts's pass-through connect/worklet wraps) and the
-// envelope/correlation math over per-node energy samples. Everything
-// DOM-touching (the wraps, the analysers, the sampling timer) stays in
-// rtc-hook.ts so this logic is unit-testable in node.
-//
-// Verdict logic: two nodes whose energy envelopes are UNCORRELATED over a call
-// with turn-taking are carrying different participants; nodes that move in
-// lockstep are copies of the same mix; one active node is a mix by definition
-// once more than one person has spoken.
+// This module is the pure half of the map: a bounded registry of the page's
+// audio graph, fed by rtc-hook.ts's pass-through connect/worklet wraps.
+// Everything DOM-touching (the wraps, the bridge, the emission timer) stays in
+// rtc-hook.ts so this logic is unit-testable in node. The registry only ever
+// OBSERVES — the verdict itself comes from recordings made by the downstream
+// capture bridge (rtc-hook.ts tapNetEqDownstream), which is ground truth.
 
 /** Hard cap on tracked graph nodes: a tile-heavy call must not build unbounded
  * bookkeeping. Nodes past the cap are counted (`overflow`) but not stored. */
@@ -26,27 +21,6 @@ export const GRAPH_MAX_NODES = 128;
 
 /** Per-node out-edge cap — fan-out past this is counted, not stored. */
 export const GRAPH_MAX_EDGES_PER_NODE = 32;
-
-/** A node's energy sample, produced by the shared sampling timer. */
-export interface EnergySample {
-  /** Epoch ms. */
-  t: number;
-  rms: number;
-  peak: number;
-}
-
-/** Peak level treated as "this node is carrying signal". Matches the existing
- * track energy probe's silence floor (rtc-hook.ts monitorTrackEnergy). */
-export const ENERGY_ACTIVE_PEAK = 0.001;
-
-/** Rising-edge threshold for onset detection (speech start, used to correlate
- * a node against collections unmute edges offline). */
-export const ONSET_PEAK = 0.02;
-
-/** True when this sample is a rising edge over the onset threshold. */
-export function isOnset(previousPeak: number, peak: number): boolean {
-  return previousPeak < ONSET_PEAK && peak >= ONSET_PEAK;
-}
 
 interface GraphNodeInfo {
   id: string;
@@ -219,135 +193,4 @@ export class AudioGraphRegistry {
 function constructorName(value: object): string {
   const name = (value as { constructor?: { name?: string } }).constructor?.name;
   return typeof name === "string" && name.length > 0 ? name : "unknown";
-}
-
-/** Bounded per-node energy history. One shared sampling timer pushes to every
- * envelope each tick, so samples align by index from the tail. */
-export class EnergyEnvelope {
-  private ring: EnergySample[] = [];
-  private previousPeak = 0;
-
-  constructor(private readonly capacity = 60) {}
-
-  /** Push a sample; returns true when it is a rising onset edge. */
-  push(sample: EnergySample): boolean {
-    const onset = isOnset(this.previousPeak, sample.peak);
-    this.previousPeak = sample.peak;
-    if (this.ring.length >= this.capacity) this.ring.shift();
-    this.ring.push(sample);
-    return onset;
-  }
-
-  get length(): number {
-    return this.ring.length;
-  }
-
-  last(): EnergySample | null {
-    return this.ring.length > 0 ? this.ring[this.ring.length - 1]! : null;
-  }
-
-  /** The newest `n` rms values, oldest first. */
-  recentRms(n: number): number[] {
-    return this.ring.slice(-n).map((s) => s.rms);
-  }
-
-  /** True when any sample in the window shows signal above the silence floor. */
-  active(threshold = ENERGY_ACTIVE_PEAK): boolean {
-    return this.ring.some((s) => s.peak >= threshold);
-  }
-}
-
-/** Pearson correlation of two equal-length series; null when either series is
- * too short (<5 points) or has no variance (a constant tells you nothing). */
-export function pearson(a: number[], b: number[]): number | null {
-  const n = Math.min(a.length, b.length);
-  if (n < 5) return null;
-  const xs = a.slice(-n);
-  const ys = b.slice(-n);
-  const meanX = xs.reduce((s, v) => s + v, 0) / n;
-  const meanY = ys.reduce((s, v) => s + v, 0) / n;
-  let cov = 0;
-  let varX = 0;
-  let varY = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i]! - meanX;
-    const dy = ys[i]! - meanY;
-    cov += dx * dy;
-    varX += dx * dx;
-    varY += dy * dy;
-  }
-  if (varX === 0 || varY === 0) return null;
-  return cov / Math.sqrt(varX * varY);
-}
-
-/** Above this every active pair moves in lockstep — copies of one mix. */
-export const CORRELATED_MIX_THRESHOLD = 0.85;
-/** Below this two active nodes are carrying different audio. */
-export const DISTINCT_SOURCES_THRESHOLD = 0.5;
-
-export interface EnergyPair {
-  a: string;
-  b: string;
-  corr: number;
-}
-
-export interface EnergyVerdict {
-  monitored: number;
-  active: number;
-  pairs: EnergyPair[];
-  maxCorr: number | null;
-  minCorr: number | null;
-  /**
-   * - `per-participant`: ≥2 active nodes whose envelopes diverge — separate
-   *   audio per node, per-participant capture is recoverable.
-   * - `correlated-mix`: ≥2 active nodes but every pair moves in lockstep —
-   *   copies of one mix.
-   * - `single-active-node`: exactly one node ever carries signal. Mixed, IF
-   *   more than one participant spoke during the window.
-   * - `ambiguous`: correlations in between — needs more turn-taking.
-   * - `insufficient-data`: nothing active yet, or series too short.
-   */
-  verdict:
-    | "per-participant"
-    | "correlated-mix"
-    | "single-active-node"
-    | "ambiguous"
-    | "insufficient-data";
-}
-
-/**
- * Summarize the monitored envelopes into the per-participant-vs-mixed verdict.
- * `window` is how many trailing samples to correlate over (samples align by
- * index because one timer feeds every envelope).
- */
-export function energyVerdict(
-  envelopes: Map<string, EnergyEnvelope>,
-  window = 30,
-): EnergyVerdict {
-  const activeIds = [...envelopes.entries()].filter(([, e]) => e.active()).map(([id]) => id);
-  const pairs: EnergyPair[] = [];
-  for (let i = 0; i < activeIds.length; i++) {
-    for (let j = i + 1; j < activeIds.length; j++) {
-      const corr = pearson(
-        envelopes.get(activeIds[i]!)!.recentRms(window),
-        envelopes.get(activeIds[j]!)!.recentRms(window),
-      );
-      if (corr !== null) {
-        pairs.push({ a: activeIds[i]!, b: activeIds[j]!, corr: Math.round(corr * 1000) / 1000 });
-      }
-    }
-  }
-  const corrs = pairs.map((p) => p.corr);
-  const maxCorr = corrs.length > 0 ? Math.max(...corrs) : null;
-  const minCorr = corrs.length > 0 ? Math.min(...corrs) : null;
-
-  let verdict: EnergyVerdict["verdict"];
-  if (activeIds.length === 0) verdict = "insufficient-data";
-  else if (activeIds.length === 1) verdict = "single-active-node";
-  else if (corrs.length === 0) verdict = "insufficient-data";
-  else if (minCorr !== null && minCorr < DISTINCT_SOURCES_THRESHOLD) verdict = "per-participant";
-  else if (minCorr !== null && minCorr >= CORRELATED_MIX_THRESHOLD) verdict = "correlated-mix";
-  else verdict = "ambiguous";
-
-  return { monitored: envelopes.size, active: activeIds.length, pairs, maxCorr, minCorr, verdict };
 }

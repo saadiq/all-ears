@@ -143,14 +143,7 @@ from the popup as `ears-perf-*.jsonl`.
 - Hot-path instruments **must not** allocate per observation — histograms are
   preallocated typed arrays and objects are built only at flush.
 
-**A/B capture experiment** (`perfAbMinutes`, defaults 0/off). Alternates capture
-on and off within one call and tags every record with the arm, so `video` split
-by `arm` is a controlled comparison rather than two different calls. Nothing
-else answers "would this call have been smooth without us" — call conditions
-move far more than the extension does. Audio is genuinely not recorded during
-off arms, which is why it defaults off and the popup says so at the point of use.
-
-Records carry `platform`, `meeting`, and `arm` tags, and the daemon labels its
+Records carry `platform` and `meeting` tags, and the daemon labels its
 own capture events with the same `browser:<platform>:<participant>` source, so
 the two log streams join on timestamp and source. See `docs/logging.md` for the
 daemon half.
@@ -166,31 +159,40 @@ live-but-silent. The graph probe (`lib/rtc-hook.ts` §graph probe +
 use, to answer one question: **is the decoded audio still per participant
 (capturable) or already mixed before anything tappable?**
 
+Hard constraint (journal #93, live-verified 2026-07-29): adding an output edge
+to Meet's `neteq-processor` worklet — an `AnalyserNode`, a destination node,
+anything — trips a Chromium `CHECK` on the realtime audio-worklet thread and
+kills the renderer within seconds. No attach ordering makes it safe, and no
+page-side `try/catch` can contain it. **Nothing in the extension may ever
+connect anything to an `AudioWorkletNode` it did not create.**
+
 - **Graph mapping** (`localStorage.__earsDebugAudio = "1"`): pass-through wraps
   on `AudioNode.prototype.connect`/`disconnect` and the `AudioWorkletNode`
   constructor feed a bounded registry (`GRAPH_MAX_NODES`) of node types,
   worklet processor names, `createMediaStreamSource` input track ids, and
   fan-in/out. The native call always runs first and its result is returned
-  untouched; all bookkeeping is try/caught. Counters surface in the popup's
-  debug report (`hookDebugState().graph`, `webaudio.netEqWorkletNodes`).
-- **Per-node energy**: each worklet node's output is branched into an
-  `AnalyserNode` in its own context (capped at `GRAPH_ENERGY_MAX_NODES`, no
-  onward connection — no playback). A shared 1 s sampler emits perf records
-  into the IndexedDB perf ring — they survive Meet's post-call redirect:
-  `meet_graph_energy` (per-node rms/peak series), `meet_graph_onset`
-  (rising-edge timestamps, the raw material for the offline join against
-  collections unmute edges), `meet_graph_summary` every 15 s (`verdict` —
-  `per-participant` / `correlated-mix` / `single-active-node` /
-  `ambiguous` / `insufficient-data` — plus pairwise envelope correlations),
-  and `meet_graph_topology` every 30 s (the graph as flat fields).
+  untouched; all bookkeeping is try/caught and pure JS — it never touches the
+  render graph, so it cannot crash a call. A 15 s timer emits
+  `meet_graph_summary` (counts) and, every other tick, `meet_graph_topology`
+  (the graph as flat fields) into the IndexedDB perf ring, which survives
+  Meet's post-call redirect. Counters surface in the popup's debug report
+  (`hookDebugState().graph`, `webaudio.netEqWorkletNodes`). Track-level peak
+  meters run in the probe's **own** `AudioContext` (never Meet's graph).
 - **Capture bridge** (`localStorage.__earsGraphBridge = "1"`, OFF by default,
-  requires the probe flag too): each `neteq-processor` node is branched into a
+  independent of the probe flag): when Meet connects a `neteq-processor`
+  worklet to a **native** node, that downstream node is branched into a
   `MediaStreamAudioDestinationNode` and its stream fed through the REAL
-  capture pipeline (`__devCaptureStream`) under `graphtap-<n>` ids (capped at
-  `GRAPH_BRIDGE_MAX_NODES`); an audio-kind `MediaStreamTrackGenerator` — a
-  `MediaStreamTrack` already — bridges directly as `graphgen-<n>`. Diagnostic
-  mode for one call: it records real audio under placeholder ids to prove the
-  path end to end.
+  capture pipeline (`__devCaptureStream`) under `graphtap-<n>` ids — one tap
+  per distinct target, capped at `GRAPH_BRIDGE_MAX_NODES`. The worklet keeps
+  exactly the edges Meet gave it. If the graph is per-participant the daemon
+  records separate streams; if it is mixed, the recordings prove that — either
+  way the verdict is ground truth from audio, not inferred from envelopes. An
+  audio-kind `MediaStreamTrackGenerator` — a `MediaStreamTrack` already —
+  bridges directly as `graphgen-<n>` with no graph mutation at all. A
+  sink-shaped downstream target (zero outputs) is recorded as
+  `untappable-sink` rather than branched. Capture-off severs every bridge
+  branch (`stopMeetGraphProbe`) so an idle extension never keeps Meet's graph
+  pulled.
 - Probe output carries node ids, track ids, processor names, and counts only —
   never participant display names.
 
@@ -209,3 +211,4 @@ use, to answer one question: **is the decoded audio still per participant
 11. No swallowing injection-order errors — a silent failure records zero audio while reporting success.
 12. No `ScriptProcessorNode`/`MediaRecorder` for PCM, and no `MediaStreamTrack`-based capture on Meet — the tee is the only mechanism that works there.
 13. No unbounded PCM queues — bounded circular buffer, drop-oldest, logged counter.
+14. No connecting anything to an `AudioWorkletNode` the extension did not create — an extra output edge on Meet's neteq worklet crashes the renderer from the realtime audio thread (journal #93). Tap the native node downstream instead.
