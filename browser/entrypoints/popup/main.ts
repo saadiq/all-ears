@@ -3,10 +3,8 @@ import {
   CAPTURE_ENABLED_KEY,
   DEBUG_LOG_KEY,
   DEBUG_REPORT_KEY,
-  PERF_AB_KEY,
   PERF_DETAIL_KEY,
   resolveCaptureToggleState,
-  resolvePerfAbMinutes,
   resolvePerfDetailState,
 } from "../../lib/capture-toggle";
 import { toJsonl, type LogEntry } from "../../lib/debug-log";
@@ -210,52 +208,28 @@ clearLogEl?.addEventListener("click", () => {
 
 // ── Performance instrumentation ─────────────────────────────────────────────
 //
-// Three controls, in increasing order of how much they cost you:
-//   detail   — per-audio-frame stage timing + heap sampling. Costs main-thread
-//              time on the tab being measured.
-//   A/B      — alternates capture on and off to get a controlled comparison.
-//              Costs recorded audio during the off arms, which is why the
-//              warning below is blunt about it.
+// One control: detail — per-audio-frame stage timing + heap sampling. Costs
+// main-thread time on the tab being measured.
 // Tier 1 collection itself has no control here: it defaults on and is cheap.
 
 const perfDetailToggleEl = document.getElementById("perf-detail-toggle") as HTMLInputElement | null;
-const perfAbSelectEl = document.getElementById("perf-ab-select") as HTMLSelectElement | null;
 const downloadPerfEl = document.getElementById("download-perf") as HTMLButtonElement | null;
 const clearPerfEl = document.getElementById("clear-perf") as HTMLButtonElement | null;
 const perfNoteEl = document.getElementById("perf-note");
 
 browser.storage.local
-  .get([PERF_DETAIL_KEY, PERF_AB_KEY])
+  .get(PERF_DETAIL_KEY)
   .then((v) => {
     const record = v as Record<string, unknown>;
     if (perfDetailToggleEl) {
       perfDetailToggleEl.checked = resolvePerfDetailState(record[PERF_DETAIL_KEY]);
       perfDetailToggleEl.disabled = false;
     }
-    if (perfAbSelectEl) {
-      perfAbSelectEl.value = String(resolvePerfAbMinutes(record[PERF_AB_KEY]));
-      perfAbSelectEl.disabled = false;
-    }
-    renderAbWarning();
   })
   .catch(() => {});
 
-function renderAbWarning(): void {
-  if (!perfNoteEl || !perfAbSelectEl) return;
-  const minutes = Number(perfAbSelectEl.value);
-  perfNoteEl.textContent =
-    minutes > 0
-      ? `A/B on: capture stops for ${minutes} min out of every ${minutes * 2}. Audio in those windows is not recorded.`
-      : "";
-}
-
 perfDetailToggleEl?.addEventListener("change", () => {
   browser.storage.local.set({ [PERF_DETAIL_KEY]: perfDetailToggleEl.checked }).catch(() => {});
-});
-
-perfAbSelectEl?.addEventListener("change", () => {
-  browser.storage.local.set({ [PERF_AB_KEY]: Number(perfAbSelectEl.value) }).catch(() => {});
-  renderAbWarning();
 });
 
 downloadPerfEl?.addEventListener("click", () => {

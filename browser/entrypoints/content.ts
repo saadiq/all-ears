@@ -4,17 +4,14 @@ import {
   CAPTURE_ENABLED_KEY,
   DEBUG_LOG_KEY,
   DEBUG_REPORT_KEY,
-  PERF_AB_KEY,
   PERF_DETAIL_KEY,
   PERF_ENABLED_KEY,
   resolveCaptureToggleState,
-  resolvePerfAbMinutes,
   resolvePerfDetailState,
   resolvePerfToggleState,
 } from "../lib/capture-toggle";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { ReconnectingPort } from "../lib/pcm-port";
-import { AbExperiment } from "../lib/perf-ab";
 import { Counter, Histogram, PerfCollector } from "../lib/perf";
 import {
   isMainEnvelope,
@@ -111,43 +108,14 @@ export default defineContentScript({
       }
     };
 
-    // The A/B driver lives here rather than in the MAIN world because it needs
-    // storage, and it broadcasts each arm to both neighbours so every context's
-    // records carry the same tag.
-    let ab: AbExperiment | null = null;
-    const applyArm = (arm: { name: string; suspended: boolean; cycle: number }): void => {
-      perf.tag("arm", arm.name);
-      perf.tag("ab_cycle", arm.cycle);
-      postToMain({ kind: "capture-suspend", suspended: arm.suspended, arm: arm.name });
-      browser.runtime.sendMessage({ kind: "perf-arm", arm: arm.name, cycle: arm.cycle }).catch(() => {});
-    };
-    const applyAbMinutes = (minutes: number): void => {
-      if (ab?.running) ab.stop();
-      ab = null;
-      if (minutes <= 0) {
-        // stop() already restored the "on" arm; clear the tags so later records
-        // aren't attributed to an experiment that is no longer running.
-        perf.tag("arm", undefined);
-        perf.tag("ab_cycle", undefined);
-        return;
-      }
-      console.warn(
-        `[ears][perf] A/B capture experiment on: alternating every ${minutes} min. ` +
-          "Audio is NOT recorded during off arms.",
-      );
-      ab = new AbExperiment(minutes, applyArm);
-      ab.start();
-    };
-
     browser.storage.local
-      .get([PERF_ENABLED_KEY, PERF_DETAIL_KEY, PERF_AB_KEY])
+      .get([PERF_ENABLED_KEY, PERF_DETAIL_KEY])
       .then((v) => {
         const record = v as Record<string, unknown>;
         applyPerfState(
           resolvePerfToggleState(record[PERF_ENABLED_KEY]),
           resolvePerfDetailState(record[PERF_DETAIL_KEY]),
         );
-        applyAbMinutes(resolvePerfAbMinutes(record[PERF_AB_KEY]));
       })
       .catch(() => applyPerfState(true, false)); // unreadable ⇒ tier 1 default
 
@@ -171,8 +139,6 @@ export default defineContentScript({
           })
           .catch(() => {});
       }
-      const abChange = changes[PERF_AB_KEY];
-      if (abChange) applyAbMinutes(resolvePerfAbMinutes(abChange.newValue));
     });
 
     // Lifecycle facts this document knows, mirrored from the hook's messages:

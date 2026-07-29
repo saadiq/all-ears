@@ -306,8 +306,6 @@ export default defineBackground(() => {
       paused?: boolean;
       entries?: LogEntry[];
       records?: PerfRecord[];
-      arm?: string;
-      cycle?: number;
     };
     // Debug-log traffic: batches forwarded from the relay/hook, plus the
     // popup's export/clear requests.
@@ -320,12 +318,6 @@ export default defineBackground(() => {
     if (m.kind === "perf-batch") {
       if (m.records?.length) persistPerf(m.records);
       return undefined; // fire-and-forget
-    }
-    if (m.kind === "perf-arm") {
-      // Mirror the relay's A/B arm so this context's records carry it too.
-      perf.tag("arm", m.arm);
-      perf.tag("ab_cycle", m.cycle);
-      return undefined;
     }
     if (m.kind === "get-perf-log") {
       readAllPerfRecords()

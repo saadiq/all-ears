@@ -218,8 +218,8 @@ export class PerfCollector {
   }
 
   /**
-   * Stamp a field onto every subsequent record — the A/B arm, the earsd source
-   * label, the meeting id. Passing `undefined` clears it. Tags are what make
+   * Stamp a field onto every subsequent record — the earsd source label, the
+   * meeting id. Passing `undefined` clears it. Tags are what make
    * two processes' records joinable, so set `source` as soon as it is known.
    */
   tag(key: string, value: string | number | undefined): void {

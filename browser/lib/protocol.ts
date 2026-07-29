@@ -135,12 +135,7 @@ export type ControlMessage =
   // whole collector (Tier 1: long tasks, video stats, counters); `detail`
   // additionally gates the per-audio-frame stage timing and heap sampling,
   // which cost more than they should to leave on unattended.
-  | { kind: "perf-state"; enabled: boolean; detail: boolean }
-  // A/B experiment arm. Suspending stops capture the same way toggling the
-  // user-facing switch off does, but is session-scoped and self-reverting, so
-  // one call yields matched on/off windows under identical conditions. Audio
-  // is genuinely not recorded while suspended — see perf-ab.ts.
-  | { kind: "capture-suspend"; suspended: boolean; arm: string };
+  | { kind: "perf-state"; enabled: boolean; detail: boolean };
 
 export interface ControlEnvelope {
   [EARS_CTL_MARKER]: true;

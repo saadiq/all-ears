@@ -57,18 +57,6 @@ export const PERF_ENABLED_KEY = "perfLogging";
 export const PERF_DETAIL_KEY = "perfDetail";
 
 /**
- * Minutes per A/B arm (storage.local, number). Zero — the default — disables
- * the experiment. Non-zero makes the MAIN world alternate capture on and off
- * on that period and tag every perf record with the live arm, so one call
- * yields matched windows.
- *
- * This genuinely stops recording during "off" arms. It is a diagnostic mode,
- * not a background behavior, which is why it defaults off and why the popup
- * says so at the point of use.
- */
-export const PERF_AB_KEY = "perfAbMinutes";
-
-/**
  * Resolve the raw stored value to the effective toggle state. Capture defaults
  * to ON: only an explicit stored `false` disables it, so a missing key (fresh
  * install), a failed read, or a corrupt value never silently kills capture.
@@ -85,12 +73,4 @@ export function resolvePerfToggleState(raw: unknown): boolean {
 /** Detail tier defaults OFF; only an explicit `true` enables it. */
 export function resolvePerfDetailState(raw: unknown): boolean {
   return raw === true;
-}
-
-/** Minutes per A/B arm, or 0 when disabled/absent/invalid. Clamped to a sane
- * range so a fat-fingered value can't suspend capture for a whole call. */
-export function resolvePerfAbMinutes(raw: unknown): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.min(Math.max(n, 1), 30);
 }

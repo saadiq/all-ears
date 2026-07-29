@@ -266,19 +266,6 @@
         text-transform: uppercase;
         color: var(--muted);
       }
-      .perf-ab-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        margin-top: 12px;
-        font-size: 13px;
-      }
-      .perf-ab-row select {
-        font: inherit;
-        padding: 3px 6px;
-        border-radius: 6px;
-      }
       .perf-warn {
         margin-top: 6px;
         min-height: 14px;
@@ -341,7 +328,7 @@
 
       <!-- Performance instrumentation. Tier 1 (long tasks, video receive
            stats, transport counters) runs by default and has no control here;
-           these two switches govern the parts that cost something. -->
+           this switch governs the part that costs something. -->
       <hr class="section-rule" />
       <div class="section-title">Performance</div>
       <label class="row debug-log-row">
@@ -351,18 +338,6 @@
         </span>
         <span>Per-frame stage timing</span>
       </label>
-      <!-- Alternates capture on/off so one call yields matched windows. This
-           is the only way to tell "all-ears made the call choppy" from "the
-           call was choppy"; it costs the audio in the off windows. -->
-      <div class="perf-ab-row">
-        <label for="perf-ab-select">A/B capture experiment</label>
-        <select id="perf-ab-select" disabled>
-          <option value="0">Off</option>
-          <option value="2">2 min arms</option>
-          <option value="5">5 min arms</option>
-          <option value="10">10 min arms</option>
-        </select>
-      </div>
       <div id="perf-note" class="perf-warn" aria-live="polite"></div>
       <div class="debug-actions">
         <button type="button" id="download-perf" class="debug-btn">Download perf</button>
