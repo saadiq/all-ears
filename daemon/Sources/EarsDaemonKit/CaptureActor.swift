@@ -580,22 +580,45 @@ public actor CaptureActor {
       fields.insert(LogField("cause", .string("unknown")), at: 0)
       return fields
     }
-    // Wrapping subtraction: seq is a u32 that rolls over rather than saturating.
-    let seqGap = Int(current.seq &- previous.seq) - 1
+    let seqGap = Self.seqGap(from: previous.seq, to: current.seq)
     let sendGapMs = current.sentAtEpochMs - previous.sentAtEpochMs
     let cause: String
-    if seqGap > 0 {
+    if let seqGap, seqGap > 0 {
       cause = "frames-lost"
     } else if sendGapMs >= gapSeconds * 1000 * 0.5 {
       // The sender's own timeline accounts for most of the observed gap.
+      // A restarted sender lands here too: `sentAtEpochMs` is wall-clock
+      // based, so the timing verdict survives a seq reset.
       cause = "silence"
     } else {
       cause = "delivery-stall"
     }
     fields.insert(LogField("cause", .string(cause)), at: 0)
     fields.append(LogField("send_gap_ms", .double(sendGapMs.rounded())))
-    fields.append(LogField("seq_gap", .int(max(0, seqGap))))
+    fields.append(LogField("seq_gap", .int(max(0, seqGap ?? 0))))
+    if seqGap == nil { fields.append(LogField("sender_restart", .bool(true))) }
     return fields
+  }
+
+  /// A backwards seq jump larger than this means the sender restarted, not
+  /// that frames arrived out of order.
+  static let seqRestartTolerance: UInt32 = 1_000
+
+  /// Frames skipped between two consecutive sender stamps, or `nil` when the
+  /// sender restarted. The browser's seq is per-pipeline-instance and begins
+  /// again at 0 when a participant's capture pipeline is rebuilt mid-meeting,
+  /// so a naive wrapping delta would read a restart as ~2^32 lost frames.
+  ///
+  /// Wrapping subtraction keeps genuine 2^32 rollover cheap: a seq that
+  /// wrapped slightly past 2^32 is a small *forward* delta (0xFFFFFFFF → 3 is
+  /// 4, counting 3 lost frames as usual). A restart near 0 from an arbitrary
+  /// previous seq is instead a *backwards* jump; within
+  /// ``seqRestartTolerance`` that's reordering (no loss), beyond it a fresh
+  /// baseline (`nil`, never loss).
+  static func seqGap(from previous: UInt32, to current: UInt32) -> Int? {
+    let forward = current &- previous
+    if forward <= UInt32.max / 2 { return Int(forward) - 1 }
+    return previous &- current <= Self.seqRestartTolerance ? 0 : nil
   }
 
   /// How long a push (browser) source may deliver nothing before
@@ -702,6 +725,10 @@ public actor CaptureActor {
     // Forget the published VAD state across the stop/pause gap, so the first
     // speech after a resume/restart is re-announced to live subscribers.
     lastPublishedVADState = nil
+    // Forget the sender's stamp too: a reopened stream is a new pipeline
+    // instance whose seq restarts at 0, and comparing across the boundary
+    // would misread the reset as a huge loss.
+    lastStamp = nil
 
     let before = await encoder.currentChunkStart
     try? await encoder.flush()

@@ -889,9 +889,13 @@ public actor EarsDaemon {
         stats.delaySamples += 1
         stats.maxDelayMs = max(stats.maxDelayMs, delay)
       }
-      if let last = stats.lastSeq {
-        let gap = Int(stamp.seq &- last) - 1
-        if gap > 0 { stats.seqGaps += gap }
+      // `nil` means the sender restarted (its seq is per-pipeline-instance and
+      // begins again at 0 on a rebuild): a fresh baseline, not ~2^32 lost
+      // frames. See ``CaptureActor/seqGap(from:to:)``.
+      if let last = stats.lastSeq, let gap = CaptureActor.seqGap(from: last, to: stamp.seq),
+        gap > 0
+      {
+        stats.seqGaps += gap
       }
       stats.lastSeq = stamp.seq
     }
@@ -914,28 +918,52 @@ public actor EarsDaemon {
     }
 
     for (source, stats) in snapshot where stats.frames > 0 {
-      var fields: [LogField] = [
-        LogField("source", .string(source.rawValue)),
-        LogField("frames", .int(stats.frames)),
-        LogField("samples", .int(stats.samples)),
-        LogField("audio_seconds", .double((stats.audioSeconds * 1000).rounded() / 1000)),
-        LogField("interval_seconds", .double((elapsed * 10).rounded() / 10)),
-        LogField(
-          "frames_per_second", .double((Double(stats.frames) / elapsed * 100).rounded() / 100)),
-      ]
-      if stats.delaySamples > 0 {
-        fields.append(
-          LogField(
-            "delay_mean_ms", .double((stats.delaySumMs / Double(stats.delaySamples)).rounded())))
-        fields.append(LogField("delay_max_ms", .double(stats.maxDelayMs.rounded())))
-      }
-      if stats.seqGaps > 0 { fields.append(LogField("frames_lost", .int(stats.seqGaps))) }
-      try? await logSink.log(
-        LogRecord(
-          ts: now, level: .info, tool: "earsd", subsystem: "net.tomelliot.ears",
-          category: "earsd.capture", pid: ProcessInfo.processInfo.processIdentifier,
-          event: "capture.ingest_stats", fields: fields))
+      await emitIngestStatsRecord(source: source, stats: stats, elapsed: elapsed, now: now)
     }
+  }
+
+  /// Final flush for one source, on ingest-stream close or actor teardown:
+  /// ``emitIngestStatsIfDue()`` only runs while frames arrive, so without this
+  /// the accumulated tail interval — and every stream shorter than the flush
+  /// period — would be stranded. Dropping the counters also clears `lastSeq`,
+  /// so a reopened stream starts a fresh seq baseline instead of misreading
+  /// the sender's restarted seq as loss.
+  private func flushIngestStats(source: SourceID) async {
+    guard let stats = ingestStats.removeValue(forKey: source), stats.frames > 0 else { return }
+    let now = clock.now()
+    let elapsed = ingestStatsFlushedAt.map { now.interval(since: $0) } ?? 0
+    await emitIngestStatsRecord(source: source, stats: stats, elapsed: elapsed, now: now)
+  }
+
+  private func emitIngestStatsRecord(
+    source: SourceID, stats: IngestStats, elapsed: Double, now: Instant
+  ) async {
+    var fields: [LogField] = [
+      LogField("source", .string(source.rawValue)),
+      LogField("frames", .int(stats.frames)),
+      LogField("samples", .int(stats.samples)),
+      LogField("audio_seconds", .double((stats.audioSeconds * 1000).rounded() / 1000)),
+      LogField("interval_seconds", .double((elapsed * 10).rounded() / 10)),
+    ]
+    // Guarded so a final flush landing on the same clock tick as the last
+    // periodic one can't divide by zero.
+    if elapsed > 0 {
+      fields.append(
+        LogField(
+          "frames_per_second", .double((Double(stats.frames) / elapsed * 100).rounded() / 100)))
+    }
+    if stats.delaySamples > 0 {
+      fields.append(
+        LogField(
+          "delay_mean_ms", .double((stats.delaySumMs / Double(stats.delaySamples)).rounded())))
+      fields.append(LogField("delay_max_ms", .double(stats.maxDelayMs.rounded())))
+    }
+    if stats.seqGaps > 0 { fields.append(LogField("frames_lost", .int(stats.seqGaps))) }
+    try? await logSink.log(
+      LogRecord(
+        ts: now, level: .info, tool: "earsd", subsystem: "net.tomelliot.ears",
+        category: "earsd.capture", pid: ProcessInfo.processInfo.processIdentifier,
+        event: "capture.ingest_stats", fields: fields))
   }
 
   /// `ingest.close`: stop the `CaptureActor` behind `streamID` (flushing and
@@ -945,6 +973,7 @@ public actor EarsDaemon {
   /// them rather than starting over.
   public func closeIngestSource(streamID: String) async {
     guard let label = ingestStreams.removeValue(forKey: streamID) else { return }
+    await flushIngestStats(source: label)
     if let actor = captureActors[label] {
       await actor.stop()
     }
@@ -959,6 +988,7 @@ public actor EarsDaemon {
   /// audio under its original meeting stays put — retention owns its lifetime,
   /// not this teardown.
   private func teardownIngestActor(_ label: SourceID) async {
+    await flushIngestStats(source: label)
     if let actor = captureActors[label] {
       await actor.stop()
     }

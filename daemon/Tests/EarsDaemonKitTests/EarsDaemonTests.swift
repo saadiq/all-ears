@@ -504,6 +504,82 @@ struct EarsDaemonTests {
   }
 
   @Test(
+    "closing an ingest stream flushes the final ingest_stats interval, and a sender seq restart is not frame loss"
+  )
+  func ingestStatsFlushedOnCloseAndSeqRestartIsNotLoss() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
+    let logRecorder = RecordingLogRecordSink()
+
+    let configuration = EarsDaemonConfiguration(
+      sources: [],
+      dataRoot: dataRoot,
+      socketPath: tempSocketPath())
+
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in SyntheticCaptureBackend(source: descriptor.id, buffers: []) },
+      clock: clock,
+      logSink: logRecorder)
+    try await daemon.start()
+
+    _ = try await daemon.startMeetingForTesting(
+      MeetingStartParams(
+        platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
+    let identity = MeetingIdentity(platform: "meet", externalID: "abc")
+    let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
+    let label: SourceID = "browser:meet:speaker-1"
+    // Whole seconds per buffer, per reopenSameLabelResumesSameSource's
+    // filename-precision note.
+    let samples = [Float](repeating: 0.25, count: 16000)
+
+    func push(_ streamID: String, seq: UInt32) async {
+      await daemon.pushIngestAudio(
+        streamID: streamID, samples: samples, sampleRate: 16000,
+        stamp: IngestFrameStamp(seq: seq, sentAtEpochMs: clock.now().secondsSinceEpoch * 1000))
+    }
+    func statsRecords() -> [LogRecord] {
+      logRecorder.recorded.filter { $0.event == "capture.ingest_stats" }
+    }
+    func field(_ record: LogRecord, _ key: String) -> LogValue? {
+      record.fields.first { $0.key == key }?.value
+    }
+
+    // First pipeline instance: 3 frames, all well inside one 30s interval —
+    // without the close-time flush this interval would never be emitted.
+    let firstStreamID = try await daemon.openIngestSource(
+      label: label, format: format, meeting: identity)
+    for seq: UInt32 in [5, 6, 7] { await push(firstStreamID, seq: seq) }
+    clock.advance(by: 2)
+    await daemon.closeIngestSource(streamID: firstStreamID)
+
+    let firstFlush = try #require(statsRecords().first)
+    #expect(statsRecords().count == 1)
+    #expect(field(firstFlush, "frames") == .int(3))
+    #expect(field(firstFlush, "frames_lost") == nil)
+
+    // The participant's pipeline is rebuilt: same label, fresh seq. Neither
+    // the reopen (100 vs the old stream's 7 — only harmless because the close
+    // cleared the baseline) nor a mid-stream restart (0 after 101) may be
+    // misread as lost frames.
+    let secondStreamID = try await daemon.openIngestSource(
+      label: label, format: format, meeting: identity)
+    await push(secondStreamID, seq: 100)
+    await push(secondStreamID, seq: 101)
+    await push(secondStreamID, seq: 0)
+    clock.advance(by: 1)
+    await daemon.closeIngestSource(streamID: secondStreamID)
+
+    let flushes = statsRecords()
+    #expect(flushes.count == 2)
+    let secondFlush = try #require(flushes.last)
+    #expect(field(secondFlush, "frames") == .int(3))
+    #expect(field(secondFlush, "frames_lost") == nil)
+
+    await daemon.stop()
+  }
+
+  @Test(
     "a session opened after daemon start can name a browser source created by a later ingest.open")
   func sessionCanReferenceDynamicIngestSource() async throws {
     let dataRoot = try makeDataRoot()

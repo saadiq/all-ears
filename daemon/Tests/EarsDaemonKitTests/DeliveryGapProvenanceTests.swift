@@ -75,6 +75,41 @@ struct DeliveryGapProvenanceTests {
     #expect(value(fields, "cause") == .string("silence"))
   }
 
+  @Test("a sender seq restart (pipeline rebuild) is a fresh baseline, not billions of lost frames")
+  func senderRestart() {
+    // Meet rebuilt the participant's capture pipeline mid-meeting: seq is
+    // per-pipeline-instance, so it starts over at 0 from an arbitrary
+    // previous value. The naive wrapping delta would read ~4.29e9 lost.
+    let fields = provenance(
+      gapSeconds: 5, previousSentMsAgo: 5000, currentSentMsAgo: 0,
+      previousSeq: 48_213, currentSeq: 0)
+    #expect(value(fields, "cause") == .string("silence"))
+    #expect(value(fields, "seq_gap") == .int(0))
+    #expect(value(fields, "sender_restart") == .bool(true))
+  }
+
+  @Test("a wrap past 2^32 that also skipped frames still counts the loss")
+  func wrappingSeqWithLoss() {
+    // Wrapped slightly past 2^32 (not restarted near 0): 0xFFFFFFFF → 3
+    // skipped seqs 0, 1, 2.
+    let fields = provenance(
+      gapSeconds: 5, previousSentMsAgo: 5000, currentSentMsAgo: 0,
+      previousSeq: .max, currentSeq: 3)
+    #expect(value(fields, "cause") == .string("frames-lost"))
+    #expect(value(fields, "seq_gap") == .int(3))
+    #expect(value(fields, "sender_restart") == nil)
+  }
+
+  @Test("a small backwards step is reordering, not a restart and not loss")
+  func reorderedSeq() {
+    let fields = provenance(
+      gapSeconds: 5, previousSentMsAgo: 5000, currentSentMsAgo: 0,
+      previousSeq: 10, currentSeq: 9)
+    #expect(value(fields, "seq_gap") == .int(0))
+    #expect(value(fields, "sender_restart") == nil)
+    #expect(value(fields, "cause") == .string("silence"))
+  }
+
   @Test("one-way delay is reported whenever a stamp is present")
   func oneWayDelay() {
     let fields = provenance(gapSeconds: 5, previousSentMsAgo: 5000, currentSentMsAgo: 250)
