@@ -4,6 +4,7 @@ import {
   hookDebugState,
   installHook,
   setMeetGraphSinks,
+  stopMeetGraphProbe,
 } from "./rtc-hook";
 
 // The Meet audio-graph probe's DOM-facing half: the pass-through wraps on
@@ -17,7 +18,15 @@ interface Emitted {
   fields: Record<string, number | string>;
 }
 
-function setUpGlobals(opts?: { debugAudio?: boolean; bridge?: boolean }): {
+function setUpGlobals(opts?: {
+  debugAudio?: boolean;
+  bridge?: boolean;
+  /** Worklet `numberOfOutputs`; 0 models Meet's sink-shaped analyzer node. */
+  workletOutputs?: number;
+  /** Make the native connect throw for the PROBE's analyser branch only, so
+   * Meet's own wiring still succeeds and the node still becomes a candidate. */
+  connectThrows?: boolean;
+}): {
   FakeAudioNode: new () => object;
   nativeConnect: ReturnType<typeof vi.fn>;
   nativeDisconnect: ReturnType<typeof vi.fn>;
@@ -51,6 +60,11 @@ function setUpGlobals(opts?: { debugAudio?: boolean; bridge?: boolean }): {
   g.RTCRtpReceiver = FakeRTCRtpReceiver;
 
   const nativeConnect = vi.fn(function (this: unknown, target: unknown) {
+    const isAnalyserBranch = typeof (target as { getFloatTimeDomainData?: unknown })
+      ?.getFloatTimeDomainData === "function";
+    if (opts?.connectThrows && isAnalyserBranch) {
+      throw new Error("IndexSizeError: output index (0) exceeds number of outputs (0)");
+    }
     return target; // the WebAudio contract: connect(node) returns the target
   });
   const nativeDisconnect = vi.fn();
@@ -59,9 +73,13 @@ function setUpGlobals(opts?: { debugAudio?: boolean; bridge?: boolean }): {
   (FakeAudioNode.prototype as Record<string, unknown>).disconnect = nativeDisconnect;
   g.AudioNode = FakeAudioNode;
 
-  class FakeAudioWorkletNode {
+  // AudioWorkletNode extends AudioNode in the DOM — so it inherits the wrapped
+  // connect/disconnect, which the probe's release path relies on.
+  class FakeAudioWorkletNode extends FakeAudioNode {
     context: unknown;
+    numberOfOutputs = opts?.workletOutputs ?? 1;
     constructor(context: unknown, _processor: string) {
+      super();
       this.context = context;
     }
   }
@@ -87,6 +105,24 @@ function fakeContext(peakForTick?: (tick: number) => number): {
       };
     },
   };
+}
+
+/** One sampler period — the settle the probe waits out before it branches off
+ * a node Meet has just wired up. */
+const SETTLE_MS = 1_000;
+
+/**
+ * Model Meet wiring `nodes` into its own graph, by connecting each to a sink.
+ * The probe refuses to branch off a worklet until this has happened AND a
+ * sample tick has elapsed (see deferGraphNodeWork), so a test that wants a
+ * monitored node must do both — that ordering is the crash fix, not incidental.
+ * Returns the sink, which is itself a graph node.
+ */
+function wire(...nodes: unknown[]): object {
+  const Node = (globalThis as Record<string, unknown>).AudioNode as new () => object;
+  const sink = new Node();
+  for (const n of nodes) (n as { connect(t: unknown): unknown }).connect(sink);
+  return sink;
 }
 
 describe("Meet audio-graph probe (rtc-hook.ts)", () => {
@@ -130,7 +166,8 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
     expect(hookDebugState().graph.nodes).toBe(0);
   });
 
-  it("registers worklet nodes, counts neteq-processor, and starts monitoring", () => {
+  it("registers worklet nodes, counts neteq-processor, and monitors them once Meet wires them up", () => {
+    vi.useFakeTimers();
     setUpGlobals();
     installHook();
 
@@ -138,15 +175,54 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
       c: unknown,
       p: string,
     ) => object;
-    new Ctor(fakeContext(), "neteq-processor");
-    new Ctor(fakeContext(), "neteq-processor");
-    new Ctor(fakeContext(), "audio-analyzer-processor");
+    const a = new Ctor(fakeContext(), "neteq-processor");
+    const b = new Ctor(fakeContext(), "neteq-processor");
+    const c = new Ctor(fakeContext(), "audio-analyzer-processor");
+    wire(a, b, c);
+    vi.advanceTimersByTime(SETTLE_MS);
 
     const state = hookDebugState();
     expect(state.webaudio.netEqWorkletNodes).toBe(2);
     expect(state.webaudio.audioWorkletNodes).toBeGreaterThanOrEqual(3);
     expect(state.graph.monitoredNodes).toBe(3);
-    expect(state.graph.nodes).toBe(3);
+    expect(state.graph.pendingNodes).toBe(0);
+    expect(state.graph.nodes).toBe(4); // three worklets + the sink they feed
+  });
+
+  it("never branches off a worklet at construction — only after Meet wires it up", () => {
+    // The crash this guards (2026-07-29): attaching inside the AudioWorkletNode
+    // constructor made Meet's neteq-processor a pulled node before its NetEq
+    // SharedArrayBuffer arrived, so the render thread ran process() against
+    // uninitialised WASM and trapped — SIGTRAP, whole renderer, ~1.6s in.
+    // Nothing here can catch that: it happens on the audio thread.
+    vi.useFakeTimers();
+    const { nativeConnect } = setUpGlobals();
+    installHook();
+    const counting = countingContext();
+
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    const node = new Ctor(counting.ctx, "neteq-processor");
+
+    // Construction alone: registered as a candidate, but nothing allocated and
+    // — the part that matters — nothing connected to it.
+    expect(counting.created()).toBe(0);
+    expect(nativeConnect).not.toHaveBeenCalled();
+    expect(hookDebugState().graph).toMatchObject({ monitoredNodes: 0, pendingNodes: 1 });
+
+    // Time alone is not enough either: an unwired worklet is never touched.
+    vi.advanceTimersByTime(10 * SETTLE_MS);
+    expect(counting.created()).toBe(0);
+    expect(hookDebugState().graph).toMatchObject({ monitoredNodes: 0, pendingNodes: 1 });
+
+    // Meet wires it up: now it is live in Meet's own graph, so branching off it
+    // no longer decides whether it processes.
+    wire(node);
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(counting.created()).toBe(1);
+    expect(hookDebugState().graph).toMatchObject({ monitoredNodes: 1, pendingNodes: 0 });
   });
 
   it("samples per-node energy into the perf ring and emits a turn-taking verdict of per-participant", () => {
@@ -164,9 +240,12 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
       p: string,
     ) => object;
     // Turn-taking: node 1 speaks for the first 7 ticks, node 2 for the rest.
-    new Ctor(fakeContext((tick) => (tick <= 7 ? 0.5 : 0)), "neteq-processor");
-    new Ctor(fakeContext((tick) => (tick <= 7 ? 0 : 0.5)), "neteq-processor");
+    const a = new Ctor(fakeContext((tick) => (tick <= 7 ? 0.5 : 0)), "neteq-processor");
+    const b = new Ctor(fakeContext((tick) => (tick <= 7 ? 0 : 0.5)), "neteq-processor");
+    wire(a, b);
 
+    // Tick 1 attaches both and samples them, so analyser ticks track sampler
+    // ticks one-for-one from here.
     vi.advanceTimersByTime(15_000); // 15 sampling ticks → summary tick included
 
     const energy = emitted.filter((e) => e.metric === "meet_graph_energy");
@@ -203,8 +282,10 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
       p: string,
     ) => object;
     const sameMix = (tick: number): number => 0.2 + 0.15 * (tick % 4);
-    new Ctor(fakeContext(sameMix), "neteq-processor");
-    new Ctor(fakeContext(sameMix), "neteq-processor");
+    wire(
+      new Ctor(fakeContext(sameMix), "neteq-processor"),
+      new Ctor(fakeContext(sameMix), "neteq-processor"),
+    );
 
     vi.advanceTimersByTime(15_000);
 
@@ -213,6 +294,7 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
   });
 
   it("bridges a neteq node into the capture pipeline only when __earsGraphBridge is set", () => {
+    vi.useFakeTimers();
     setUpGlobals({ bridge: true });
     installHook();
     const bridged: Array<{ stream: unknown; id: string }> = [];
@@ -229,8 +311,11 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
       c: unknown,
       p: string,
     ) => object;
-    new Ctor(ctx, "neteq-processor");
-    new Ctor(ctx, "audio-analyzer-processor"); // not a playout node — never bridged
+    // The bridge branches off the node's output too, so it waits out the same
+    // gate the meter does — never at construction.
+    wire(new Ctor(ctx, "neteq-processor"), new Ctor(ctx, "audio-analyzer-processor"));
+    expect(bridged).toHaveLength(0);
+    vi.advanceTimersByTime(SETTLE_MS);
 
     expect(bridged).toEqual([{ stream: destStream, id: "graphtap-1" }]);
     expect(emitted.some((e) => e.metric === "meet_graph_bridge")).toBe(true);
@@ -238,6 +323,7 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
   });
 
   it("does not bridge by default (flag off), even with the probe active", () => {
+    vi.useFakeTimers();
     setUpGlobals();
     installHook();
     const bridged: unknown[] = [];
@@ -252,13 +338,191 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
       c: unknown,
       p: string,
     ) => object;
-    new Ctor(ctx, "neteq-processor");
+    wire(new Ctor(ctx, "neteq-processor"));
+    vi.advanceTimersByTime(SETTLE_MS);
 
     expect(bridged).toHaveLength(0);
     expect(hookDebugState().graph.bridgedNodes).toBe(0);
   });
 
+  /** A context whose createAnalyser is counted, and whose analysers count
+   * their own disconnects — the two numbers that say whether a failed attach
+   * left an orphan behind in Meet's graph. */
+  function countingContext(): {
+    ctx: { createAnalyser: () => object };
+    created: () => number;
+    disconnected: () => number;
+  } {
+    let created = 0;
+    let disconnected = 0;
+    return {
+      ctx: {
+        createAnalyser: () => {
+          created += 1;
+          return {
+            fftSize: 2048,
+            getFloatTimeDomainData: (buf: Float32Array) => buf.fill(0),
+            disconnect: () => {
+              disconnected += 1;
+            },
+          };
+        },
+      },
+      created: () => created,
+      disconnected: () => disconnected,
+    };
+  }
+
+  it("skips zero-output worklets without allocating an analyser, and without burning the cap", () => {
+    // Meet's audio-analyzer-processor is sink-shaped: connecting it throws
+    // IndexSizeError. The probe must not build an analyser it cannot attach.
+    setUpGlobals({ workletOutputs: 0 });
+    installHook();
+    const counting = countingContext();
+
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    for (let i = 0; i < 50; i++) new Ctor(counting.ctx, "audio-analyzer-processor");
+
+    expect(counting.created()).toBe(0);
+    const state = hookDebugState().graph;
+    expect(state.monitoredNodes).toBe(0);
+    // Cheap rejections must not consume the cap — a real node arriving later
+    // still gets monitored.
+    expect(state.attachFailures).toBe(0);
+  });
+
+  it("bounds analyser leakage when the connect itself throws", () => {
+    vi.useFakeTimers();
+    setUpGlobals({ connectThrows: true });
+    installHook();
+    const counting = countingContext();
+
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    const nodes: object[] = [];
+    for (let i = 0; i < 200; i++) nodes.push(new Ctor(counting.ctx, "neteq-processor"));
+    wire(...nodes);
+    vi.advanceTimersByTime(SETTLE_MS);
+
+    // Capped at GRAPH_ENERGY_MAX_NODES, not one orphan per construction — and
+    // every analyser that was allocated got released rather than left behind.
+    expect(counting.created()).toBe(16);
+    expect(counting.disconnected()).toBe(16);
+    expect(hookDebugState().graph.attachFailures).toBe(16);
+    expect(hookDebugState().graph.monitoredNodes).toBe(0);
+  });
+
+  it("evicts a monitored node once its context closes, severing the probe's branch", () => {
+    vi.useFakeTimers();
+    const { nativeDisconnect } = setUpGlobals();
+    installHook();
+
+    const ctx = fakeContext(() => 0) as { createAnalyser: () => object; state?: string };
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    wire(new Ctor(ctx, "neteq-processor"));
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(hookDebugState().graph.monitoredNodes).toBe(1);
+
+    vi.advanceTimersByTime(2_000);
+    expect(hookDebugState().graph.monitoredNodes).toBe(1); // still live
+
+    ctx.state = "closed"; // Meet tore the context down
+    vi.advanceTimersByTime(1_000);
+
+    const state = hookDebugState().graph;
+    expect(state.monitoredNodes).toBe(0);
+    expect(state.evictedNodes).toBe(1);
+    // The branch that kept the worklet actively processing is gone.
+    expect(nativeDisconnect).toHaveBeenCalled();
+  });
+
+  it("releases the monitor when Meet's own bare disconnect() severs the branch", () => {
+    vi.useFakeTimers();
+    setUpGlobals();
+    installHook();
+
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    const node = new Ctor(fakeContext(), "neteq-processor") as {
+      disconnect: (t?: unknown) => void;
+    };
+    wire(node);
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(hookDebugState().graph.monitoredNodes).toBe(1);
+
+    node.disconnect(); // drops every out-edge, ours included
+
+    expect(hookDebugState().graph.monitoredNodes).toBe(0);
+    expect(hookDebugState().graph.evictedNodes).toBe(1);
+  });
+
+  it("stopMeetGraphProbe releases every branch and stops the sampler", () => {
+    vi.useFakeTimers();
+    setUpGlobals();
+    installHook();
+    const emitted: Emitted[] = [];
+    setMeetGraphSinks({
+      emitPerf: (metric, fields) => emitted.push({ metric, fields }),
+      bridgeStream: () => {},
+    });
+
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    wire(
+      new Ctor(fakeContext(() => 0.5), "neteq-processor"),
+      new Ctor(fakeContext(() => 0.5), "neteq-processor"),
+    );
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(hookDebugState().graph.monitoredNodes).toBe(2);
+
+    stopMeetGraphProbe();
+    expect(hookDebugState().graph.monitoredNodes).toBe(0);
+
+    const before = emitted.length;
+    vi.advanceTimersByTime(30_000);
+    expect(emitted.length).toBe(before); // sampler really stopped
+  });
+
+  it("sub-gates each graph-touching probe independently, so a crash can be bisected", () => {
+    // __earsProbeNodeEnergy=0 must stop the analyser attach without touching
+    // the pure-JS graph bookkeeping (which cannot crash a renderer).
+    const g = globalThis as unknown as Record<string, unknown>;
+    setUpGlobals();
+    const store = new Map<string, string>([
+      ["__earsDebugAudio", "1"],
+      ["__earsProbeNodeEnergy", "0"],
+    ]);
+    g.localStorage = { getItem: (k: string) => store.get(k) ?? null };
+    installHook();
+
+    const counting = countingContext();
+    const Ctor = (globalThis as Record<string, unknown>).AudioWorkletNode as new (
+      c: unknown,
+      p: string,
+    ) => object;
+    new Ctor(counting.ctx, "neteq-processor");
+
+    expect(counting.created()).toBe(0); // no analyser, nothing attached
+    expect(hookDebugState().graph.monitoredNodes).toBe(0);
+    // Bookkeeping still ran — the node is in the topology.
+    expect(hookDebugState().graph.nodes).toBe(1);
+    expect(hookDebugState().webaudio.netEqWorkletNodes).toBe(1);
+  });
+
   it("survives a broken analyser: the worklet node still constructs and audio is untouched", () => {
+    vi.useFakeTimers();
     setUpGlobals();
     installHook();
     const brokenCtx = {
@@ -272,6 +536,8 @@ describe("Meet audio-graph probe (rtc-hook.ts)", () => {
     ) => object;
     const node = new Ctor(brokenCtx, "neteq-processor");
     expect(node).toBeTruthy();
+    wire(node);
+    vi.advanceTimersByTime(SETTLE_MS);
     expect(hookDebugState().graph.monitoredNodes).toBe(0);
     expect(hookDebugState().webaudio.netEqWorkletNodes).toBe(1);
   });

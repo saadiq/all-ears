@@ -1,6 +1,6 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import { installHook, hookDebugState, setMeetGraphSinks } from "../lib/rtc-hook";
+import { installHook, hookDebugState, setMeetGraphSinks, stopMeetGraphProbe } from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
@@ -187,6 +187,11 @@ function startEpoch(platform: Platform, adapter: PlatformAdapter | null): void {
 function stopCapture(): void {
   claimEpoch();
   (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.();
+  // The graph probe attaches analysers to Meet's own worklets, and an output
+  // connection keeps an AudioWorkletNode actively processing. An idle
+  // extension must not hold those (and the WASM decoder behind each) alive —
+  // monitoring re-arms on the next worklet Meet constructs.
+  stopMeetGraphProbe();
   console.debug("[ears][hook] capture disabled — epoch released, pipelines torn down");
 }
 

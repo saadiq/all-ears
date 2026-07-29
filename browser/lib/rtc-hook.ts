@@ -550,7 +550,10 @@ export function hookDebugState(): {
     edges: number;
     overflow: number;
     monitoredNodes: number;
+    pendingNodes: number;
     bridgedNodes: number;
+    attachFailures: number;
+    evictedNodes: number;
   };
 } {
   const graphCounts = graphRegistry?.counts() ?? { nodes: 0, edges: 0, overflow: 0 };
@@ -574,7 +577,10 @@ export function hookDebugState(): {
     graph: {
       ...graphCounts,
       monitoredNodes: monitoredGraphNodes.size,
+      pendingNodes: pendingGraphNodes.size,
       bridgedNodes: bridgedNodeCount,
+      attachFailures: graphAttachFailures,
+      evictedNodes: graphEvictedNodes,
     },
   };
 }
@@ -705,6 +711,14 @@ function installMeetWebAudioProbe(): void {
   try {
     const w = window as unknown as Record<string, unknown>;
 
+    // Record the arm in the debug log: which graph-touching probes this page
+    // load actually ran is the first thing to know when reading a crash.
+    console.debug(
+      `[ears][probe] audio probes — debugAudio:${energyProbeEnabled()}` +
+        ` trackEnergy:${probeSubGateEnabled(PROBE_TRACK_ENERGY_KEY)}` +
+        ` nodeEnergy:${probeSubGateEnabled(PROBE_NODE_ENERGY_KEY)}`,
+    );
+
     const streamTracks = (v: unknown): string => {
       const s = v as { getAudioTracks?: () => Array<{ id: string }> } | null;
       const ids = s?.getAudioTracks?.().map((t) => t.id) ?? null;
@@ -753,8 +767,9 @@ function installMeetWebAudioProbe(): void {
             if (processor === "neteq-processor") probeNetEqWorkletCount += 1;
             if (energyProbeEnabled()) {
               meetGraph().noteWorklet(instance, processor);
-              monitorGraphNodeEnergy(instance, processor);
-              if (processor === "neteq-processor") maybeBridgeGraphNode(instance, processor);
+              // Both the meter and the bridge branch off the node's output, so
+              // both wait for Meet to wire it up — see deferGraphNodeWork.
+              deferGraphNodeWork(instance, processor, processor === "neteq-processor");
             }
           } catch {
             // diagnostic only — never throws into Meet's audio path
@@ -853,7 +868,13 @@ function installMeetWebAudioProbe(): void {
       nodeProto.connect = function (this: object, ...args: unknown[]): unknown {
         const result = native.apply(this, args);
         try {
-          if (energyProbeEnabled()) meetGraph().noteConnect(this, args[0]);
+          if (energyProbeEnabled()) {
+            meetGraph().noteConnect(this, args[0]);
+            // Meet wiring a node into its own graph is the signal the probe
+            // waits for before branching an analyser off it — see
+            // deferGraphNodeEnergy.
+            noteGraphNodeWired(this);
+          }
         } catch {
           // diagnostic only
         }
@@ -863,10 +884,21 @@ function installMeetWebAudioProbe(): void {
     const nativeDisconnect = nodeProto?.disconnect;
     if (nodeProto && typeof nativeDisconnect === "function") {
       const native = nativeDisconnect as (...a: unknown[]) => unknown;
+      nativeAudioNodeDisconnect = native;
       nodeProto.disconnect = function (this: object, ...args: unknown[]): unknown {
         const result = native.apply(this, args);
         try {
-          if (energyProbeEnabled()) meetGraph().noteDisconnect(this, args[0]);
+          if (energyProbeEnabled()) {
+            meetGraph().noteDisconnect(this, args[0]);
+            // Meet just tore its own edges down. Where that also severed the
+            // probe's analyser branch the monitor is silent from here on, so
+            // release its slot rather than sampling a dead node forever.
+            const id = meetGraph().idOf(this);
+            const mon = id ? monitoredGraphNodes.get(id) : undefined;
+            if (id && mon && disconnectSeversProbeBranch(args, mon.analyser)) {
+              releaseMonitoredNode(id, mon);
+            }
+          }
         } catch {
           // diagnostic only
         }
@@ -962,12 +994,30 @@ function energyProbeEnabled(): boolean {
   }
 }
 
+/** Sub-gate keys under `__earsDebugAudio`. Each names one probe that touches
+ * the page's real audio graph — the parts that can take a renderer down from
+ * the audio thread, where no try/catch of ours can contain it. Splitting them
+ * lets a crash be bisected from the console instead of by rebuilding. */
+export const PROBE_TRACK_ENERGY_KEY = "__earsProbeTrackEnergy";
+export const PROBE_NODE_ENERGY_KEY = "__earsProbeNodeEnergy";
+
+/** Sub-gates default ON, so `__earsDebugAudio=1` alone behaves as before.
+ * Set the key to "0" to disable just that probe. */
+function probeSubGateEnabled(key: string): boolean {
+  try {
+    return localStorage.getItem(key) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 /** Attach a throttled peak meter to `track`, logging only while it carries
  * signal. Diagnostic only, `__earsDebugAudio`-gated, capped at
  * ENERGY_PROBE_MAX_TRACKS so a tile-heavy call can't build unbounded graph. */
 function monitorTrackEnergy(track: MediaStreamTrack, via: string): void {
   try {
     if (!energyProbeEnabled() || !nativeCreateMediaStreamSource) return;
+    if (!probeSubGateEnabled(PROBE_TRACK_ENERGY_KEY)) return;
     if (monitoredTrackCount >= ENERGY_PROBE_MAX_TRACKS) return;
     monitoredTrackCount += 1;
 
@@ -1088,43 +1138,238 @@ function graphBridgeEnabled(): boolean {
 
 interface MonitoredGraphNode {
   label: string;
+  /**
+   * Weak on purpose. An AudioWorkletNode stays "actively processing" while it
+   * has an output connection, so the probe's analyser branch is what keeps
+   * Meet's NetEQ worklets — and the WASM heap + TFLite delegate behind each —
+   * alive past the point Meet dropped them. Holding the node weakly lets the
+   * sampler notice the ones Meet is done with and hand the branch back
+   * (releaseMonitoredNode), instead of pinning them for the tab's lifetime.
+   */
+  ref: WeakRef<object>;
   analyser: AnalyserNode;
   buf: Float32Array<ArrayBuffer>;
   envelope: EnergyEnvelope;
 }
 
+/** A node seen but not yet branched off. See {@link deferGraphNodeWork}. */
+interface PendingGraphNode {
+  label: string;
+  ref: WeakRef<object>;
+  /** Sample tick at which Meet connected this node, or null if it hasn't. */
+  wiredAtTick: number | null;
+  /** Gates resolved at registration, applied when the node comes due. */
+  meter: boolean;
+  bridge: boolean;
+}
+
 const monitoredGraphNodes = new Map<string, MonitoredGraphNode>();
+const pendingGraphNodes = new Map<string, PendingGraphNode>();
 let graphSampleTimer: ReturnType<typeof setInterval> | null = null;
 let graphSampleTick = 0;
 let bridgedNodeCount = 0;
+/** Attaches that allocated an analyser and then threw. Counted against
+ * GRAPH_ENERGY_MAX_NODES so a node type that fails every time cannot leak
+ * analysers without bound. */
+let graphAttachFailures = 0;
+/** Monitors released because their node died or Meet severed the branch. */
+let graphEvictedNodes = 0;
+
+/**
+ * Register `node` as a candidate for the meter and/or the capture bridge —
+ * every probe branch that hangs off a node's output goes through here.
+ * Deliberately does NOT attach:
+ * the only caller is the AudioWorkletNode constructor wrap, and Meet's
+ * `neteq-processor` is not usable at that point — it has no NetEq state until
+ * Meet posts it the SharedArrayBuffer over the node's port. An output
+ * connection makes a node a pulled part of the render graph, so attaching here
+ * drove `process()` against uninitialised WASM and trapped the audio thread,
+ * taking the renderer with it (SIGTRAP, ~1.6s into every call — bisected
+ * 2026-07-29 via PROBE_NODE_ENERGY_KEY). Nothing in this module can catch that:
+ * it happens on a thread we never run on.
+ *
+ * So the probe waits for Meet to wire the node into its own graph
+ * ({@link noteGraphNodeWired}) and attaches a tick later, from the sampler.
+ * By then the worklet is initialised and already being pulled by Meet's edges,
+ * and the analyser branch changes nothing about whether it runs.
+ */
+function deferGraphNodeWork(node: object, label: string, bridgeable: boolean): void {
+  try {
+    const meter = probeSubGateEnabled(PROBE_NODE_ENERGY_KEY);
+    const bridge = bridgeable && graphBridgeEnabled();
+    if (!meter && !bridge) return;
+    if (graphMeterSlotsUsed() >= GRAPH_ENERGY_MAX_NODES) return;
+    const id = meetGraph().idOf(node) ?? meetGraph().ensure(node);
+    if (!id || monitoredGraphNodes.has(id) || pendingGraphNodes.has(id)) return;
+    if (!hasAudioOutput(node)) return; // sink-shaped worklet — nothing to branch off
+    pendingGraphNodes.set(id, { label, ref: new WeakRef(node), wiredAtTick: null, meter, bridge });
+    ensureGraphSampler();
+  } catch (err) {
+    console.debug("[ears][probe][graph] graph node failed to register (non-fatal):", err);
+  }
+}
+
+/** Cap slots in use: metered, waiting to be metered, and burned by a failure. */
+function graphMeterSlotsUsed(): number {
+  return monitoredGraphNodes.size + pendingGraphNodes.size + graphAttachFailures;
+}
+
+/**
+ * Meet connected `node` to something. For a pending candidate that is the
+ * green light: the node is live in Meet's own graph, so metering it no longer
+ * changes whether it processes. Stamped with the current tick so the attach
+ * lands on a LATER one — off this call stack, and a settle interval after
+ * Meet's own wiring.
+ */
+function noteGraphNodeWired(node: object): void {
+  const id = meetGraph().idOf(node);
+  if (!id) return;
+  const pending = pendingGraphNodes.get(id);
+  if (pending && pending.wiredAtTick === null) pending.wiredAtTick = graphSampleTick;
+}
+
+/** Attach every candidate Meet has wired and that has since survived a tick. */
+function attachPendingGraphNodes(): void {
+  for (const [id, pending] of [...pendingGraphNodes]) {
+    const node = pending.ref.deref();
+    if (!node) {
+      pendingGraphNodes.delete(id); // Meet dropped it before we ever branched off it
+      continue;
+    }
+    if (pending.wiredAtTick === null || graphSampleTick <= pending.wiredAtTick) continue;
+    pendingGraphNodes.delete(id);
+    if (pending.meter) attachGraphNodeEnergy(id, node, pending.label);
+    if (pending.bridge) maybeBridgeGraphNode(node, pending.label);
+  }
+}
 
 /**
  * Branch `node`'s output into an AnalyserNode in the node's OWN context and
  * fold it into the shared sampling timer. The analyser has no onward
  * connection (no playback, no feedback) and the branch uses the captured
  * NATIVE connect so the probe's own taps never pollute the graph map.
+ *
+ * Reached only from the sampler, never from a constructor — see
+ * {@link deferGraphNodeEnergy} for why that ordering is load-bearing.
  */
-function monitorGraphNodeEnergy(node: object, label: string): void {
+function attachGraphNodeEnergy(id: string, node: object, label: string): void {
   try {
-    if (monitoredGraphNodes.size >= GRAPH_ENERGY_MAX_NODES) return;
-    const id = meetGraph().idOf(node) ?? meetGraph().ensure(node);
-    if (!id || monitoredGraphNodes.has(id)) return;
+    if (monitoredGraphNodes.size + graphAttachFailures >= GRAPH_ENERGY_MAX_NODES) return;
+    if (monitoredGraphNodes.has(id)) return;
     const ctx = (node as { context?: BaseAudioContext }).context;
     if (!ctx || typeof ctx.createAnalyser !== "function") return;
+    // Validate BEFORE allocating. Meet's `audio-analyzer-processor` is a
+    // sink-shaped worklet (numberOfOutputs 0); connecting it throws
+    // IndexSizeError, and allocating the analyser first meant every one of
+    // those left an orphan analyser in Meet's own context — never stored, so
+    // never counted against the cap either. Nothing to monitor here anyway: a
+    // node with no output carries no signal to sample.
+    if (!hasAudioOutput(node)) return;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     const connect = nativeAudioNodeConnect ?? (node as AudioNode).connect;
-    connect.call(node, analyser);
+    try {
+      connect.call(node, analyser);
+    } catch (err) {
+      // Allocated but unattached: release it here rather than letting the
+      // outer catch drop the reference on the floor.
+      graphAttachFailures += 1;
+      try {
+        analyser.disconnect();
+      } catch {
+        // nothing was ever connected
+      }
+      throw err;
+    }
     monitoredGraphNodes.set(id, {
       label,
+      ref: new WeakRef(node),
       analyser,
       buf: new Float32Array(analyser.fftSize),
       envelope: new EnergyEnvelope(),
     });
     console.debug(`[ears][probe][graph] monitoring ${id} (${label}) — ${monitoredGraphNodes.size} node(s)`);
-    if (!graphSampleTimer) graphSampleTimer = setInterval(sampleGraphEnergy, GRAPH_SAMPLE_INTERVAL_MS);
   } catch (err) {
     console.debug("[ears][probe][graph] node energy meter failed to attach (non-fatal):", err);
+  }
+}
+
+/** Start the shared sampler if it isn't already running. */
+function ensureGraphSampler(): void {
+  if (!graphSampleTimer) graphSampleTimer = setInterval(sampleGraphEnergy, GRAPH_SAMPLE_INTERVAL_MS);
+}
+
+/** Stop the sampler once nothing is metered and nothing is waiting to be. */
+function stopGraphSamplerIfIdle(): void {
+  if (monitoredGraphNodes.size > 0 || pendingGraphNodes.size > 0) return;
+  if (graphSampleTimer) {
+    clearInterval(graphSampleTimer);
+    graphSampleTimer = null;
+  }
+}
+
+/** False only when the node reports zero outputs — nothing to branch off. An
+ * unknown shape reads as connectable; the attach is try/caught regardless. */
+function hasAudioOutput(node: object): boolean {
+  const outputs = (node as { numberOfOutputs?: number }).numberOfOutputs;
+  return typeof outputs !== "number" || outputs > 0;
+}
+
+/**
+ * Hand a monitored node's output back: drop the map entry, sever the probe's
+ * analyser branch (the connection that kept the worklet actively processing),
+ * and stop the shared timer once nothing is left to sample.
+ */
+function releaseMonitoredNode(id: string, mon: MonitoredGraphNode): void {
+  monitoredGraphNodes.delete(id);
+  graphEvictedNodes += 1;
+  const node = mon.ref.deref();
+  try {
+    const disconnect = nativeAudioNodeDisconnect ?? (node as AudioNode | undefined)?.disconnect;
+    if (node && disconnect) disconnect.call(node, mon.analyser);
+  } catch {
+    // node already torn down by the page — the branch went with it
+  }
+  try {
+    mon.analyser.disconnect();
+  } catch {
+    // analyser has no onward connection by design
+  }
+  stopGraphSamplerIfIdle();
+}
+
+/** Release the monitor attached to `node`, if any. */
+function releaseMonitoredNodeFor(node: object): void {
+  const id = meetGraph().idOf(node);
+  if (!id) return;
+  const mon = monitoredGraphNodes.get(id);
+  if (mon) releaseMonitoredNode(id, mon);
+}
+
+/**
+ * True when `disconnect(...args)` severed the probe's own analyser branch,
+ * which always hangs off output 0: both the bare form and the output-index
+ * form drop every destination on that output.
+ */
+function disconnectSeversProbeBranch(args: unknown[], analyser: AnalyserNode): boolean {
+  const target = args[0];
+  if (target === undefined) return true; // disconnect()
+  if (typeof target === "number") return target === 0; // disconnect(output)
+  return target === analyser; // disconnect(destination[, output])
+}
+
+/**
+ * Release every monitored node's branch and stop the sampler. Called when
+ * capture is switched off: an idle extension must not hold Meet's audio nodes
+ * (and their WASM decoders) alive. Monitoring re-arms on the next worklet
+ * Meet constructs, which is the only place candidates are ever registered.
+ */
+export function stopMeetGraphProbe(): void {
+  for (const [id, mon] of [...monitoredGraphNodes]) releaseMonitoredNode(id, mon);
+  pendingGraphNodes.clear();
+  if (graphSampleTimer) {
+    clearInterval(graphSampleTimer);
+    graphSampleTimer = null;
   }
 }
 
@@ -1132,9 +1377,32 @@ function monitorGraphNodeEnergy(node: object, label: string): void {
  * the analyser/bridge branches skip the graph bookkeeping. */
 let nativeAudioNodeConnect: ((...a: unknown[]) => unknown) | null = null;
 
+/** Native (unwrapped) AudioNode.prototype.disconnect, used to sever the
+ * probe's own branches without touching the graph bookkeeping. */
+let nativeAudioNodeDisconnect: ((...a: unknown[]) => unknown) | null = null;
+
+/** A monitor whose node Meet has finished with: collected outright, or left in
+ * a closed context. Either way there is nothing left to sample. */
+function monitorIsDead(mon: MonitoredGraphNode): boolean {
+  const node = mon.ref.deref();
+  if (!node) return true;
+  const ctx = (node as { context?: BaseAudioContext }).context;
+  return ctx?.state === "closed";
+}
+
 function sampleGraphEnergy(): void {
   try {
     graphSampleTick += 1;
+    // Evict first: a monitor whose node died holds an analyser, a cap slot,
+    // and (until the branch is severed) the node itself.
+    for (const [id, mon] of [...monitoredGraphNodes]) {
+      if (monitorIsDead(mon)) releaseMonitoredNode(id, mon);
+    }
+    // Then take on whatever Meet has since wired up. Attaching from the timer
+    // — never from a constructor — is what keeps the probe off Meet's audio
+    // thread while its worklets are still initialising.
+    attachPendingGraphNodes();
+    stopGraphSamplerIfIdle();
     const fields: Record<string, number | string> = {};
     let anySignal = false;
     for (const [id, mon] of monitoredGraphNodes) {
@@ -1185,6 +1453,14 @@ function emitGraphSummary(): void {
     graph_nodes: counts.nodes,
     graph_edges: counts.edges,
     graph_overflow: counts.overflow,
+    // neteq_nodes climbing while `monitored` sits at the cap is the signature
+    // of the probe pinning worklets Meet is done with; `evicted` rising is the
+    // release path keeping up with it.
+    attach_failures: graphAttachFailures,
+    evicted: graphEvictedNodes,
+    // Candidates registered but not yet metered. Stuck above zero means Meet
+    // never connected those worklets — the attach gate is doing its job.
+    pending: pendingGraphNodes.size,
   };
   if (v.maxCorr !== null) fields.max_corr = v.maxCorr;
   if (v.minCorr !== null) fields.min_corr = v.minCorr;
@@ -1236,15 +1512,13 @@ function maybeBridgeGraphNode(node: object, label: string): void {
 /** Test seam: drop the graph probe's realm state so each test starts clean.
  * (The wraps themselves stay installed — claimInstall owns that lifecycle.) */
 export function __resetMeetGraphProbe(): void {
+  stopMeetGraphProbe(); // severs branches too — a leaked one would outlive the test
   graphRegistry = null;
-  monitoredGraphNodes.clear();
-  if (graphSampleTimer) {
-    clearInterval(graphSampleTimer);
-    graphSampleTimer = null;
-  }
   graphSampleTick = 0;
   bridgedNodeCount = 0;
   probeNetEqWorkletCount = 0;
+  graphAttachFailures = 0;
+  graphEvictedNodes = 0;
 }
 
 /** Bridge a bare audio track (MediaStreamTrackGenerator output) — it already
