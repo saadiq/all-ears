@@ -56,7 +56,7 @@ export default defineContentScript({
     // feeding a bridged stream into the real capture pipeline.
     setMeetGraphSinks({
       emitPerf: (metric, fields) => mainPerf().emit(metric, fields),
-      bridgeStream: (stream, id) => __devCaptureStream(stream, id),
+      bridgeStream: (stream, id) => __devCaptureStream(stream, id, "graph-bridge"),
     });
 
     const host = location.host;

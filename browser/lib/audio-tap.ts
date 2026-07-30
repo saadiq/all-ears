@@ -3,10 +3,18 @@ import {
   liveTracks,
   setEncodedAudioListener,
   setTrackSink,
+  webAudioTracks,
   type EncodedAudioFrameLike,
   type EncodedAudioListener,
   type TrackSink,
 } from "./rtc-hook";
+import {
+  SeamArbiter,
+  seamUsesReceiverTracks,
+  seamOrderFor,
+  seamTracksToAdopt,
+  type SeamId,
+} from "./capture-seams";
 import type { PlatformAdapter } from "./identity/adapter";
 import { postToIsolated, type ParticipantId, type Platform } from "./protocol";
 import { mainPerf, perfDetailEnabled, perfEnabled } from "./perf-main";
@@ -28,9 +36,22 @@ const TARGET_SAMPLE_RATE = 16000;
 // before we drop the oldest frame (back-pressure toward the transport).
 const RING_CAPACITY = 50;
 
+/**
+ * Where a pipeline's frames come from. Receiver-based seams carry the RTC
+ * context `resolveIdentity` needs; the others have none, so their pipelines
+ * start under a provisional id and are named later by speaking correlation.
+ */
+interface PipelineOrigin {
+  seam: SeamId;
+  rtc?: { stream: MediaStream; transceiver: RTCRtpTransceiver };
+  /** Source track id when the captured track is a clone (non-receiver seams). */
+  sourceTrackId?: string;
+}
+
 interface Pipeline {
   participantId: ParticipantId;
   generation: number;
+  origin: PipelineOrigin;
   stop(): void;
   /** Whether this pipeline has decoded at least one audio frame (debug report). */
   receiving(): boolean;
@@ -95,6 +116,15 @@ interface TeardownWindow extends Window {
 }
 
 const pipelines = new Map<MediaStreamTrack, Pipeline>();
+// Which seam this call is capturing through, and the escalation state machine
+// that moves off a seam producing no audio. Rebuilt per epoch in initCapture.
+let arbiter: SeamArbiter | undefined;
+// Registry track id → the clone we captured it under, for seams whose tracks
+// come from somewhere other than the `ontrack` hook. Keyed by the ORIGINAL id
+// so a re-adoption sweep doesn't capture the same source track twice; the
+// clone's own id differs and is what reaches `pipelines`.
+const adoptedSeamTracks = new Map<string, MediaStreamTrack>();
+let provisionalCounter = 0;
 const generations = new Map<ParticipantId, number>(); // participantId → segment counter
 // Fallback speaker ids are keyed to the track so a re-adopted track (epoch
 // handoff) keeps its id. WeakMap: entries vanish when the track is GC'd.
@@ -136,6 +166,9 @@ export function initCapture(config: CaptureConfig): void {
   g.__earsTeardown = teardownAll;
   prevTeardown?.(); // stop the superseded epoch before we start emitting
 
+  arbiter = new SeamArbiter(seamOrderFor(config.platform));
+  adoptedSeamTracks.clear();
+
   setTrackSink(sink);
   cfg.adapter?.onIdentify?.(handleIdentityUpgrade);
   cfg.adapter?.onRename?.(handleLateIdentity);
@@ -166,17 +199,31 @@ export function captureDebugState(): {
   epoch: number | undefined;
   pipelineCount: number;
   anyAudioDecodedThisCall: boolean;
-  participants: Array<{ id: ParticipantId; generation: number; receiving: boolean }>;
+  /** Active seam and whether a frame has proved it — the first thing to read
+   * when a call records silence (journal #100-#106). */
+  seam: { active: string; proven: boolean; exhausted: boolean } | undefined;
+  participants: Array<{
+    id: ParticipantId;
+    generation: number;
+    receiving: boolean;
+    seam: SeamId;
+    sourceTrackId?: string;
+  }>;
 } {
   return {
     platform: cfg?.platform,
     epoch: cfg?.epoch,
     pipelineCount: pipelines.size,
     anyAudioDecodedThisCall,
+    seam: arbiter
+      ? { active: arbiter.active, proven: arbiter.proven, exhausted: arbiter.exhausted }
+      : undefined,
     participants: [...pipelines.values()].map((p) => ({
       id: p.participantId,
       generation: p.generation,
       receiving: p.receiving(),
+      seam: p.origin.seam,
+      sourceTrackId: p.origin.sourceTrackId,
     })),
   };
 }
@@ -208,6 +255,17 @@ function handleIdentityUpgrade(track: MediaStreamTrack, id: ParticipantId): void
   if (!isCurrentEpoch(cfg.epoch)) return;
   const pipeline = pipelines.get(track);
   if (!pipeline || pipeline.participantId === id) return;
+  if (!seamUsesReceiverTracks(pipeline.origin.seam)) {
+    // Non-receiver seams capture a clone, and a track accepts only one
+    // MediaStreamTrackProcessor in its lifetime — restarting would need a
+    // fresh clone and would drop audio mid-turn for no gain. Rename daemon-
+    // side instead: the recorded source keeps its provisional id and the
+    // attendee's real name is joined to it, which is exactly what this path
+    // already does for a track that ended before its confirmation landed.
+    console.debug(`[ears][capture] identity upgrade on seam ${pipeline.origin.seam}: ${pipeline.participantId} → ${id} — renaming in place`);
+    handleLateIdentity(track.id, id);
+    return;
+  }
   const rec = liveTracks().get(track);
   if (!rec) {
     // Track already ended between the correlator's match and this callback;
@@ -217,7 +275,7 @@ function handleIdentityUpgrade(track: MediaStreamTrack, id: ParticipantId): void
   }
   console.debug(`[ears][capture] identity upgrade: track ${track.id} ${pipeline.participantId} → ${id} — restarting as a new segment`);
   stopPipeline(track);
-  startPipeline(track, rec.stream, rec.transceiver, id);
+  startPipeline(track, { seam: pipeline.origin.seam, rtc: { stream: rec.stream, transceiver: rec.transceiver } }, id);
 }
 
 /**
@@ -238,31 +296,103 @@ function handleLateIdentity(trackId: string, id: ParticipantId): void {
 const sink: TrackSink = (track, stream, transceiver) => {
   if (!isCurrentEpoch(cfg.epoch)) return; // a newer epoch owns capture
   if (pipelines.has(track)) return; // already capturing this track
-  startPipeline(track, stream, transceiver);
+  // Receiver tracks feed pipelines only while a receiver-based seam is active
+  // (the raw track, or the encoded tee that keys on it). Once the call has
+  // escalated past those, the tracks are known-silent decoys (journal #82) and
+  // capturing them would post empty sources to the daemon.
+  const seam = activeSeam();
+  if (!seamUsesReceiverTracks(seam)) return;
+  startPipeline(track, { seam, rtc: { stream, transceiver } });
 };
+
+function activeSeam(): SeamId {
+  return (arbiter?.active ?? "receiver-track") as SeamId;
+}
+
+/**
+ * Adopt every track the active seam offers that isn't already captured.
+ *
+ * Non-receiver seams capture a CLONE: the source track is one the page is
+ * actively playing, and a MediaStreamTrackProcessor consumes the track it is
+ * given. Cloning keeps Meet's own playback whole — verified read-only during
+ * the live investigation before this path existed (journal #105).
+ */
+function adoptSeamTracks(): void {
+  const seam = activeSeam();
+  if (seam !== "webaudio-track") return; // no other seam self-discovers tracks
+  const available = webAudioTracks();
+  const wanted = new Set(
+    seamTracksToAdopt(
+      seam,
+      available.map((t) => t.id),
+      new Set(adoptedSeamTracks.keys()),
+    ),
+  );
+  for (const source of available) {
+    if (!wanted.has(source.id)) continue;
+    let clone: MediaStreamTrack;
+    try {
+      clone = source.clone();
+    } catch (err) {
+      console.debug(`[ears][capture] could not clone webaudio track ${source.id}: ${String(err)}`);
+      continue;
+    }
+    adoptedSeamTracks.set(source.id, clone);
+    startPipeline(clone, { seam, sourceTrackId: source.id });
+  }
+}
+
+/**
+ * The active seam produced no audio in its grace window: tear its pipelines
+ * down and adopt the next seam's tracks.
+ *
+ * Everything downstream of the frame source is seam-agnostic, so this is a
+ * source swap rather than a capture restart — the daemon sees the same
+ * participant-left / participant-joined shape it already handles for a
+ * reconnect or an identity upgrade.
+ */
+function escalateSeam(from: SeamId, to: SeamId): void {
+  console.warn(
+    `[ears][capture] no audio decoded on seam "${from}" — escalating to "${to}". ` +
+      "See capture-seams.ts / journal #103-#105.",
+  );
+  postToIsolated({ kind: "status", text: `capture seam → ${to} (previous seam produced no audio)` });
+  for (const track of [...pipelines.keys()]) stopPipeline(track);
+  for (const clone of adoptedSeamTracks.values()) clone.stop();
+  adoptedSeamTracks.clear();
+  // Re-adopt under the new seam. A seam with nothing to adopt right now still
+  // gets its full grace — tracks can appear later when a participant joins,
+  // and the arbiter re-arms on the next unmute either way.
+  if (seamUsesReceiverTracks(to)) {
+    for (const [track, rec] of liveTracks()) sink(track, rec.stream, rec.transceiver);
+  } else {
+    adoptSeamTracks();
+  }
+}
 
 function startPipeline(
   track: MediaStreamTrack,
-  stream: MediaStream,
-  transceiver: RTCRtpTransceiver,
+  origin: PipelineOrigin,
   forcedId?: ParticipantId,
 ): void {
-  const participantId = forcedId ?? resolveIdentity(track, stream, transceiver);
+  const participantId = forcedId ?? identityFor(track, origin);
   participantIdsByTrackId.set(track.id, participantId);
   const generation = (generations.get(participantId) ?? 0) + 1;
   generations.set(participantId, generation);
 
   const displayName = cfg.adapter?.displayName?.(participantId);
 
-  // Platform selects the frame source; the standard MediaStreamTrackProcessor
-  // path must never run on Meet (no frames ever reach it there) and the Meet
-  // tee must never run elsewhere (it would double-capture where the standard
-  // path already works).
-  const makeSource = cfg.platform === "meet" ? meetDecodeSource(track) : trackProcessorSource(track);
-  const capture = new TrackCapture(participantId, () => pipeline.generation, makeSource, () => stopPipeline(track), track);
+  // The active seam selects the frame source. Every track-shaped seam shares
+  // the one MediaStreamTrackProcessor implementation — only Meet's encoded tee
+  // needs a decoder of its own, because it carries encoded frames rather than
+  // a track. See capture-seams.ts for why the seam is chosen at runtime.
+  const makeSource =
+    origin.seam === "meet-encoded-tee" ? meetDecodeSource(track) : trackProcessorSource(track);
+  const capture = new TrackCapture(participantId, () => pipeline.generation, makeSource, () => stopPipeline(track), track, origin.seam);
   const pipeline: Pipeline = {
     participantId,
     generation,
+    origin,
     stop() {
       capture.stop();
     },
@@ -309,6 +439,10 @@ function teardownAll(): void {
     reconcileTimer = undefined;
   }
   for (const track of [...pipelines.keys()]) stopPipeline(track);
+  // Clones exist only for this epoch's capture; the page's own tracks are
+  // untouched. Stopping them releases the processors holding them open.
+  for (const clone of adoptedSeamTracks.values()) clone.stop();
+  adoptedSeamTracks.clear();
 }
 
 /** Adopt any epoch-owned live track that lost (or never got) a pipeline, and
@@ -316,14 +450,44 @@ function teardownAll(): void {
  * participants still reach the daemon (#23). */
 function reconcile(): void {
   if (!isCurrentEpoch(cfg.epoch)) return;
+  // Seam arbitration rides the existing sweep rather than adding a timer: the
+  // grace window is seconds, so 3s resolution is ample and it keeps the whole
+  // escalation on one cadence.
+  const before = activeSeam();
+  const next = arbiter?.tick(Date.now());
+  if (next) escalateSeam(before, next as SeamId);
   for (const [track, rec] of liveTracks()) {
     if (!pipelines.has(track)) sink(track, rec.stream, rec.transceiver);
   }
+  adoptSeamTracks();
   cfg.adapter?.pollIdentities?.();
   // Piggy-backed on the existing 3s sweep rather than adding a timer: the
   // pipeline count is what per-frame cost scales with, so it's the denominator
   // for every capture-stage number.
   if (perfEnabled()) captureMetrics().tracks.set(pipelines.size);
+}
+
+/**
+ * Identity for a new pipeline, by seam.
+ *
+ * Receiver-seam tracks reach the adapter, which knows the transceiver and
+ * stream. Tracks from any other seam have ids that never match a hooked
+ * receiver (rtc-hook.ts:654), so there is nothing for the adapter to match on
+ * and guessing would attach a confidently-wrong name to real audio. They start
+ * under a provisional id instead and get their real one from the existing
+ * speaking-onset correlation once the participant talks — the same late-naming
+ * path that already upgrades speaker-<n> ids (see handleIdentityUpgrade).
+ */
+function identityFor(track: MediaStreamTrack, origin: PipelineOrigin): ParticipantId {
+  if (origin.rtc && seamUsesReceiverTracks(origin.seam)) {
+    return resolveIdentity(track, origin.rtc.stream, origin.rtc.transceiver);
+  }
+  const existing = fallbackIds.get(track);
+  if (existing) return existing;
+  provisionalCounter += 1;
+  const assigned = `${origin.seam}-${provisionalCounter}`;
+  fallbackIds.set(track, assigned);
+  return assigned;
 }
 
 /** Adapter identity, else a stable speaker-<n> so audio never blocks. */
@@ -532,6 +696,7 @@ class TrackCapture {
     private readonly makeSource: FrameSourceFactory,
     private readonly onFatal: () => void,
     private readonly track: MediaStreamTrack,
+    private readonly seam: SeamId,
   ) {
     this.ring = new RingBuffer(RING_CAPACITY, participantId);
     this.trackId = track.id;
@@ -553,7 +718,14 @@ class TrackCapture {
     // so a decoded frame must follow; if none does, capture is silently dropping
     // them (journal #72). Arm on unmute, not on start — a genuinely quiet
     // participant yields no frames and that is not a failure.
-    this.unmuteHandler = () => this.silentWatchdog.armOnUnmute();
+    // The same unmute drives two things: the per-participant silent warning,
+    // and the call-level seam arbitration (an unmute is the platform asserting
+    // audio is flowing, so a frameless grace window means the SEAM is wrong,
+    // not that this participant is quiet).
+    this.unmuteHandler = () => {
+      this.silentWatchdog.armOnUnmute();
+      arbiter?.noteUnmute(Date.now());
+    };
     this.track.addEventListener("unmute", this.unmuteHandler);
   }
 
@@ -598,6 +770,9 @@ class TrackCapture {
       this.firstFrameSeen = true;
       anyAudioDecodedThisCall = true;
       this.silentWatchdog.noteFrame();
+      // Proves the seam for the whole call — from here it is never escalated
+      // off, so a participant simply going quiet can't cause seam churn.
+      arbiter?.noteFrame(Date.now(), this.seam);
       console.debug(`[ears][capture] ✓ ${this.participantId} first audio frame — capture confirmed live`);
     }
     // Two boolean reads per frame. The `performance.now()` calls below are
@@ -1284,11 +1459,15 @@ export class LinearResampler {
  * Dev-only: run a LOCAL MediaStream through the real capture path, bypassing the
  * RTC hook (the sandboxed test harness can't establish a WebRTC loopback).
  */
-export function __devCaptureStream(stream: MediaStream, participantId: ParticipantId): void {
+export function __devCaptureStream(
+  stream: MediaStream,
+  participantId: ParticipantId,
+  seam: SeamId = "receiver-track",
+): void {
   const track = stream.getAudioTracks()[0];
   if (!track) return;
   postToIsolated({ kind: "participant-joined", platform: cfg?.platform ?? "meet", participantId, generation: 1 });
-  new TrackCapture(participantId, () => 1, trackProcessorSource(track), () => {}, track).start();
+  new TrackCapture(participantId, () => 1, trackProcessorSource(track), () => {}, track, seam).start();
 }
 
 // Bounded ring buffer, drop-oldest, with a logged dropped counter — never grows
