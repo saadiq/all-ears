@@ -756,7 +756,7 @@ function installMeetWebAudioProbe(): void {
 //      answers THE feasibility question — is the WebAudio-side audio still
 //      per-participant (re-tappable), or already mixed?
 
-interface WebAudioTrackRecord {
+export interface WebAudioTrackRecord {
   track: MediaStreamTrack;
   via: string;
   registeredAt: string;
@@ -789,6 +789,26 @@ function registerWebAudioTrack(track: MediaStreamTrack, via: string): void {
   } catch {
     // diagnostic only — never throws into Meet's audio path
   }
+}
+
+/**
+ * Live audio tracks Meet has routed into WebAudio, newest last.
+ *
+ * Started as a diagnostic (is the WebAudio-side audio still per-participant?)
+ * and became a capture seam once journal #105 showed these tracks carry real
+ * decoded audio on builds where the RTP receiver tracks are silent decoys. The
+ * `webaudio-track` seam in audio-tap.ts reads this; see capture-seams.ts.
+ *
+ * Ended tracks are pruned on read rather than on a `ended` listener, so the
+ * registry costs nothing while nobody is asking. Returns a fresh array — the
+ * caller must not hold the registry itself.
+ */
+export function webAudioTracks(): MediaStreamTrack[] {
+  const registry = webAudioTrackRegistry();
+  for (const [id, rec] of registry) {
+    if (rec.track.readyState === "ended") registry.delete(id);
+  }
+  return [...registry.values()].map((rec) => rec.track);
 }
 
 function energyProbeEnabled(): boolean {
