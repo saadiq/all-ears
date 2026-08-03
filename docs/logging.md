@@ -35,7 +35,7 @@ The same values appear as `subsystem`/`category` fields in the JSON records, so 
 | Level  | Use |
 |--------|-----|
 | `debug`  | Verbose developer detail (frame counts, per-chunk writes). Off in normal runs. |
-| `info`   | Normal operational events (source opened, chunk written, session closed). |
+| `info`   | Normal operational events (source opened, chunk written, session ended). |
 | `notice` | Noteworthy but expected (eviction, coarse VAD state, config loaded). |
 | `error`  | Failures. Always paired with actionable context and a non-zero exit for one-shot tools. |
 
@@ -52,7 +52,7 @@ Baseline fields on every record:
 | `tool` | Emitting binary. |
 | `subsystem`, `category` | Mirror of the unified-logging identifiers. |
 | `pid` | Process id. |
-| `event` | Stable machine-readable event name (e.g. `chunk.written`, `session.closed`, `stage.start`, `stage.end`). |
+| `event` | Stable machine-readable event name (e.g. `chunk.written`, `session.end`, `stage.start`, `stage.end`). |
 | `msg` | Optional short human string; never the sole carrier of information. |
 
 Context fields are added where relevant: `source`, `session`, `span_id`, and for bounded operations a `stage.start`/`stage.end` pair sharing a `span_id`, with `duration_ms` (and metrics like `rtf`) on the end record.

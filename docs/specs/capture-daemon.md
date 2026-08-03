@@ -2,15 +2,15 @@
 
 ## `earsd` — one job
 
-Capture each active meeting's audio sources under the meeting's own directory, maintain the VAD index, keep session and meeting records, enforce transcript-driven retention, and expose the control plane. `earsd` is the **only writer** to the audio store and is **never in the read path**.
+Capture each active session's audio sources under the session's own directory, maintain the VAD index, keep session records, enforce transcript-driven retention, and expose the control plane. `earsd` is the **only writer** to the audio store and is **never in the read path**.
 
 ### Responsibilities
 
-- Open and manage a capture engine per source a meeting names (mic, system, per-app, device) and accept pushed audio for `browser:` sources — built when a meeting starts, torn down when its last meeting ends. The daemon boots idle and records nothing between meetings.
-- Encode incoming audio and append time-stamped chunks (native + 16 kHz ASR feeds) to `<data-root>/meetings/<meeting-id>/sources/<id>/`.
+- Open and manage a capture engine per source a session names (mic, system, per-app, device) and accept pushed audio for `browser:` sources — built when a session starts, torn down when it ends. The daemon boots idle and records nothing between sessions.
+- Encode incoming audio and append time-stamped chunks (native + 16 kHz ASR feeds) to `<data-root>/sessions/<session-id>/sources/<id>/`.
 - Run a per-source VAD and append `chunk`/`gap` events to the structural index (`chunks.jsonl`) and `vad` spans to the segmented VAD stream (`vad/`) — see [data formats](../data-formats.md#the-index-chunksjsonl--vad).
-- Enforce transcript-driven retention: delete an ended meeting's audio once its deadline passes (below).
-- Maintain session and meeting descriptors; run app-signal triggers and the `on_close` pipeline.
+- Enforce transcript-driven retention: delete an ended session's audio once its deadline passes (below).
+- Own the session lifecycle ([control protocol v2](control-protocol.md#session)) and spawn the session-end auto-transcription.
 - Serve the control plane: query, source management, session lifecycle, live-feed pub/sub, audio ingestion.
 
 ### Explicit non-responsibilities
@@ -20,7 +20,7 @@ Capture each active meeting's audio sources under the meeting's own directory, m
 
 ### Audio capture
 
-- **Mic / device:** `AVAudioEngine` input follows the system default input by default — whatever device the user has selected, Bluetooth included. Recording is meeting-scoped and brief, so holding a Bluetooth mic open for a call is acceptable and there is no built-in-mic preference. Selection (`InputDeviceSelection`): an explicit `device_uid` binds that specific device; with none set, the engine stays on the system default. **Crash-safe binding:** the device is set on the input node's audio unit (`kAudioOutputUnitProperty_CurrentDevice`) on a fresh, not-yet-started engine, *before* the tap is installed and `start()` runs — never on a live node via `AUAudioUnit.setDeviceID`, which crashed AVFoundation (`AVAudioIOUnit::IOUnitPropertyListener` use-after-free racing the route-change/stall rebuild). Binding still provokes one self-induced `AVAudioEngineConfigurationChange` at start, so the backend suppresses configuration-change rebuilds within a short settle window after each (re)build; genuine route changes outside that window rebuild as before. Binding is best-effort — no `device_uid`, an inaccessible audio unit, or a failed HAL set all fall back to the system default input. Needs the real-hardware verification pass (below) before it is trusted in a release.
+- **Mic / device:** `AVAudioEngine` input follows the system default input by default — whatever device the user has selected, Bluetooth included. Recording is session-scoped and brief, so holding a Bluetooth mic open for a call is acceptable and there is no built-in-mic preference. Selection (`InputDeviceSelection`): an explicit `device_uid` binds that specific device; with none set, the engine stays on the system default. **Crash-safe binding:** the device is set on the input node's audio unit (`kAudioOutputUnitProperty_CurrentDevice`) on a fresh, not-yet-started engine, *before* the tap is installed and `start()` runs — never on a live node via `AUAudioUnit.setDeviceID`, which crashed AVFoundation (`AVAudioIOUnit::IOUnitPropertyListener` use-after-free racing the route-change/stall rebuild). Binding still provokes one self-induced `AVAudioEngineConfigurationChange` at start, so the backend suppresses configuration-change rebuilds within a short settle window after each (re)build; genuine route changes outside that window rebuild as before. Binding is best-effort — no `device_uid`, an inaccessible audio unit, or a failed HAL set all fall back to the system default input. Needs the real-hardware verification pass (below) before it is trusted in a release.
 - **System / per-app audio:** Core Audio **process taps** (`CATap`, macOS 14.4+): build a `CATapDescription` → `AudioHardwareCreateProcessTap` → wrap in a private auto-start **tap-only aggregate device** (no sub-device, to avoid duplicate/echo audio) for a clean IO proc. The tap's format is read from `kAudioTapPropertyFormat`, never assumed. ScreenCaptureKit is rejected for this: it can't isolate per-app audio and forces a screen-recording prompt.
   - **Per-app scoping** (`app:<bundle-id>`) uses the tap's process-inclusion list: the daemon resolves a bundle id to its live PIDs, tracks process launch/exit, and rebuilds the inclusion list as the app's processes come and go. Inclusion/exclusion semantics are covered by integration tests; full isolation verification needs an opt-in test on real hardware with the permission granted.
 - **Browser audio:** binary PCM pushed over the ingest WebSocket (below) into `browser:<label>` sources via a push-fed capture backend.
@@ -44,18 +44,18 @@ Capture each active meeting's audio sources under the meeting's own directory, m
 ### Storage maintenance and retention
 
 - Chunks are fixed-duration (default 30 s), written atomically (temp + rename) then indexed. On flush, `fsync` both the file and its directory; on an encode failure, keep the partial chunk.
-- Retention is per-meeting, driven by `[earsd.retention]`: a daemon-owned periodic sweep (default every 60 s) deletes an **ended** meeting's whole `sources/` directory once `transcript_completed + evict_after_transcript_seconds` has passed — or, when no transcript ever completed, once `ended + max_audio_age_seconds` has (so a failed transcription can be retried up to that point). `meeting.toml` and `events.jsonl` are never deleted; transcripts under `<output-root>` are never deleted. Live meetings are never touched.
-- The transcript-completion marker is stamped by the daemon when the meeting-end auto-transcribe exits 0 (persisted as `transcript_completed` in `meeting.toml`), so retention survives restarts.
+- Retention is per-session, driven by `[earsd.retention]`: a daemon-owned periodic sweep (default every 60 s) deletes an **ended** session's whole `sources/` directory once `transcript_completed + evict_after_transcript_seconds` has passed — or, when no transcript ever completed, once `ended + max_audio_age_seconds` has (so a failed transcription can be retried up to that point). `session.toml` and `events.jsonl` are never deleted; transcripts under `<output-root>` are never deleted. Live sessions are never touched.
+- The transcript-completion marker is stamped by the daemon when the session-end auto-transcribe exits 0 (persisted as `transcript_completed` in `session.toml`), so retention survives restarts.
 
 ### VAD
 
 - An energy-threshold VAD runs per source on the captured stream, emitting coarse speech/silence spans with the configured padding/min-silence. (The `[earsd.vad].backend` key exists for a future model-based VAD; it is currently ignored.)
 - This is an *index for skipping silence*, not a recording gate — all audio is still written.
 
-### Triggers
+### Session-end auto-transcription
 
-- App-signal auto-triggers (`[triggers]` / `[[triggers.rule]]`) were removed (#42): recording is meeting-scoped and sessions are started deliberately (browser extension or CLI). A leftover `[triggers]` table in config is rejected as unknown.
-- Browser meetings run the transcribe stage automatically when they end (the meeting-end auto-transcription hook, via the shared on-close pipeline runner).
+- Recording is session-scoped and sessions are started deliberately (browser extension or CLI); there are no automatic capture triggers.
+- Browser-triggered sessions run the transcribe stage automatically when they end: the daemon spawns `transcribe --session <id>` via the on-close pipeline runner, captures its stderr for the daemon log, and on exit 0 stamps the session's `transcript_completed` marker (which starts the retention clock). Manual sessions are transcribed by hand.
 
 ### Lifecycle
 
@@ -70,13 +70,12 @@ Capture each active meeting's audio sources under the meeting's own directory, m
 ## Control protocol
 
 The control contract — the id-correlated `{id, method, params}` envelope, the mandatory `hello`
-handshake, per-transport capability tiers, the daemon-owned **Meeting** entity, and
+handshake, per-transport capability tiers, the daemon-owned **Session** entity, and
 snapshot-on-subscribe state sync — is specified in [`control-protocol.md`](control-protocol.md)
 (control protocol v2, the implemented wire). Identical frames are served over the Unix domain
 socket (newline-delimited JSON, full privilege) and the loopback control WebSocket
-(`[earsd.control_ws]`, `observe` + `meetings` only). This section keeps only what is *not* part
-of that contract: the audio-ingestion WebSocket, which is deliberately out of v2's scope and
-unchanged.
+(`[earsd.control_ws]`, `observe` + `sessions` only). This section keeps only what is *not* part
+of that contract: the audio-ingestion WebSocket, which is deliberately out of v2's scope.
 
 ### Request/response (see control-protocol.md)
 
@@ -84,10 +83,10 @@ unchanged.
 // --> request
 {"id": 7, "method": "status"}
 // <-- response
-{"id": 7, "result": {"uptime_s": 3600, "sources": [{"id": "mic", "state": "capturing", "codec": "aac"}], "meetings": [], "sessions": []}}
+{"id": 7, "result": {"uptime_s": 3600, "sources": [{"id": "mic", "state": "capturing", "codec": "aac"}], "sessions": []}}
 ```
 
-The full method table — `meeting.*` lifecycle verbs included — lives in
+The full method table — `session.*` lifecycle verbs included — lives in
 [`control-protocol.md`](control-protocol.md#methods).
 
 ### Transports
@@ -102,13 +101,13 @@ The same command set is served on two transports, dispatched through one handler
 Browser audio does **not** flow over the control transports — it uses a dedicated loopback WebSocket (`ws://127.0.0.1:<port>/ingest`, `[earsd.ingest_ws]`, off by default), with the same fail-closed Origin allowlist. It is **ingest-only**: `ingest.open`/`ingest.close` as text frames, PCM as binary frames, and every other command (including `subscribe`) rejected — an allowed origin still cannot drive the daemon from here.
 
 ```jsonc
-// text --> declare a stream (the optional `meeting` tag names the membership)
-{"cmd":"ingest.open","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"meeting":{"platform":"meet","external_id":"abc-defg-hij"}}
+// text --> declare a stream (the optional `session` tag names the membership)
+{"cmd":"ingest.open","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"session":{"platform":"meet","external_id":"abc-defg-hij"}}
 // text <-- {"ok":true,"data":{"stream_id":"s7"}}
 // text --> {"cmd":"ingest.close","stream_id":"s7"}
 ```
 
-The optional `meeting` field carries the meeting identity (`meeting.start`'s idempotency key) the source belongs to. The daemon links the source into that live meeting's `sources` itself — stashing the link until the `meeting.start` lands, if the open raced ahead of it — so the ingest-idle grace policy holds even when the extension's own `meeting.attendee` source upserts never arrive (an MV3 service worker respawned mid-call has no meeting state to upsert from). The client's attendee upserts remain the enrichment path (attributing a source to a named attendee); the tag is the membership path. Untagged opens behave exactly as before.
+The optional `session` field carries the session identity (`session.start`'s idempotency key: the platform plus the platform's own meeting id) the source belongs to. The daemon links the source into that live session's `sources` itself — stashing the link until the `session.start` lands, if the open raced ahead of it — so the ingest-idle grace policy holds even when the extension's own `session.attendee` source upserts never arrive (an MV3 service worker respawned mid-call has no session state to upsert from). The client's attendee upserts remain the enrichment path (attributing a source to a named attendee); the tag is the membership path. Untagged opens behave exactly as before.
 
 Audio is one binary frame per PCM chunk, multiplexed by `stream_id`. Two shapes, discriminated by the first byte:
 
@@ -132,17 +131,17 @@ Both WebSocket servers are hand-rolled on the raw socket transport rather than `
 ### Live feed (pub/sub)
 
 `subscribe`'s result is a **snapshot** of live state tagged with a monotonic revision; state
-events (`meeting`, `session`, `source`) arrive revision-tagged and telemetry events (`vad`,
+events (`session`, `source`) arrive revision-tagged and telemetry events (`vad`,
 `segment`, `job`) untagged — see [`control-protocol.md`](control-protocol.md#state-sync).
 
 ```jsonc
 // --> {"id": 1, "method": "subscribe", "params": {"events": ["vad", "segment"]}}
-// <-- {"id": 1, "result": {"rev": 41, "meetings": […], "sources": […], "sessions": […]}}
+// <-- {"id": 1, "result": {"rev": 41, "sessions": […], "sources": […]}}
 {"event":"vad","params":{"source":"mic","state":"speech","t":"2026-07-17T10:30:02.14Z"}}
-{"event":"segment","params":{"session":"...standup","speaker":"You","start":604.1,"end":611.9,"text":"..."}}
+{"event":"segment","params":{"session":"0d5e…","speaker":"You","start":604.1,"end":611.9,"text":"..."}}
 ```
 
-`segment` events originate from a `transcribe --follow` process that publishes back to the daemon (the `segment.publish` method), letting many consumers watch one live transcript; `job` events likewise republish `job.publish` progress from a meeting-level transcribe run. The socket is notification only: a subscriber that connects late gets the snapshot, not history — the durable record is on disk.
+`segment` events originate from a `transcribe --follow` process that publishes back to the daemon (the `segment.publish` method), letting many consumers watch one live transcript; `job` events likewise republish `job.publish` progress from a session-level transcribe run. The socket is notification only: a subscriber that connects late gets the snapshot, not history — the durable record is on disk.
 
 ## `ears` — control client
 
@@ -153,10 +152,13 @@ ears status
 ears sources list
 ears sources enable app:us.zoom.xos
 ears capture pause [<source>]
-ears session open --slug standup --source mic --source app:us.zoom.xos
-ears session close <id>
-ears mark --last 30m --slug hallway-chat        # retroactive session
-ears watch --events vad,segment                 # subscribe and print the live feed
+ears session start --title standup --source mic --source app:us.zoom.xos
+ears session pause <session-id>                 # closes the open mark; capture untouched
+ears session resume <session-id>                # opens a new mark
+ears session rename <session-id> --title "Weekly sync"
+ears session end <session-id>
+ears session list [--all]                       # --all reads sessions/*/session.toml from disk
+ears watch --events vad,segment                 # subscribe: snapshot, then the live feed
 ears flush
 ears config show / ears config path
 ```

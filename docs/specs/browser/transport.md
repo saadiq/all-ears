@@ -4,7 +4,7 @@
 
 Stream per-participant PCM from the extension to `earsd`'s loopback WebSocket ingest endpoint, mapping each participant to a distinct `browser:<label>` source and its `stream_id`. One WebSocket, held in the background context, with one piece of state: the participant → `stream_id` table.
 
-The extension's control traffic (meeting resolution, session open/close) rides the separate `/control` WebSocket via `lib/control-transport.ts`, which speaks the same command set as the Unix socket — see the [capture-daemon spec](../capture-daemon.md#transports). This document covers the audio leg (`lib/transport.ts`).
+The extension's control traffic (the session lifecycle verbs, status) rides the separate `/control` WebSocket via `lib/control-transport.ts`, which speaks the same v2 protocol as the Unix socket — see the [capture-daemon spec](../capture-daemon.md#transports). This document covers the audio leg (`lib/transport.ts`).
 
 ### Why a WebSocket, not native messaging
 
@@ -31,11 +31,12 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 
 ```jsonc
 // text --> declare a per-participant stream (first PCM for a new participant).
-// `meeting` (optional) is the membership tag: the meeting identity this source
-// belongs to, when the background's tracker knows it at open time. The daemon
-// uses it to link the source into the meeting server-side, keeping the
-// ingest-idle grace sound across service-worker respawns.
-{"cmd":"ingest.open","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"meeting":{"platform":"meet","external_id":"abc-defg-hij"}}
+// `session` (optional) is the membership tag: the session identity (platform +
+// the platform's own meeting id) this source belongs to, when the background's
+// tracker knows it at open time. The daemon uses it to link the source into
+// the session server-side, keeping the ingest-idle grace sound across
+// service-worker respawns.
+{"cmd":"ingest.open","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"session":{"platform":"meet","external_id":"abc-defg-hij"}}
 // text <-- {"ok":true,"data":{"stream_id":"s7"}}
 
 // text --> end the stream (participant left / track ended)

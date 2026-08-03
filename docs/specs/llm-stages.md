@@ -55,9 +55,9 @@ summarize <transcript.md> [more...] [--preset brief] [--preset actions] [--all-p
 The stages chain but never depend on each other at runtime — each reads and writes files:
 
 ```sh
-transcribe --meeting "$MEETING_ID" \
+transcribe --session "$SESSION_ID" \
   && cleanup "$OUT/…standup.transcript.md" \
   && summarize "$OUT/…standup.clean.md" --preset brief --preset actions
 ```
 
-A trigger's `on_close` list is exactly this chain expressed as config. Any stage can be run alone against an existing file.
+The daemon's session-end auto-transcription runs only the first stage; the rest is run by hand or scripted. Any stage can be run alone against an existing file.
