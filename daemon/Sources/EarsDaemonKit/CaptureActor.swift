@@ -1,6 +1,7 @@
 import EarsCaptureKit
 import EarsCore
 import EarsDataStore
+import EarsIPC
 import EarsLogging
 import Foundation
 
@@ -167,6 +168,9 @@ public actor CaptureActor {
   private var dryWatchdogTask: Task<Void, Never>?
   /// Latch so one dry episode logs once; cleared when delivery resumes.
   private var dryWarnedThisEpisode = false
+  /// The previous buffer's sender stamp, kept so a delivery gap can be compared
+  /// against the sender's own timeline rather than only against arrival times.
+  private var lastStamp: IngestFrameStamp?
 
   /// - Parameters:
   ///   - descriptor: This source's `meta.toml` model — supplies `codec`,
@@ -392,7 +396,11 @@ public actor CaptureActor {
   /// timeline, feed it to the encoder, and — if that append rolled a chunk
   /// over — track the finalized chunk and run the per-source eviction pass.
   private func consume(_ raw: AudioBuffer) async {
-    await reanchorAfterDeliveryGap(before: raw)
+    // One stamp per buffer, in stream order (see StampedCaptureBackend). Nil
+    // for local backends and for browser clients still sending legacy frames.
+    let stamp = await (backend as? any StampedCaptureBackend)?.takeStamp()
+    await reanchorAfterDeliveryGap(before: raw, stamp: stamp)
+    if let stamp { lastStamp = stamp }
     let buffer: AudioBuffer
     if let normalizer {
       if raw.sampleRate != lastInputRate {
@@ -518,7 +526,7 @@ public actor CaptureActor {
   /// meeting transcripts). The ingest close/reopen path is covered by the same
   /// check: `start()` resumes the frozen playhead and the first buffer of the
   /// new stream trips the threshold.
-  private func reanchorAfterDeliveryGap(before raw: AudioBuffer) async {
+  private func reanchorAfterDeliveryGap(before raw: AudioBuffer, stamp: IngestFrameStamp?) async {
     let now = clock.now()
     guard now.interval(since: playhead) > Self.deliveryGapThreshold else { return }
     // The buffer in hand was just delivered, so its audio began roughly one
@@ -535,12 +543,82 @@ public actor CaptureActor {
     }
     await encoder.reanchor(to: anchor)
     playhead = anchor
-    await logEvent(
-      "capture.delivery_gap", level: .notice,
-      fields: [
-        LogField("source", .string(sourceID.rawValue)),
-        LogField("seconds", .double((gapSeconds * 1000).rounded() / 1000)),
-      ])
+    var fields: [LogField] = [
+      LogField("source", .string(sourceID.rawValue)),
+      LogField("seconds", .double((gapSeconds * 1000).rounded() / 1000)),
+    ]
+    fields.append(
+      contentsOf: Self.gapProvenance(gapSeconds: gapSeconds, from: lastStamp, to: stamp, now: now))
+    await logEvent("capture.delivery_gap", level: .notice, fields: fields)
+  }
+
+  /// Classify a delivery gap using the sender's own timestamps.
+  ///
+  /// Without them a gap is ambiguous in a way that matters: Meet's per-speaker
+  /// streams legitimately go quiet whenever that person stops talking, and a
+  /// dead extension audio path looks identical from arrival times alone. The
+  /// 2026-07-27 capture logged 395 gaps totalling 34% of the call with no way
+  /// to tell which kind they were.
+  ///
+  /// - `silence` — the sender's own clock shows the same gap, so no audio was
+  ///   produced. The normal case for a per-speaker stream.
+  /// - `delivery-stall` — the sender kept producing but the frames arrived
+  ///   bunched, so the delay is downstream of capture.
+  /// - `frames-lost` — the sequence skipped: frames were produced and never
+  ///   arrived.
+  /// - `unknown` — legacy client, or the first buffer of a stream.
+  static func gapProvenance(
+    gapSeconds: Double,
+    from previous: IngestFrameStamp?,
+    to current: IngestFrameStamp?,
+    now: Instant
+  ) -> [LogField] {
+    guard let current else { return [LogField("cause", .string("unknown"))] }
+    let oneWayMs = now.secondsSinceEpoch * 1000 - current.sentAtEpochMs
+    var fields = [LogField("one_way_ms", .double(oneWayMs.rounded()))]
+    guard let previous else {
+      fields.insert(LogField("cause", .string("unknown")), at: 0)
+      return fields
+    }
+    let seqGap = Self.seqGap(from: previous.seq, to: current.seq)
+    let sendGapMs = current.sentAtEpochMs - previous.sentAtEpochMs
+    let cause: String
+    if let seqGap, seqGap > 0 {
+      cause = "frames-lost"
+    } else if sendGapMs >= gapSeconds * 1000 * 0.5 {
+      // The sender's own timeline accounts for most of the observed gap.
+      // A restarted sender lands here too: `sentAtEpochMs` is wall-clock
+      // based, so the timing verdict survives a seq reset.
+      cause = "silence"
+    } else {
+      cause = "delivery-stall"
+    }
+    fields.insert(LogField("cause", .string(cause)), at: 0)
+    fields.append(LogField("send_gap_ms", .double(sendGapMs.rounded())))
+    fields.append(LogField("seq_gap", .int(max(0, seqGap ?? 0))))
+    if seqGap == nil { fields.append(LogField("sender_restart", .bool(true))) }
+    return fields
+  }
+
+  /// A backwards seq jump larger than this means the sender restarted, not
+  /// that frames arrived out of order.
+  static let seqRestartTolerance: UInt32 = 1_000
+
+  /// Frames skipped between two consecutive sender stamps, or `nil` when the
+  /// sender restarted. The browser's seq is per-pipeline-instance and begins
+  /// again at 0 when a participant's capture pipeline is rebuilt mid-meeting,
+  /// so a naive wrapping delta would read a restart as ~2^32 lost frames.
+  ///
+  /// Wrapping subtraction keeps genuine 2^32 rollover cheap: a seq that
+  /// wrapped slightly past 2^32 is a small *forward* delta (0xFFFFFFFF → 3 is
+  /// 4, counting 3 lost frames as usual). A restart near 0 from an arbitrary
+  /// previous seq is instead a *backwards* jump; within
+  /// ``seqRestartTolerance`` that's reordering (no loss), beyond it a fresh
+  /// baseline (`nil`, never loss).
+  static func seqGap(from previous: UInt32, to current: UInt32) -> Int? {
+    let forward = current &- previous
+    if forward <= UInt32.max / 2 { return Int(forward) - 1 }
+    return previous &- current <= Self.seqRestartTolerance ? 0 : nil
   }
 
   /// How long a push (browser) source may deliver nothing before
@@ -647,6 +725,10 @@ public actor CaptureActor {
     // Forget the published VAD state across the stop/pause gap, so the first
     // speech after a resume/restart is re-announced to live subscribers.
     lastPublishedVADState = nil
+    // Forget the sender's stamp too: a reopened stream is a new pipeline
+    // instance whose seq restarts at 0, and comparing across the boundary
+    // would misread the reset as a huge loss.
+    lastStamp = nil
 
     let before = await encoder.currentChunkStart
     try? await encoder.flush()

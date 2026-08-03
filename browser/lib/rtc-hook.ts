@@ -1,10 +1,6 @@
 import { claimInstall } from "./epoch";
-import {
-  debugDecodeStructure,
-  inflateGzip,
-  parseCollectionsMessage,
-  type CollectionsMuteEvent,
-} from "./identity/meet-collections";
+import { parseCollectionsMessage, type CollectionsMuteEvent } from "./identity/meet-collections";
+import { AudioGraphRegistry } from "./meet-audio-graph";
 
 // The RTCPeerConnection constructor hook — the singleton part of the capture
 // spine, installed exactly once per page realm (claimInstall guards it). On
@@ -48,6 +44,7 @@ interface HookWindow extends Window {
   __earsOnTrack?: TrackSink;
   __earsLiveTracks?: Map<MediaStreamTrack, TrackRecord>;
   __earsEncodedAudioListeners?: Map<MediaStreamTrack, EncodedAudioListener>;
+  __earsLivePCs?: Set<RTCPeerConnection>;
   RTCPeerConnection: typeof RTCPeerConnection;
 }
 
@@ -60,6 +57,30 @@ export function liveTracks(): Map<MediaStreamTrack, TrackRecord> {
   const g = hw();
   if (!g.__earsLiveTracks) g.__earsLiveTracks = new Map();
   return g.__earsLiveTracks;
+}
+
+/**
+ * The shared registry of peer connections this realm has constructed, kept so
+ * the perf collector can poll `getStats()` for inbound *video* receive quality
+ * (perf-sources.ts). The hook already sees every construction; nothing else in
+ * the capture path needs the connection objects themselves, which is why this
+ * registry did not exist before.
+ *
+ * Entries are dropped when the connection closes or fails, so a long call that
+ * renegotiates repeatedly doesn't accumulate dead objects.
+ */
+export function livePeerConnections(): Set<RTCPeerConnection> {
+  const g = hw();
+  if (!g.__earsLivePCs) g.__earsLivePCs = new Set();
+  return g.__earsLivePCs;
+}
+
+function registerPeerConnection(pc: RTCPeerConnection): void {
+  const registry = livePeerConnections();
+  registry.add(pc);
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "closed" || pc.connectionState === "failed") registry.delete(pc);
+  });
 }
 
 /** Point the singleton hook at the newest epoch's sink. */
@@ -82,8 +103,8 @@ function dispatchTrack(e: RTCTrackEvent): void {
 
 function onPeerConnection(pc: RTCPeerConnection): void {
   pc.addEventListener("track", dispatchTrack);
+  registerPeerConnection(pc);
   if (location.host === "meet.google.com") installMeetCollectionsTracer(pc);
-  if (location.host === "meet.google.com" && debugChannelsEnabled()) installChannelTracer(pc);
 
   // Also wrap the ontrack *setter* so a page handler assigned after us can't
   // shadow the hook. We call our dispatch first, then the page's handler.
@@ -141,7 +162,6 @@ export function installHook(): void {
   if (location.host === "meet.google.com") installMeetEncodedAudioTee();
   if (location.host === "meet.google.com") installMeetTransformProbe();
   if (location.host === "meet.google.com") installMeetWebAudioProbe();
-  if (location.host === "meet.google.com" && debugChannelsEnabled()) installNetworkTracer();
 
   console.debug("[ears][hook] RTCPeerConnection hook installed");
 }
@@ -233,185 +253,6 @@ function installMeetCollectionsTracer(pc: RTCPeerConnection): void {
   });
 }
 
-// ── Network/datachannel tracer (debug-only, investigation-scoped) ──────────
-//
-// meet-speaking-indicator-correlation prompt, Task 2: check whether Meet's
-// active-speaker tile animation is server-pushed (WS/datachannel frames) or
-// purely client-computed from local audio energy. Decoding payload bytes of
-// Meet's private channels (including "collections") is normally prohibited
-// by extension.md MUST-NOT #6 — that constraint is scoped to what SHIPS, and
-// is explicitly relaxed for this investigation only (see the prompt's Task 2
-// note). This tracer is off by default and gated behind its own flag; it must
-// never be enabled outside a deliberate investigation session, and nothing
-// here should be treated as an implementation to ship un-reviewed.
-//
-// Purely passive: observes datachannel creation/messages and WebSocket frames,
-// never mutates them. Enable per-tab from DevTools console:
-//   localStorage.setItem("__earsDebugChannels", "1")   // then reload the tab
-//   localStorage.removeItem("__earsDebugChannels")     // to turn back off
-
-function debugChannelsEnabled(): boolean {
-  try {
-    return localStorage.getItem("__earsDebugChannels") === "1";
-  } catch {
-    return false;
-  }
-}
-
-interface NetLogEntry {
-  t: number;
-  iso: string;
-  kind: "ws" | "datachannel";
-  label?: string;
-  url?: string;
-  preview: string;
-  /** Full raw bytes (capped at 8KB) for offline decode — the hex in `preview` truncates at 200B. */
-  bytes?: number[];
-}
-interface NetLogWindow extends Window {
-  __earsNetLog?: NetLogEntry[];
-}
-function netLog(): NetLogEntry[] {
-  const g = window as unknown as NetLogWindow;
-  if (!g.__earsNetLog) g.__earsNetLog = [];
-  return g.__earsNetLog;
-}
-
-function bufferPreview(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf).slice(0, 200);
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
-  let text = "";
-  try {
-    text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).replace(/[^\x20-\x7e]/g, ".");
-  } catch {
-    text = "";
-  }
-  return `${buf.byteLength}b hex[${hex}]${buf.byteLength > 200 ? "…" : ""} text="${text}"`;
-}
-
-/** Full raw bytes (capped at 8KB) for offline decode, e.g. gzip+protobuf inspection. */
-function rawBytes(buf: ArrayBuffer): number[] {
-  return Array.from(new Uint8Array(buf).slice(0, 8192));
-}
-
-function previewPayload(data: unknown): string {
-  try {
-    if (typeof data === "string") {
-      return data.length > 300 ? `${data.slice(0, 300)}…(+${data.length - 300}b)` : data;
-    }
-    if (data instanceof ArrayBuffer) return bufferPreview(data);
-    if (ArrayBuffer.isView(data)) {
-      const view = data as ArrayBufferView;
-      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-      return bufferPreview(bytes.slice().buffer);
-    }
-  } catch {
-    // fall through to String(data) below
-  }
-  return String(data);
-}
-
-/**
- * Debug-only (__earsDebugChannels): print the full recursive field structure
- * of a "collections" message, not just the two production paths. Built
- * during live verification of the collections identity-upgrade feature,
- * where it found that journal #49's originally-documented speaking-flag path
- * was missing a nesting level (see meet-collections.ts's header comment and
- * docs/specs/browser/extension.md) — kept in the extension so the
- * next schema drift doesn't need an ad-hoc page-injected decoder again.
- * Never used by production parsing; a decode failure here is just a log line.
- */
-async function logCollectionsStructure(buf: ArrayBuffer): Promise<void> {
-  const inflated = await inflateGzip(buf);
-  if (!inflated) {
-    console.debug("[ears][debug][net] collections message: not gzip, or failed to inflate");
-    return;
-  }
-  const lines = debugDecodeStructure(inflated);
-  console.debug(`[ears][debug][net] collections decoded structure (${inflated.length}B):\n${lines.join("\n")}`);
-}
-
-function attachChannelLogger(ch: RTCDataChannel): void {
-  ch.addEventListener("message", (ev: MessageEvent) => {
-    const t = Date.now();
-    if (ev.data instanceof Blob) {
-      void ev.data.arrayBuffer().then((buf) => {
-        const preview = bufferPreview(buf);
-        console.debug(`[ears][debug][net] DC[${ch.label}] ${preview}`);
-        netLog().push({ t, iso: new Date(t).toISOString(), kind: "datachannel", label: ch.label, preview, bytes: rawBytes(buf) });
-        if (ch.label === "collections") void logCollectionsStructure(buf);
-      });
-      return;
-    }
-    const preview = previewPayload(ev.data);
-    console.debug(`[ears][debug][net] DC[${ch.label}] ${preview}`);
-    const entry: NetLogEntry = { t, iso: new Date(t).toISOString(), kind: "datachannel", label: ch.label, preview };
-    let buf: ArrayBuffer | null = null;
-    if (ev.data instanceof ArrayBuffer) buf = ev.data;
-    else if (ArrayBuffer.isView(ev.data)) {
-      const view = ev.data as ArrayBufferView;
-      buf = new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice().buffer;
-    }
-    if (buf) {
-      entry.bytes = rawBytes(buf);
-      if (ch.label === "collections") void logCollectionsStructure(buf);
-    }
-    netLog().push(entry);
-  });
-}
-
-function installChannelTracer(pc: RTCPeerConnection): void {
-  pc.addEventListener("datachannel", (ev: RTCDataChannelEvent) => {
-    const ch = ev.channel;
-    console.debug(
-      `[ears][debug][net] datachannel (remote) label="${ch.label}" id=${ch.id} protocol="${ch.protocol}" ordered=${ch.ordered}`,
-    );
-    attachChannelLogger(ch);
-  });
-  const nativeCreate = pc.createDataChannel.bind(pc);
-  pc.createDataChannel = ((label: string, opts?: RTCDataChannelInit) => {
-    const ch = nativeCreate(label, opts);
-    console.debug(`[ears][debug][net] datachannel (local) label="${ch.label}" id=${ch.id}`);
-    attachChannelLogger(ch);
-    return ch;
-  }) as typeof pc.createDataChannel;
-}
-
-function installNetworkTracer(): void {
-  const Native = window.WebSocket;
-  if (!Native) return;
-  function Wrapped(this: unknown, url: string | URL, protocols?: string | string[]): WebSocket {
-    const ws = protocols === undefined ? new Native(url) : new Native(url, protocols);
-    console.debug(`[ears][debug][net] WebSocket open → ${url}`);
-    ws.addEventListener("message", (ev: MessageEvent) => {
-      const t = Date.now();
-      if (ev.data instanceof Blob) {
-        void ev.data.arrayBuffer().then((buf) => {
-          const preview = bufferPreview(buf);
-          console.debug(`[ears][debug][net] WS ← ${url} ${preview}`);
-          netLog().push({ t, iso: new Date(t).toISOString(), kind: "ws", url: String(url), preview, bytes: rawBytes(buf) });
-        });
-        return;
-      }
-      const preview = previewPayload(ev.data);
-      console.debug(`[ears][debug][net] WS ← ${url} ${preview}`);
-      const entry: NetLogEntry = { t, iso: new Date(t).toISOString(), kind: "ws", url: String(url), preview };
-      if (ev.data instanceof ArrayBuffer) entry.bytes = rawBytes(ev.data);
-      else if (ArrayBuffer.isView(ev.data)) {
-        const view = ev.data as ArrayBufferView;
-        entry.bytes = rawBytes(new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice().buffer);
-      }
-      netLog().push(entry);
-    });
-    ws.addEventListener("close", () => console.debug(`[ears][debug][net] WebSocket closed → ${url}`));
-    return ws;
-  }
-  Wrapped.prototype = Native.prototype;
-  Object.setPrototypeOf(Wrapped, Native);
-  window.WebSocket = Wrapped as unknown as typeof WebSocket;
-  console.debug("[ears][debug][net] WebSocket tracer installed");
-}
-
 // ── Meet encoded-audio tee ───────────────────────────────────────────────
 //
 // Empirically confirmed (journal #28–#31): Meet's client calls
@@ -495,6 +336,7 @@ let probeAudioTransformSetCount = 0;
 // actually surfaces once it bypasses every encoded-frame API.
 let probeAudioContextCount = 0;
 let probeAudioWorkletNodeCount = 0;
+let probeNetEqWorkletCount = 0;
 let probeTrackGeneratorCount = 0;
 let probeMediaStreamSourceCount = 0;
 let probeMediaElementSrcObjectCount = 0;
@@ -512,11 +354,19 @@ export function hookDebugState(): {
   webaudio: {
     audioContexts: number;
     audioWorkletNodes: number;
+    netEqWorkletNodes: number;
     trackGenerators: number;
     mediaStreamSources: number;
     mediaElementSrcObjects: number;
   };
+  graph: {
+    nodes: number;
+    edges: number;
+    overflow: number;
+    bridgedNodes: number;
+  };
 } {
+  const graphCounts = graphRegistry?.counts() ?? { nodes: 0, edges: 0, overflow: 0 };
   return {
     liveTracks: liveTracks().size,
     teedAudioStreamCount,
@@ -529,9 +379,14 @@ export function hookDebugState(): {
     webaudio: {
       audioContexts: probeAudioContextCount,
       audioWorkletNodes: probeAudioWorkletNodeCount,
+      netEqWorkletNodes: probeNetEqWorkletCount,
       trackGenerators: probeTrackGeneratorCount,
       mediaStreamSources: probeMediaStreamSourceCount,
       mediaElementSrcObjects: probeMediaElementSrcObjectCount,
+    },
+    graph: {
+      ...graphCounts,
+      bridgedNodes: bridgedNodeCount,
     },
   };
 }
@@ -662,6 +517,12 @@ function installMeetWebAudioProbe(): void {
   try {
     const w = window as unknown as Record<string, unknown>;
 
+    // Record the arm in the debug log: which probes this page load actually
+    // ran is the first thing to know when reading a bug report.
+    console.debug(
+      `[ears][probe] audio probes — debugAudio:${energyProbeEnabled()} bridge:${graphBridgeEnabled()}`,
+    );
+
     const streamTracks = (v: unknown): string => {
       const s = v as { getAudioTracks?: () => Array<{ id: string }> } | null;
       const ids = s?.getAudioTracks?.().map((t) => t.id) ?? null;
@@ -689,11 +550,47 @@ function installMeetWebAudioProbe(): void {
       () => (probeAudioContextCount += 1),
     );
     wrapCtor("webkitAudioContext", () => "webkit", () => (probeAudioContextCount += 1));
-    wrapCtor(
-      "AudioWorkletNode",
-      (a) => `processor="${String(a[1])}" ch=${(a[2] as { channelCount?: number })?.channelCount ?? "?"}`,
-      () => (probeAudioWorkletNodeCount += 1),
-    );
+    // AudioWorkletNode gets a dedicated wrap (not wrapCtor) because the
+    // bridge needs the constructed INSTANCE: neteq-processor nodes are the
+    // playout end of Meet's WASM decode pipeline, and the edges Meet gives
+    // them name the one safe tap point for decoded audio. Pass-through: the
+    // native node is always constructed and returned; all bookkeeping is
+    // flag-gated and try/caught.
+    {
+      const Native = w.AudioWorkletNode;
+      if (typeof Native === "function") {
+        const N = Native as new (...a: unknown[]) => object;
+        const Wrapped = function (this: unknown, ...args: unknown[]): object {
+          probeAudioWorkletNodeCount += 1;
+          const processor = String(args[1]);
+          console.debug(
+            `[ears][probe][webaudio] new AudioWorkletNode — processor="${processor}" ch=${(args[2] as { channelCount?: number })?.channelCount ?? "?"}`,
+          );
+          const instance = new N(...args);
+          try {
+            if (processor === "neteq-processor") {
+              probeNetEqWorkletCount += 1;
+              // Remembered so the connect wrap can spot neteq→X edges. NEVER
+              // branch off this node itself: an extra output edge on Meet's
+              // neteq worklet trips a Chromium CHECK on the realtime audio
+              // thread and kills the renderer (journal #93). The bridge taps
+              // the NATIVE node downstream instead — see tapNetEqDownstream.
+              netEqWorklets.add(instance);
+            }
+            if (energyProbeEnabled()) {
+              meetGraph().noteWorklet(instance, processor);
+              ensureGraphTimer();
+            }
+          } catch {
+            // diagnostic only — never throws into Meet's audio path
+          }
+          return instance;
+        } as unknown as new (...a: unknown[]) => object;
+        Wrapped.prototype = N.prototype;
+        Object.setPrototypeOf(Wrapped, N);
+        w.AudioWorkletNode = Wrapped;
+      }
+    }
     // Audio generators are the leading candidate output of Meet's post-RTP
     // pipeline (2026-07-24 drift capture): register each constructed audio
     // generator (it IS a MediaStreamTrack) so a live session can reach the
@@ -711,6 +608,18 @@ function installMeetWebAudioProbe(): void {
             const track = instance as unknown as MediaStreamTrack;
             registerWebAudioTrack(track, "generator");
             monitorTrackEnergy(track, "generator");
+            // An audio generator IS a MediaStreamTrack — the zero-new-code
+            // capture path. Record its appearance in the perf ring (the console
+            // dies with Meet's post-call redirect) and, when the bridge flag is
+            // on, feed it straight into the existing pipeline.
+            try {
+              if (energyProbeEnabled()) {
+                graphEmit("meet_graph_generator", { kind: "audio", track: track.id ?? "?" });
+              }
+              if (graphBridgeEnabled()) bridgeTrack(track, "graphgen");
+            } catch {
+              // diagnostic only
+            }
           }
           return instance;
         } as unknown as new (...a: unknown[]) => object;
@@ -740,7 +649,65 @@ function installMeetWebAudioProbe(): void {
           registerWebAudioTrack(track, "createMediaStreamSource");
           monitorTrackEnergy(track, "createMediaStreamSource");
         }
-        return native.apply(this, args);
+        const node = native.apply(this, args);
+        // Register the RESULT node with the track ids feeding it: node →
+        // participant cannot join on track id (these ids never match any hooked
+        // receiver), so the graph records them for the offline unmute-edge join
+        // instead. Ids only — never names.
+        try {
+          if (energyProbeEnabled() && node !== null && typeof node === "object") {
+            meetGraph().noteSource(node, tracks.map((t) => t.id));
+          }
+        } catch {
+          // diagnostic only
+        }
+        return node;
+      };
+    }
+
+    // ── Graph mapping: AudioNode.connect / disconnect (journal #76) ─────────
+    // The connect topology is what tells a per-participant graph from a mixer:
+    // N neteq nodes fanning into one destination is tappable per node; one
+    // neteq node fed by everything is already mixed. Pass-through: the native
+    // call ALWAYS runs (first, so a bookkeeping bug can't break Meet's audio),
+    // its result is returned untouched, and bookkeeping is flag-gated.
+    const nodeProto = (w.AudioNode as { prototype?: Record<string, unknown> } | undefined)
+      ?.prototype;
+    const nativeConnect = nodeProto?.connect;
+    if (nodeProto && typeof nativeConnect === "function") {
+      const native = nativeConnect as (...a: unknown[]) => unknown;
+      nativeAudioNodeConnect = native;
+      nodeProto.connect = function (this: object, ...args: unknown[]): unknown {
+        const result = native.apply(this, args);
+        try {
+          if (energyProbeEnabled()) {
+            meetGraph().noteConnect(this, args[0]);
+            ensureGraphTimer();
+          }
+          // Meet wiring a neteq worklet into its own graph names the one safe
+          // tap point for that participant's decoded audio: the NATIVE node
+          // downstream. Branch the capture bridge off that, never the worklet.
+          if (graphBridgeEnabled() && netEqWorklets.has(this)) {
+            tapNetEqDownstream(args[0]);
+          }
+        } catch {
+          // diagnostic only
+        }
+        return result;
+      };
+    }
+    const nativeDisconnect = nodeProto?.disconnect;
+    if (nodeProto && typeof nativeDisconnect === "function") {
+      const native = nativeDisconnect as (...a: unknown[]) => unknown;
+      nativeAudioNodeDisconnect = native;
+      nodeProto.disconnect = function (this: object, ...args: unknown[]): unknown {
+        const result = native.apply(this, args);
+        try {
+          if (energyProbeEnabled()) meetGraph().noteDisconnect(this, args[0]);
+        } catch {
+          // diagnostic only
+        }
+        return result;
       };
     }
 
@@ -789,7 +756,7 @@ function installMeetWebAudioProbe(): void {
 //      answers THE feasibility question — is the WebAudio-side audio still
 //      per-participant (re-tappable), or already mixed?
 
-interface WebAudioTrackRecord {
+export interface WebAudioTrackRecord {
   track: MediaStreamTrack;
   via: string;
   registeredAt: string;
@@ -824,6 +791,26 @@ function registerWebAudioTrack(track: MediaStreamTrack, via: string): void {
   }
 }
 
+/**
+ * Live audio tracks Meet has routed into WebAudio, newest last.
+ *
+ * Started as a diagnostic (is the WebAudio-side audio still per-participant?)
+ * and became a capture seam once journal #105 showed these tracks carry real
+ * decoded audio on builds where the RTP receiver tracks are silent decoys. The
+ * `webaudio-track` seam in audio-tap.ts reads this; see capture-seams.ts.
+ *
+ * Ended tracks are pruned on read rather than on a `ended` listener, so the
+ * registry costs nothing while nobody is asking. Returns a fresh array — the
+ * caller must not hold the registry itself.
+ */
+export function webAudioTracks(): MediaStreamTrack[] {
+  const registry = webAudioTrackRegistry();
+  for (const [id, rec] of registry) {
+    if (rec.track.readyState === "ended") registry.delete(id);
+  }
+  return [...registry.values()].map((rec) => rec.track);
+}
+
 function energyProbeEnabled(): boolean {
   try {
     return localStorage.getItem("__earsDebugAudio") === "1";
@@ -834,7 +821,9 @@ function energyProbeEnabled(): boolean {
 
 /** Attach a throttled peak meter to `track`, logging only while it carries
  * signal. Diagnostic only, `__earsDebugAudio`-gated, capped at
- * ENERGY_PROBE_MAX_TRACKS so a tile-heavy call can't build unbounded graph. */
+ * ENERGY_PROBE_MAX_TRACKS so a tile-heavy call can't build unbounded graph.
+ * The meter lives in the probe's OWN AudioContext — it never adds an edge to
+ * Meet's graph, which is what makes it safe (journal #90, arm 2). */
 function monitorTrackEnergy(track: MediaStreamTrack, via: string): void {
   try {
     if (!energyProbeEnabled() || !nativeCreateMediaStreamSource) return;
@@ -880,4 +869,242 @@ function monitorTrackEnergy(track: MediaStreamTrack, via: string): void {
   } catch (err) {
     console.debug("[ears][probe][webaudio] energy meter failed to attach (non-fatal):", err);
   }
+}
+
+
+// ── Meet audio-graph probe: topology map + downstream capture bridge ────────
+//
+// Meet's participant audio lives downstream of a WASM NetEQ decode (journal
+// #75): decoded PCM surfaces only through AudioWorkletNode("neteq-processor"),
+// so no encoded-frame or receiver-track hook ever sees it. Two pieces recover
+// it, both built around one hard constraint — adding an output edge to Meet's
+// neteq worklet trips a Chromium CHECK on the realtime audio thread and kills
+// the renderer (journal #93, #96). Nothing here ever connects anything to a
+// worklet:
+//
+//   1. Topology map (`__earsDebugAudio`): pure-JS bookkeeping fed by the
+//      pass-through connect/disconnect wraps, emitted through the perf ring so
+//      it survives Meet's post-call redirect. Cannot touch the render graph.
+//   2. Capture bridge (`__earsGraphBridge`): when Meet connects a neteq
+//      worklet to a NATIVE node, branch THAT node into a
+//      MediaStreamAudioDestinationNode and feed its stream to the real capture
+//      pipeline as `graphtap-<n>`. The worklet keeps exactly the edges Meet
+//      gave it; the extra edge sits on the native node, which is ordinary
+//      graph work. If Meet's graph is per-participant the daemon records
+//      separate streams; if it is mixed, the recordings prove that instead.
+//      Audio-kind MediaStreamTrackGenerators bridge directly (`graphgen-<n>`)
+//      — they already are tracks and involve no graph mutation at all.
+//
+// The MAIN world has no extension APIs and audio-tap/perf-main must not be
+// imported here (audio-tap already imports this module), so the perf emitter
+// and the bridge's pipeline entry are injected by hook.content.ts via
+// setMeetGraphSinks — same realm-singleton pattern as __earsOnTrack.
+
+/** Cap on bridged nodes/tracks — each one is a full capture pipeline. */
+export const GRAPH_BRIDGE_MAX_NODES = 8;
+/** Topology/summary emission cadence (summary every tick, topology every 2nd). */
+const GRAPH_SUMMARY_INTERVAL_MS = 15_000;
+
+export interface MeetGraphSinks {
+  /** Ship one perf record (routed to mainPerf().emit by hook.content.ts). */
+  emitPerf: (metric: string, fields: Record<string, number | string>) => void;
+  /** Feed a bridged stream into the real capture pipeline (__devCaptureStream). */
+  bridgeStream: (stream: MediaStream, participantId: string) => void;
+}
+
+interface GraphSinksWindow extends Window {
+  __earsGraphSinks?: MeetGraphSinks;
+}
+
+/** Inject the perf emitter + bridge entry (hook.content.ts, once per realm).
+ * Stored on `window` so re-injected epochs reach the live wraps' sinks. */
+export function setMeetGraphSinks(sinks: MeetGraphSinks | null): void {
+  const g = window as unknown as GraphSinksWindow;
+  if (sinks) g.__earsGraphSinks = sinks;
+  else delete g.__earsGraphSinks;
+}
+
+function graphEmit(metric: string, fields: Record<string, number | string>): void {
+  try {
+    (window as unknown as GraphSinksWindow).__earsGraphSinks?.emitPerf(metric, fields);
+  } catch {
+    // diagnostic only
+  }
+}
+
+let graphRegistry: AudioGraphRegistry | null = null;
+
+function meetGraph(): AudioGraphRegistry {
+  if (!graphRegistry) graphRegistry = new AudioGraphRegistry();
+  return graphRegistry;
+}
+
+function graphBridgeEnabled(): boolean {
+  try {
+    return localStorage.getItem("__earsGraphBridge") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Every neteq-processor worklet Meet has constructed. Membership is the
+ * connect wrap's cue that the edge's TARGET is a decoded-audio tap point. */
+let netEqWorklets = new WeakSet<object>();
+
+/** Native nodes already bridged (or ruled untappable) — Meet reconnects and
+ * N neteq worklets can share one mixer, and each target is tapped once. */
+let tappedTargets = new WeakSet<object>();
+
+/** Live taps, kept so capture-off can sever the branches: an idle extension
+ * must not keep Meet's graph pulled (an output edge keeps a node processing,
+ * and processing propagates upstream to the worklets feeding it). Bounded by
+ * GRAPH_BRIDGE_MAX_NODES. */
+let bridgeTaps: Array<{ target: object; dest: AudioNode }> = [];
+
+let bridgedNodeCount = 0;
+
+/** Native (unwrapped) AudioNode.prototype.connect, captured by the probe so
+ * the bridge's own branches never pollute the graph map. */
+let nativeAudioNodeConnect: ((...a: unknown[]) => unknown) | null = null;
+
+/** Native (unwrapped) AudioNode.prototype.disconnect, used to sever the
+ * bridge's own branches without touching the graph bookkeeping. */
+let nativeAudioNodeDisconnect: ((...a: unknown[]) => unknown) | null = null;
+
+/** False only when the node reports zero outputs — nothing to branch off. An
+ * unknown shape reads as connectable; the attach is try/caught regardless. */
+function hasAudioOutput(node: object): boolean {
+  const outputs = (node as { numberOfOutputs?: number }).numberOfOutputs;
+  return typeof outputs !== "number" || outputs > 0;
+}
+
+/**
+ * Meet just connected a neteq worklet to `target`. Branch `target` into the
+ * capture pipeline — never the worklet itself (the renderer-fatal edge,
+ * journal #93). One tap per target: if all N worklets feed one mixer this
+ * yields a single `graphtap-1` carrying the mix; if each feeds its own native
+ * node it yields one stream per participant. Either recording answers the
+ * per-participant-vs-mixed question with ground truth.
+ */
+function tapNetEqDownstream(target: unknown): void {
+  try {
+    if (bridgedNodeCount >= GRAPH_BRIDGE_MAX_NODES) return;
+    if (typeof target !== "object" || target === null) return;
+    if (tappedTargets.has(target)) return;
+    const ctx = (target as { context?: BaseAudioContext }).context;
+    if (!ctx || typeof (ctx as AudioContext).createMediaStreamDestination !== "function") {
+      return; // an AudioParam or non-node destination — not a tap point
+    }
+    tappedTargets.add(target);
+    if (!hasAudioOutput(target)) {
+      // neteq feeds a sink-shaped node (the context destination, or a
+      // zero-output worklet) directly: there is no native node to branch off,
+      // and per-participant capture needs a different seam on this build.
+      // Recorded so a post-call read of the perf ring says so explicitly.
+      graphEmit("meet_graph_bridge", { node: meetGraph().idOf(target) ?? "?", kind: "untappable-sink" });
+      console.debug("[ears][probe][graph] neteq output feeds a sink-shaped node — no native tap point");
+      return;
+    }
+    const dest = (ctx as AudioContext).createMediaStreamDestination();
+    const connect = nativeAudioNodeConnect ?? (target as AudioNode).connect;
+    connect.call(target, dest);
+    bridgedNodeCount += 1;
+    bridgeTaps.push({ target, dest });
+    const participantId = `graphtap-${bridgedNodeCount}`;
+    const id = meetGraph().idOf(target) ?? "?";
+    (window as unknown as GraphSinksWindow).__earsGraphSinks?.bridgeStream(dest.stream, participantId);
+    graphEmit("meet_graph_bridge", { node: id, kind: "downstream-tap", participant: participantId });
+    console.debug(`[ears][probe][graph] bridged neteq downstream ${id} → ${participantId}`);
+  } catch (err) {
+    console.debug("[ears][probe][graph] downstream tap failed (non-fatal):", err);
+  }
+}
+
+/** Bridge a bare audio track (MediaStreamTrackGenerator output) — it already
+ * IS a MediaStreamTrack, so no graph mutation is involved at all. */
+function bridgeTrack(track: MediaStreamTrack, prefix: string): void {
+  try {
+    if (bridgedNodeCount >= GRAPH_BRIDGE_MAX_NODES) return;
+    bridgedNodeCount += 1;
+    const participantId = `${prefix}-${bridgedNodeCount}`;
+    (window as unknown as GraphSinksWindow).__earsGraphSinks?.bridgeStream(
+      new MediaStream([track]),
+      participantId,
+    );
+    graphEmit("meet_graph_bridge", { node: "generator", kind: "generator", participant: participantId });
+    console.debug(`[ears][probe][graph] bridged audio generator → ${participantId}`);
+  } catch (err) {
+    console.debug("[ears][probe][graph] generator bridge failed (non-fatal):", err);
+  }
+}
+
+let graphTimer: ReturnType<typeof setInterval> | null = null;
+let graphTick = 0;
+
+/** Start the topology/summary emitter (idempotent). Pure bookkeeping reads —
+ * the timer never touches the audio graph, so it cannot crash a call. */
+function ensureGraphTimer(): void {
+  if (graphTimer) return;
+  graphTimer = setInterval(() => {
+    try {
+      graphTick += 1;
+      emitGraphSummary();
+      if (graphTick % 2 === 0) emitGraphTopology();
+    } catch {
+      // diagnostic only
+    }
+  }, GRAPH_SUMMARY_INTERVAL_MS);
+}
+
+function emitGraphSummary(): void {
+  const counts = meetGraph().counts();
+  graphEmit("meet_graph_summary", {
+    neteq_nodes: probeNetEqWorkletCount,
+    graph_nodes: counts.nodes,
+    graph_edges: counts.edges,
+    graph_overflow: counts.overflow,
+    bridged: bridgedNodeCount,
+  });
+  console.debug(
+    `[ears][probe][graph] neteq=${probeNetEqWorkletCount} nodes=${counts.nodes} ` +
+      `edges=${counts.edges} bridged=${bridgedNodeCount}`,
+  );
+}
+
+function emitGraphTopology(): void {
+  const fields = meetGraph().topologyFields();
+  if (Object.keys(fields).length > 0) graphEmit("meet_graph_topology", fields);
+}
+
+/**
+ * Sever every bridge branch and stop the emitter. Called when capture is
+ * switched off: an idle extension must not keep Meet's graph pulled. Bridging
+ * re-arms on the next neteq connect Meet makes (already-tapped targets stay
+ * retired for the page's lifetime — new calls build new nodes).
+ */
+export function stopMeetGraphProbe(): void {
+  for (const { target, dest } of bridgeTaps.splice(0)) {
+    try {
+      const disconnect = nativeAudioNodeDisconnect ?? (target as AudioNode).disconnect;
+      disconnect.call(target, dest);
+    } catch {
+      // node already torn down by the page — the branch went with it
+    }
+  }
+  if (graphTimer) {
+    clearInterval(graphTimer);
+    graphTimer = null;
+  }
+}
+
+/** Test seam: drop the graph probe's realm state so each test starts clean.
+ * (The wraps themselves stay installed — claimInstall owns that lifecycle.) */
+export function __resetMeetGraphProbe(): void {
+  stopMeetGraphProbe();
+  graphRegistry = null;
+  graphTick = 0;
+  bridgedNodeCount = 0;
+  probeNetEqWorkletCount = 0;
+  netEqWorklets = new WeakSet();
+  tappedTargets = new WeakSet();
 }

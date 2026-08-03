@@ -122,6 +122,45 @@ struct TranscribeFilePipelineTests {
     #expect(!secondMarkdown.contains("first file"))
   }
 
+  @Test("onSummary carries the totals and every transcript's real output path")
+  func summaryCarriesTotalsAndOutputPaths() async throws {
+    let directory = makeTempDirectory("summary")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let first = directory.appendingPathComponent("a.m4a")
+    let second = directory.appendingPathComponent("b.m4a")
+    FileManager.default.createFile(atPath: first.path, contents: Data())
+    FileManager.default.createFile(atPath: second.path, contents: Data())
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 1, text: "one two")],
+      [Segment(start: 0, end: 1, text: "three")],
+    ])
+    let summaries = FieldsMailbox()
+    var deps = dependencies(scripted)
+    deps.onSummary = { summaries.append($0) }
+
+    let exitCode = await TranscribeFilePipeline.run(
+      inputs: .init(files: [first.path, second.path], out: nil),
+      backendName: "fluidaudio",
+      dependencies: deps,
+      fileReader: fakeReader())
+
+    #expect(exitCode == 0)
+    // One summary for the whole run, after every file transcribed.
+    #expect(summaries.all.count == 1)
+    let fields = try #require(summaries.all.first)
+    #expect(fields.contains(LogField("files", .int(2))))
+    #expect(fields.contains(LogField("segments", .int(2))))
+    #expect(fields.contains(LogField("words", .int(3))))
+    // `output` names where the transcripts actually landed — beside their
+    // inputs, since `--file` never writes into `output_root`.
+    let output = fields.first { $0.key == "output" }
+    let expected =
+      directory.appendingPathComponent("a.transcript.md").path + ", "
+      + directory.appendingPathComponent("b.transcript.md").path
+    #expect(output?.value == .string(expected))
+  }
+
   @Test("--out with more than one file is a precise, non-zero error")
   func outWithMultipleFilesIsError() async throws {
     let directory = makeTempDirectory("out-multi")
@@ -214,6 +253,22 @@ private struct StubFileDiarizer: Diarizer {
   let spans: [SpeakerSpan]
   func load(_ options: LoadOptions) throws {}
   func diarize(_ audio: AudioBuffer) throws -> [SpeakerSpan] { spans }
+}
+
+/// Like ``Mailbox``, but collecting the `onSummary` field batches.
+private final class FieldsMailbox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var batches: [[LogField]] = []
+  func append(_ fields: [LogField]) {
+    lock.lock()
+    defer { lock.unlock() }
+    batches.append(fields)
+  }
+  var all: [[LogField]] {
+    lock.lock()
+    defer { lock.unlock() }
+    return batches
+  }
 }
 
 /// A tiny `Sendable` collector for stderr lines a test wants to assert on

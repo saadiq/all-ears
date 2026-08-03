@@ -96,10 +96,25 @@ This does not license decoding anything else on `collections`, or Zoom's `__redu
 
 ## Audio extraction
 
-Two capture mechanisms, selected per platform, both terminating in the same downmix → resample (streaming, phase-continuous, native rate → 16 kHz mono) → bounded circular buffer pipeline in `audio-tap.ts`. Only the frame source differs.
+Several capture **seams**, all terminating in the same downmix → resample (streaming, phase-continuous, native rate → 16 kHz mono) → bounded circular buffer pipeline in `audio-tap.ts`. Only the frame source differs.
 
-- **Standard path (Zoom, Teams):** `MediaStreamTrackProcessor` reads decoded `AudioData` directly off each remote track. Construction is deferred to the track's first `unmute` — a processor built on a muted track never delivers frames, and a track allows only one processor ever. (`pcm-worklet.ts` survives as an unwired legacy fallback; don't build new capture against it.)
-- **Meet path (`createEncodedStreams` tee):** Meet's client calls `receiver.createEncodedStreams()` on every audio receiver and decodes the RTP in its own WASM pipeline, so **no `MediaStreamTrack`-based mechanism ever produces audio on Meet** — worklet, processor, and `<audio>` taps all read pure silence (confirmed via `getStats()`: `decoderImplementation=undefined`, `jitterBufferEmittedCount=0` through live speech). The fix: wrap `createEncodedStreams` in the same MAIN-world hook, `.tee()` the pre-decode readable on audio receivers (Meet's own branch passes through untouched — verified transparent in live calls), and decode our branch with the native WebCodecs `AudioDecoder` (`{codec:"opus", sampleRate:48000, numberOfChannels:1}`; every Opus chunk is `"key"`). The decoder outputs the same `AudioData` interface the standard path yields, so downstream is shared. A registry keyed on the `MediaStreamTrack` connects the tee (which fires on the receiver) to the pipeline (built on the `track` event).
+### Seam arbitration
+
+Meet's internal audio path moved four times in twelve days (journal #31, #73, #82, #103) — `createEncodedStreams` tee → NetEQ SAB WASM → off the RTP receiver path → no neteq worklet at all. Each previous fix hardcoded one seam and broke on the next migration, so the seam is chosen at **runtime**, per call. Journal #82 is why per call and not per build: Meet migrates individual calls.
+
+`capture-seams.ts` holds the pure half — the per-platform seam order and the escalation state machine (`SeamArbiter`), clock-free with timestamps injected. `audio-tap.ts` holds the DOM half.
+
+- **Order:** `receiver-track` leads on every platform, because it is the only seam whose tracks carry identity directly. Meet then falls back `webaudio-track` → `meet-encoded-tee`. Zoom and Teams have the one seam that works; speculative fallbacks there would risk double-capture.
+- **Escalation:** an `unmute` arms a grace window (`SEAM_ESCALATION_GRACE_MS`) — the platform asserting audio is flowing, so a frame must follow. No frame before it expires means the *seam* is wrong, not that the participant is quiet, and the call escalates. Waiting on `unmute` rather than on pipeline start is what stops a silent call from escalating through every seam before anyone speaks.
+- **Locking:** the first decoded frame proves the seam permanently. A proven seam falling quiet is participants stopping talking, never breakage, so it must never churn.
+- **Identity:** seams built on the receiver track reach `resolveIdentity` — both `receiver-track` and `meet-encoded-tee`, since the tee only supplies *frames* while its pipeline is still keyed on the receiver. Other seams' track ids never match a hooked receiver (`rtc-hook.ts`), so they capture under a provisional `<seam>-<n>` id and are named by the existing speaking-onset correlation. Guessing a mapping would attach a confidently-wrong name to real audio, which is worse than a provisional one.
+- **Cloning:** non-receiver seams capture a `clone()` of the page's track. A `MediaStreamTrackProcessor` consumes the track it is given; cloning keeps the page's own playback whole.
+
+### Seams
+
+- **`receiver-track` (Zoom, Teams, and Meet builds that keep audio on the receiver path):** `MediaStreamTrackProcessor` reads decoded `AudioData` directly off each remote track. Construction is deferred to the track's first `unmute` — a processor built on a muted track never delivers frames, and a track allows only one processor ever. (`pcm-worklet.ts` survives as an unwired legacy fallback; don't build new capture against it.)
+- **`webaudio-track` (Meet):** the tracks Meet passes to `createMediaStreamSource`, registered by the passive prototype wrap in `rtc-hook.ts` and exposed as `webAudioTracks()`. On builds where the receiver tracks are live-but-silent decoys, these carry the real decoded audio, per participant, readable by the same `MediaStreamTrackProcessor` the receiver seam uses — verified live at exactly real-time (50 frames / 24000 samples in 498 ms at 48 kHz), with energy envelopes across six concurrent tracks separating into one speaker, two idle-but-live, and three at digital zero (journal #105, #106). Reuses `TrackProcessorSource` unchanged; the seam adds discovery and cloning, not a new frame source.
+- **`meet-encoded-tee` (Meet, `createEncodedStreams`):** Meet's client calls `receiver.createEncodedStreams()` on every audio receiver and decodes the RTP in its own WASM pipeline, so **no `MediaStreamTrack`-based mechanism ever produces audio on Meet** — worklet, processor, and `<audio>` taps all read pure silence (confirmed via `getStats()`: `decoderImplementation=undefined`, `jitterBufferEmittedCount=0` through live speech). The fix: wrap `createEncodedStreams` in the same MAIN-world hook, `.tee()` the pre-decode readable on audio receivers (Meet's own branch passes through untouched — verified transparent in live calls), and decode our branch with the native WebCodecs `AudioDecoder` (`{codec:"opus", sampleRate:48000, numberOfChannels:1}`; every Opus chunk is `"key"`). The decoder outputs the same `AudioData` interface the standard path yields, so downstream is shared. A registry keyed on the `MediaStreamTrack` connects the tee (which fires on the receiver) to the pipeline (built on the `track` event).
   - Gate the tee on `location.host === "meet.google.com"` at hook-install time — applied elsewhere it would double-capture platforms where the standard path works.
   - Do not attempt to reach Meet's own WASM decoder (it doesn't instantiate in the page's main-world realm) — unnecessary anyway, since native `AudioDecoder` covers Opus.
   - **Decoder recovery (restart-in-place):** a single bad Opus chunk puts the whole `AudioDecoder` into a permanent error state, so `MeetDecodeSource` rebuilds it in place and keeps capturing instead of dropping the participant. It distinguishes an *isolated* error after a healthy run (≥ `DECODER_HEALTHY_FRAMES` decoded — rebuild immediately, near-zero audio loss, and reset the restart budget) from a *barren* one (a rebuilt decoder that dies before decoding anything — Meet changing bitrate/DTX mid-stream feeds a burst of frames that won't decode from a cold start). Barren restarts don't re-feed the failed window: the source cools down for `DECODER_RESTART_COOLDOWN_MS`, dropping frames, then rebuilds on the next live frame ("resume at the next decodable boundary"), which paces them at most one per cooldown so a single poisoned burst can't burn the whole budget in under a second. Only after `DECODER_MAX_RESTARTS` barren restarts within a sliding `DECODER_RESTART_WINDOW_MS` does it give up, logging a per-track summary and emitting a `capture-failed` event (relayed to the background) so the audio gap is attributable rather than looking like the source merely went quiet.
@@ -108,12 +123,93 @@ Two capture mechanisms, selected per platform, both terminating in the same down
 
 ## Messaging & state
 
-- **Main → isolated:** `window.postMessage({ __ears: true, ... })`, filtered on the marker and `event.source === window`. PCM frames carry `participantId`, `seq`, and the payload.
+- **Main → isolated:** `window.postMessage({ __ears: true, ... })`, filtered on the marker and `event.source === window`. PCM frames carry `participantId`, `seq`, `sentAt`, and the payload. `seq`/`sentAt` ride all the way to earsd on the extended ingest frame, which is what lets the daemon tell a silent speaker from a stalled extension.
 - **Isolated → main:** `{ __earsCtl: true, ... }` — mirrors the capture toggle (and every change) into the page realm as `capture-state` messages.
 - **Isolated → background:** PCM rides a dedicated long-lived `runtime.connect` port (`lib/pcm-port.ts`), reconnected **lazily** on the next post after a disconnect so an idle tab never traps a suspended worker in a wake loop. Control events use typed runtime messaging.
 - **Respawn replay:** the content relay keeps the durable copy of what the worker holds only in memory — the live meeting and current participants — and replays `meeting-started` + `joined` into every *fresh* port ahead of the message that triggered the reconnect. A respawned worker therefore re-learns which meeting the tab's audio belongs to (both verbs are idempotent daemon-side), so it can tag `ingest.open` with the meeting identity and send `meeting.end` when the tab goes away. Without the replay, an evicted-mid-call worker forwards PCM it can't attribute and has nothing to end — the stranded-active-meeting bug.
 - **Meeting lifecycle:** `meeting-tracker.ts` (in the background) resolves DOM-detected meetings via `meeting.resolve` and opens/closes daemon sessions over the `/control` WebSocket — including pause/resume emulated as session close/re-open under the same meeting id. ([Control protocol v2](../control-protocol.md) moves this state machine into the daemon when it lands.)
 - **Persisted state:** `storage.local` holds the user-facing capture toggle (explicit privacy intent — survives browser restart; missing/corrupt values default to ON so a failed read can't silently kill capture). `storage.session` holds worker-respawn recovery (active-session flag re-arms the `chrome.alarms` keepalive; session area so a fresh browser start can't resurrect a stale alarm). The keepalive is armed only while ≥1 participant is live — an idle extension schedules zero wakes.
+
+## Performance instrumentation
+
+Everything the capture path does runs in the MAIN world, on the same thread the
+meeting UI renders video on. These metrics exist to say whether that costs the
+user anything, and if so which stage. They land in their own IndexedDB ring
+(never the console ring, which would evict a call's log history) and export
+from the popup as `ears-perf-*.jsonl`.
+
+| Metric group | Fields | Tier |
+|--------------|--------|------|
+| `video` | `frames_dropped`, `frames_decoded`, `fps`, `freeze_count`, `freeze_ms`, `packets_lost`, `jitter_buffer_ms` | 1 |
+| `longtask` | `task_n`/`task_p95`/`task_max`, `blocking_ms` | 1 |
+| `capture` | per-stage histograms (`downmix`, `speaking`, `debuglog`, `resample`, `accumulate`, `post`, `frame`), `frames`, `posted`, `tracks`, `decode_queue` | stage timing is tier 2 |
+| `relay` | `encode` (base64 histogram), `frames`, `bytes`, `dropped` | 1, timing tier 2 |
+| `transport` | `buffered_bytes`, `frames_sent`, `frames_dropped`, `frames_queued` | 1 |
+| `heap` | `used_bytes`, `allocated_bytes`, `reclaimed_bytes`, `collections` | 2 |
+
+- **Tier 1** is on by default (`perfLogging`, defaults ON): one timer per
+  context plus a `getStats()` poll every 5s.
+- **Tier 2** (`perfDetail`, defaults OFF) adds `performance.now()` pairs inside
+  the per-audio-frame path and heap sampling. Cheap per call, but it runs ~50×/s
+  per active speaker on the render thread, so it stays opt-in.
+- Perf records **must not** go through the console tap (`debug-log.ts`), whose
+  synchronous serialization runs on the thread being measured. They travel as
+  structured objects on their own message kind.
+- Hot-path instruments **must not** allocate per observation — histograms are
+  preallocated typed arrays and objects are built only at flush.
+
+Records carry `platform` and `meeting` tags, and the daemon labels its
+own capture events with the same `browser:<platform>:<participant>` source, so
+the two log streams join on timestamp and source. See `docs/logging.md` for the
+daemon half.
+
+## Meet audio-graph probe
+
+Meet builds (rolled out per call, 2026-07-24 capture) decode participant Opus
+inside WASM (NetEQ over SharedArrayBuffer) and play out through
+`AudioWorkletNode(processor="neteq-processor")` — encoded frames never enter
+JS, the `createEncodedStreams` tee reads nothing, and the receiver tracks stay
+live-but-silent. The graph probe (`lib/rtc-hook.ts` §graph probe +
+`lib/meet-audio-graph.ts`) instruments the WebAudio graph those builds actually
+use, to answer one question: **is the decoded audio still per participant
+(capturable) or already mixed before anything tappable?**
+
+Hard constraint (journal #93, live-verified 2026-07-29): adding an output edge
+to Meet's `neteq-processor` worklet — an `AnalyserNode`, a destination node,
+anything — trips a Chromium `CHECK` on the realtime audio-worklet thread and
+kills the renderer within seconds. No attach ordering makes it safe, and no
+page-side `try/catch` can contain it. **Nothing in the extension may ever
+connect anything to an `AudioWorkletNode` it did not create.**
+
+- **Graph mapping** (`localStorage.__earsDebugAudio = "1"`): pass-through wraps
+  on `AudioNode.prototype.connect`/`disconnect` and the `AudioWorkletNode`
+  constructor feed a bounded registry (`GRAPH_MAX_NODES`) of node types,
+  worklet processor names, `createMediaStreamSource` input track ids, and
+  fan-in/out. The native call always runs first and its result is returned
+  untouched; all bookkeeping is try/caught and pure JS — it never touches the
+  render graph, so it cannot crash a call. A 15 s timer emits
+  `meet_graph_summary` (counts) and, every other tick, `meet_graph_topology`
+  (the graph as flat fields) into the IndexedDB perf ring, which survives
+  Meet's post-call redirect. Counters surface in the popup's debug report
+  (`hookDebugState().graph`, `webaudio.netEqWorkletNodes`). Track-level peak
+  meters run in the probe's **own** `AudioContext` (never Meet's graph).
+- **Capture bridge** (`localStorage.__earsGraphBridge = "1"`, OFF by default,
+  independent of the probe flag): when Meet connects a `neteq-processor`
+  worklet to a **native** node, that downstream node is branched into a
+  `MediaStreamAudioDestinationNode` and its stream fed through the REAL
+  capture pipeline (`__devCaptureStream`) under `graphtap-<n>` ids — one tap
+  per distinct target, capped at `GRAPH_BRIDGE_MAX_NODES`. The worklet keeps
+  exactly the edges Meet gave it. If the graph is per-participant the daemon
+  records separate streams; if it is mixed, the recordings prove that — either
+  way the verdict is ground truth from audio, not inferred from envelopes. An
+  audio-kind `MediaStreamTrackGenerator` — a `MediaStreamTrack` already —
+  bridges directly as `graphgen-<n>` with no graph mutation at all. A
+  sink-shaped downstream target (zero outputs) is recorded as
+  `untappable-sink` rather than branched. Capture-off severs every bridge
+  branch (`stopMeetGraphProbe`) so an idle extension never keeps Meet's graph
+  pulled.
+- Probe output carries node ids, track ids, processor names, and counts only —
+  never participant display names.
 
 ## Constraints & MUST-NOT
 
@@ -128,5 +224,6 @@ Two capture mechanisms, selected per platform, both terminating in the same down
 9. No `Object.keys` static copy on the constructor — use `Object.setPrototypeOf`.
 10. No install without the idempotent guard and capture epoch.
 11. No swallowing injection-order errors — a silent failure records zero audio while reporting success.
-12. No `ScriptProcessorNode`/`MediaRecorder` for PCM, and no `MediaStreamTrack`-based capture on Meet — the tee is the only mechanism that works there.
+12. No `ScriptProcessorNode`/`MediaRecorder` for PCM. (This rule previously also banned `MediaStreamTrack`-based capture on Meet, on the grounds that the tee was the only mechanism that worked there. Journal #105 disproves it: on current builds the receiver tracks are silent but the `createMediaStreamSource` tracks carry real per-participant audio to an ordinary `MediaStreamTrackProcessor`. Which mechanism works on Meet is now decided at runtime — see Seam arbitration — not fixed by this spec.)
 13. No unbounded PCM queues — bounded circular buffer, drop-oldest, logged counter.
+14. No connecting anything to an `AudioWorkletNode` the extension did not create — an extra output edge on Meet's neteq worklet crashes the renderer from the realtime audio thread (journal #93). Tap the native node downstream instead.

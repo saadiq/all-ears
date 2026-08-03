@@ -3,9 +3,12 @@ import {
   CAPTURE_ENABLED_KEY,
   DEBUG_LOG_KEY,
   DEBUG_REPORT_KEY,
+  PERF_DETAIL_KEY,
   resolveCaptureToggleState,
+  resolvePerfDetailState,
 } from "../../lib/capture-toggle";
 import { toJsonl, type LogEntry } from "../../lib/debug-log";
+import { perfToJsonl, type PerfRecord } from "../../lib/perf";
 import type { BadgeState } from "../../lib/meeting-tracker";
 
 // Popup: capture on/off toggle + earsd status badge + (while a meeting is
@@ -200,6 +203,66 @@ clearLogEl?.addEventListener("click", () => {
     })
     .catch(() => {
       if (debugNoteEl) debugNoteEl.textContent = "Couldn't clear the log.";
+    });
+});
+
+// ── Performance instrumentation ─────────────────────────────────────────────
+//
+// One control: detail — per-audio-frame stage timing + heap sampling. Costs
+// main-thread time on the tab being measured.
+// Tier 1 collection itself has no control here: it defaults on and is cheap.
+
+const perfDetailToggleEl = document.getElementById("perf-detail-toggle") as HTMLInputElement | null;
+const downloadPerfEl = document.getElementById("download-perf") as HTMLButtonElement | null;
+const clearPerfEl = document.getElementById("clear-perf") as HTMLButtonElement | null;
+const perfNoteEl = document.getElementById("perf-note");
+
+browser.storage.local
+  .get(PERF_DETAIL_KEY)
+  .then((v) => {
+    const record = v as Record<string, unknown>;
+    if (perfDetailToggleEl) {
+      perfDetailToggleEl.checked = resolvePerfDetailState(record[PERF_DETAIL_KEY]);
+      perfDetailToggleEl.disabled = false;
+    }
+  })
+  .catch(() => {});
+
+perfDetailToggleEl?.addEventListener("change", () => {
+  browser.storage.local.set({ [PERF_DETAIL_KEY]: perfDetailToggleEl.checked }).catch(() => {});
+});
+
+downloadPerfEl?.addEventListener("click", () => {
+  browser.runtime
+    .sendMessage({ kind: "get-perf-log" })
+    .then((res) => {
+      const records = (res as { records?: PerfRecord[] } | undefined)?.records ?? [];
+      if (records.length === 0) {
+        if (perfNoteEl) perfNoteEl.textContent = "No perf records captured yet.";
+        return;
+      }
+      const blob = new Blob([perfToJsonl(records)], { type: "application/x-ndjson" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ears-perf-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.jsonl`;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (perfNoteEl) perfNoteEl.textContent = `Downloaded ${records.length} perf record(s).`;
+    })
+    .catch(() => {
+      if (perfNoteEl) perfNoteEl.textContent = "Couldn't read the perf log.";
+    });
+});
+
+clearPerfEl?.addEventListener("click", () => {
+  browser.runtime
+    .sendMessage({ kind: "clear-perf-log" })
+    .then(() => {
+      if (perfNoteEl) perfNoteEl.textContent = "Perf log cleared.";
+    })
+    .catch(() => {
+      if (perfNoteEl) perfNoteEl.textContent = "Couldn't clear the perf log.";
     });
 });
 

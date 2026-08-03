@@ -163,6 +163,10 @@ public actor EarsDaemon {
   /// string logs (via ``log``, which wraps this). One sink means one
   /// consistent JSON-Lines + stderr + unified-logging fan-out everywhere.
   private let logSink: any LogRecordSink
+  /// Per-source ingest counters and their last flush time; see
+  /// ``accrueIngestStats(source:samples:sampleRate:stamp:)``.
+  private var ingestStats: [SourceID: IngestStats] = [:]
+  private var ingestStatsFlushedAt: Instant?
   /// The daemon's free-text lifecycle/component logger, threaded into
   /// `ControlServer`, `MeetingRegistry`, `OnClosePipelineRunner`, etc. Now a
   /// thin wrapper over ``logSink`` (built in `init`) so those messages land in
@@ -614,8 +618,9 @@ public actor EarsDaemon {
         guard let self else { throw IngestError.notABrowserSource(label) }
         return try await self.openIngestSource(label: label, format: format, meeting: meeting)
       },
-      onPush: { [weak self] streamID, samples, sampleRate in
-        await self?.pushIngestAudio(streamID: streamID, samples: samples, sampleRate: sampleRate)
+      onPush: { [weak self] streamID, samples, sampleRate, stamp in
+        await self?.pushIngestAudio(
+          streamID: streamID, samples: samples, sampleRate: sampleRate, stamp: stamp)
       },
       onClose: { [weak self] streamID in
         await self?.closeIngestSource(streamID: streamID)
@@ -832,9 +837,133 @@ public actor EarsDaemon {
   /// via its `PushCaptureBackend`. An unknown `streamID` (already closed, or
   /// never opened) drops the buffer silently — the WebSocket layer already
   /// logs that case once per frame.
-  public func pushIngestAudio(streamID: String, samples: [Float], sampleRate: Int) async {
+  public func pushIngestAudio(
+    streamID: String,
+    samples: [Float],
+    sampleRate: Int,
+    stamp: IngestFrameStamp? = nil
+  ) async {
     guard let label = ingestStreams[streamID], let backend = pushBackends[label] else { return }
-    await backend.push(AudioBuffer(samples: samples, sampleRate: sampleRate))
+    accrueIngestStats(source: label, samples: samples.count, sampleRate: sampleRate, stamp: stamp)
+    await backend.push(AudioBuffer(samples: samples, sampleRate: sampleRate), stamp: stamp)
+    await emitIngestStatsIfDue()
+  }
+
+  // MARK: - Ingest throughput accounting
+
+  /// Rolling per-source ingest counters, flushed as `capture.ingest_stats`.
+  ///
+  /// Frame *arrival* was previously unmeasured: the logs could show that audio
+  /// eventually landed in a chunk, but not the rate it arrived at, nor how
+  /// stale it was by the time it did. One-way delay in particular is only
+  /// computable here, where the sender's stamp is still in hand.
+  private struct IngestStats {
+    var frames = 0
+    var samples = 0
+    var audioSeconds = 0.0
+    var delaySumMs = 0.0
+    var delaySamples = 0
+    var maxDelayMs = 0.0
+    var seqGaps = 0
+    var lastSeq: UInt32?
+  }
+
+  /// Flush period. Long enough that a busy call adds one record per source per
+  /// interval rather than per frame, short enough to localize a stall.
+  static let ingestStatsIntervalSeconds: Double = 30
+
+  private func accrueIngestStats(
+    source: SourceID, samples: Int, sampleRate: Int, stamp: IngestFrameStamp?
+  ) {
+    var stats = ingestStats[source] ?? IngestStats()
+    stats.frames += 1
+    stats.samples += samples
+    if sampleRate > 0 { stats.audioSeconds += Double(samples) / Double(sampleRate) }
+    if let stamp {
+      let delay = clock.now().secondsSinceEpoch * 1000 - stamp.sentAtEpochMs
+      // Negative delays mean the two clocks disagree, not time travel; they
+      // would drag the mean toward nonsense, so they're excluded rather than
+      // clamped to zero (which would silently bias it the other way).
+      if delay >= 0 {
+        stats.delaySumMs += delay
+        stats.delaySamples += 1
+        stats.maxDelayMs = max(stats.maxDelayMs, delay)
+      }
+      // `nil` means the sender restarted (its seq is per-pipeline-instance and
+      // begins again at 0 on a rebuild): a fresh baseline, not ~2^32 lost
+      // frames. See ``CaptureActor/seqGap(from:to:)``.
+      if let last = stats.lastSeq, let gap = CaptureActor.seqGap(from: last, to: stamp.seq),
+        gap > 0
+      {
+        stats.seqGaps += gap
+      }
+      stats.lastSeq = stamp.seq
+    }
+    ingestStats[source] = stats
+  }
+
+  private func emitIngestStatsIfDue() async {
+    let now = clock.now()
+    guard let last = ingestStatsFlushedAt else {
+      ingestStatsFlushedAt = now
+      return
+    }
+    guard now.interval(since: last) >= Self.ingestStatsIntervalSeconds else { return }
+    let elapsed = now.interval(since: last)
+    ingestStatsFlushedAt = now
+    let snapshot = ingestStats
+    // Sequence continuity must survive the flush; everything else is per-interval.
+    for (source, stats) in snapshot {
+      ingestStats[source] = IngestStats(lastSeq: stats.lastSeq)
+    }
+
+    for (source, stats) in snapshot where stats.frames > 0 {
+      await emitIngestStatsRecord(source: source, stats: stats, elapsed: elapsed, now: now)
+    }
+  }
+
+  /// Final flush for one source, on ingest-stream close or actor teardown:
+  /// ``emitIngestStatsIfDue()`` only runs while frames arrive, so without this
+  /// the accumulated tail interval — and every stream shorter than the flush
+  /// period — would be stranded. Dropping the counters also clears `lastSeq`,
+  /// so a reopened stream starts a fresh seq baseline instead of misreading
+  /// the sender's restarted seq as loss.
+  private func flushIngestStats(source: SourceID) async {
+    guard let stats = ingestStats.removeValue(forKey: source), stats.frames > 0 else { return }
+    let now = clock.now()
+    let elapsed = ingestStatsFlushedAt.map { now.interval(since: $0) } ?? 0
+    await emitIngestStatsRecord(source: source, stats: stats, elapsed: elapsed, now: now)
+  }
+
+  private func emitIngestStatsRecord(
+    source: SourceID, stats: IngestStats, elapsed: Double, now: Instant
+  ) async {
+    var fields: [LogField] = [
+      LogField("source", .string(source.rawValue)),
+      LogField("frames", .int(stats.frames)),
+      LogField("samples", .int(stats.samples)),
+      LogField("audio_seconds", .double((stats.audioSeconds * 1000).rounded() / 1000)),
+      LogField("interval_seconds", .double((elapsed * 10).rounded() / 10)),
+    ]
+    // Guarded so a final flush landing on the same clock tick as the last
+    // periodic one can't divide by zero.
+    if elapsed > 0 {
+      fields.append(
+        LogField(
+          "frames_per_second", .double((Double(stats.frames) / elapsed * 100).rounded() / 100)))
+    }
+    if stats.delaySamples > 0 {
+      fields.append(
+        LogField(
+          "delay_mean_ms", .double((stats.delaySumMs / Double(stats.delaySamples)).rounded())))
+      fields.append(LogField("delay_max_ms", .double(stats.maxDelayMs.rounded())))
+    }
+    if stats.seqGaps > 0 { fields.append(LogField("frames_lost", .int(stats.seqGaps))) }
+    try? await logSink.log(
+      LogRecord(
+        ts: now, level: .info, tool: "earsd", subsystem: "net.tomelliot.ears",
+        category: "earsd.capture", pid: ProcessInfo.processInfo.processIdentifier,
+        event: "capture.ingest_stats", fields: fields))
   }
 
   /// `ingest.close`: stop the `CaptureActor` behind `streamID` (flushing and
@@ -844,6 +973,7 @@ public actor EarsDaemon {
   /// them rather than starting over.
   public func closeIngestSource(streamID: String) async {
     guard let label = ingestStreams.removeValue(forKey: streamID) else { return }
+    await flushIngestStats(source: label)
     if let actor = captureActors[label] {
       await actor.stop()
     }
@@ -858,6 +988,7 @@ public actor EarsDaemon {
   /// audio under its original meeting stays put — retention owns its lifetime,
   /// not this teardown.
   private func teardownIngestActor(_ label: SourceID) async {
+    await flushIngestStats(source: label)
     if let actor = captureActors[label] {
       await actor.stop()
     }

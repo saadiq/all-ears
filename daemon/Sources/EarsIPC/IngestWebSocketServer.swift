@@ -41,8 +41,11 @@ public actor IngestWebSocketServer {
   public typealias OpenHandler =
     @Sendable (SourceID, AudioFormatSpec, MeetingIdentity?) async throws
     -> String
-  /// One binary PCM frame's decoded samples for an open `stream_id`.
-  public typealias PushHandler = @Sendable (String, [Float], Int) async -> Void
+  /// One binary PCM frame's decoded samples for an open `stream_id`, with the
+  /// sender's stamp when the client sent an extended frame (nil on legacy ones,
+  /// so an older extension still ingests — it just yields no delivery timing).
+  public typealias PushHandler =
+    @Sendable (String, [Float], Int, IngestFrameStamp?) async -> Void
   /// `ingest.close`, or implicit close on connection teardown for any
   /// stream this connection opened but never explicitly closed.
   public typealias CloseHandler = @Sendable (String) async -> Void
@@ -236,24 +239,27 @@ public actor IngestWebSocketServer {
     }
   }
 
-  // MARK: - Binary PCM frames: [u8 idLen][stream_id][pcm_s16le bytes]
+  // MARK: - Binary PCM frames (see IngestFrame for the two wire shapes)
 
   private func handleBinaryFrame(_ payload: [UInt8], openStreams: [String: OpenStream]) async {
-    guard let idLen = payload.first else { return }
-    let idLength = Int(idLen)
-    guard payload.count >= 1 + idLength else {
-      log("ingest ws: malformed binary frame (idLen past end) — dropped")
+    let frame: IngestFrame
+    switch IngestFrame.parse(payload) {
+    case .success(let parsed):
+      frame = parsed
+    case .failure(let error):
+      if case .empty = error { return }  // keepalive-shaped noise, not worth a line
+      log("ingest ws: malformed binary frame (\(error)) — dropped")
       return
     }
-    guard let streamID = String(bytes: payload[1..<(1 + idLength)], encoding: .ascii) else {
+    guard let stream = openStreams[frame.streamID] else {
+      log("ingest ws: pcm for unknown stream \(frame.streamID) — dropped")
       return
     }
-    guard let stream = openStreams[streamID] else {
-      log("ingest ws: pcm for unknown stream \(streamID) — dropped")
-      return
+    let samples = Self.decodePCM16LE(frame.pcm)
+    let stamp = frame.seq.flatMap { seq in
+      frame.sentAtEpochMs.map { IngestFrameStamp(seq: seq, sentAtEpochMs: $0) }
     }
-    let samples = Self.decodePCM16LE(payload[(1 + idLength)...])
-    await pushHandler(streamID, samples, stream.format.sampleRate)
+    await pushHandler(frame.streamID, samples, stream.format.sampleRate, stamp)
   }
 
   private static func decodePCM16LE(_ bytes: ArraySlice<UInt8>) -> [Float] {

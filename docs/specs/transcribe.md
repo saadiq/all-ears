@@ -6,8 +6,8 @@ Turn captured audio for a source + time range (or a session) into a transcript o
 
 ## Inputs
 
-- A **source** (`--source mic`, repeatable) and a **time range** (`--last 30m`, or `--from`/`--to`), **or** a **session** (`--session <id>`, which resolves sources, range, pre-roll widening, and vocabulary from the descriptor).
-- An output override (`--out`); otherwise the [output layout](../data-formats.md#directory-layout) decides.
+- A **source** (`--source mic`, repeatable) and a **time range** (`--last 30m`, or `--from`/`--to`), **or** a **session** (`--session <id>`, which resolves sources, range, pre-roll widening, and vocabulary from the descriptor), **or** a **standalone file** (`--file memo.m4a`, repeatable) transcribed directly with no capture store involved.
+- An output override (`--out`); otherwise the [output layout](../data-formats.md#directory-layout) decides — except `--file`, which writes each transcript next to its input (`--out` applies only to a single `--file`).
 
 The ASR backend is currently fixed: Parakeet via FluidAudio on the Apple Neural Engine.
 
@@ -76,6 +76,8 @@ Options:
                            (per-source store lookup: per-meeting copy, ring fallback)
   --follow <id>            attach to a live source and stream finalised segments
   --json                   (follow) emit JSON segment lines to stdout
+  --file <path>            transcribe a standalone audio file; repeatable, one
+                           transcript per file, written next to its input
   --out <path>             override the output transcript path
   --config / --print-config / --config-path / --log-level / --log-file
 ```
@@ -87,3 +89,4 @@ Exits non-zero with a precise error if the range is empty or invalid, sources ar
 - `<output-root>/<date>/<time>_<slug|range>.transcript.md` — canonical human transcript.
 - `.transcript.json` sidecar with word-level detail.
 - A final `run.summary` log record: segments, words, speech seconds, wall time, real-time factor, output path.
+- `--file` writes `<input-dir>/<name>.transcript.md` (and the `.json` sidecar) beside the recording instead; `output_root` is not consulted, so the run's `run.start` record omits it and `run.summary` carries the real output path.

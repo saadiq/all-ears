@@ -111,15 +111,22 @@ Browser audio does **not** flow over the control transports — it uses a dedica
 
 The optional `meeting` field carries the meeting identity (`meeting.start`'s idempotency key) the source belongs to. The daemon links the source into that live meeting's `sources` itself — stashing the link until the `meeting.start` lands, if the open raced ahead of it — so the ingest-idle grace policy holds even when the extension's own `meeting.attendee` source upserts never arrive (an MV3 service worker respawned mid-call has no meeting state to upsert from). The client's attendee upserts remain the enrichment path (attributing a source to a named attendee); the tag is the membership path. Untagged opens behave exactly as before.
 
-Audio is one binary frame per PCM chunk, multiplexed by `stream_id` (no sequence number — WebSocket rides TCP):
+Audio is one binary frame per PCM chunk, multiplexed by `stream_id`. Two shapes, discriminated by the first byte:
 
 ```
-[ u8 idLen ][ stream_id : idLen ASCII bytes ][ pcm_s16le bytes (mono, little-endian) ]
+legacy:   [ u8 idLen>0 ][ stream_id : idLen ASCII ][ pcm_s16le (mono, LE) ]
+extended: [ 0x00 ][ u8 ver=1 ][ u8 idLen ][ stream_id ][ u32le seq ][ f64le sentAt ][ pcm_s16le ]
 ```
+
+A zero first byte cannot occur in the legacy shape — stream ids are never empty — which is what makes it a safe discriminator. The daemon parses both, so a daemon upgraded ahead of the extension keeps ingesting; only the delivery timing below degrades to `cause:"unknown"`.
+
+`seq` is per-stream and monotonic (wrapping at 2^32); `sentAt` is epoch milliseconds at the moment the browser's MAIN world handed the frame over. WebSocket rides TCP, so these are not for reordering or retransmission — they exist because arrival times alone cannot distinguish a speaker who stopped talking from a capture path that died, and the daemon needs to log which one happened.
 
 A `browser:<label>` source is created lazily on its first-ever `ingest.open` and persists for the daemon's lifetime; a later `ingest.open` for the same label (a participant rejoining) resumes the same on-disk source. `ingest.close` flushes and indexes the in-progress chunk. The client side is specified in [browser/transport.md](./browser/transport.md), which this endpoint matches wire-for-wire.
 
-PCM frames carry no timestamps, and a pushed stream may go quiet at will (Meet's per-speaker streams deliver audio only while that speaker talks). Chunk/VAD timestamps normally accumulate from delivered audio duration, so the daemon re-anchors the source's timeline to wall clock whenever delivery resumes after a stall of more than ~2s, recording the quiet interval as a `gap` (`reason:"delivery-stall"`). Without this, every silence would be squeezed out of the timeline and the source's chunks would be stamped progressively further behind wall clock — mis-interleaving its transcript against continuously-captured sources. Sub-threshold jitter stays on the accumulated timeline.
+A pushed stream may go quiet at will (Meet's per-speaker streams deliver audio only while that speaker talks). Chunk/VAD timestamps normally accumulate from delivered audio duration, so the daemon re-anchors the source's timeline to wall clock whenever delivery resumes after a stall of more than ~2s, recording the quiet interval as a `gap` (`reason:"delivery-stall"`). Without this, every silence would be squeezed out of the timeline and the source's chunks would be stamped progressively further behind wall clock — mis-interleaving its transcript against continuously-captured sources. Sub-threshold jitter stays on the accumulated timeline.
+
+The `capture.delivery_gap` record classifies each gap using the sender's stamp: `silence` (the sender's own clock shows the same gap), `delivery-stall` (frames were produced but arrived bunched), `frames-lost` (the sequence skipped), or `unknown` (legacy client). See [logging.md](../logging.md#performance-events).
 
 Both WebSocket servers are hand-rolled on the raw socket transport rather than `NWProtocolWebSocket`, which offers no hook to validate `Origin` before completing the upgrade.
 

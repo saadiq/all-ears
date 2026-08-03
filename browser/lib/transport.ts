@@ -25,6 +25,12 @@ const MAX_BACKOFF_MS = 10_000;
 
 type PendingRequest = { kind: "open"; participantId: ParticipantId } | { kind: "close" };
 
+/** Per-frame provenance carried from the MAIN world all the way to earsd. */
+export interface FrameStamp {
+  seq: number;
+  sentAt: number;
+}
+
 interface ParticipantState {
   platform: Platform;
   /** External meeting id the participant belongs to, when the tracker knows
@@ -34,8 +40,25 @@ interface ParticipantState {
   streamId?: string; // set once ingest.open succeeds
   opening: boolean;
   failed: boolean;
-  queue: Uint8Array[]; // frames held while ingest.open is in flight
+  /** Frames held while ingest.open is in flight, with their stamps so a queued
+   * frame reaches the daemon with its original send time, not its replay time. */
+  queue: Array<{ pcm: Uint8Array; stamp?: FrameStamp }>;
   dropped: number;
+}
+
+/**
+ * Transport instruments, injected by the background so this module doesn't
+ * depend on the collector's lifecycle. `buffered_bytes` is the one that
+ * distinguishes "the extension is slow" from "the daemon is slow": if it grows,
+ * PCM is queuing inside the renderer because the socket can't drain, which is a
+ * different fault with a different fix from local compute cost.
+ */
+export interface TransportPerf {
+  buffered: { set(v: number): void };
+  sent: { add(n?: number): void };
+  bytes: { add(n?: number): void };
+  dropped: { add(n?: number): void };
+  queued: { set(v: number): void };
 }
 
 export class EarsSocket {
@@ -43,6 +66,9 @@ export class EarsSocket {
    * actually exists on earsd and can be named on a session
    * (meeting-tracker.ts listens to open sessions / add sources). */
   onStreamOpened?: (participantId: ParticipantId, platform: Platform) => void;
+
+  /** Optional perf sink; unset in tests and when perf collection is off. */
+  perf?: TransportPerf;
 
   private ws?: WebSocket;
   private status: TransportStatus = "disconnected";
@@ -134,6 +160,7 @@ export class EarsSocket {
     platform: Platform,
     pcm: Uint8Array,
     meetingExternalId?: string,
+    stamp?: FrameStamp,
   ): void {
     if (this.status !== "connected" || !this.ws) return; // no buffering while down
 
@@ -145,15 +172,17 @@ export class EarsSocket {
     if (st.failed) return;
 
     if (st.streamId) {
-      this.sendFrame(st, st.streamId, pcm);
+      this.sendFrame(st, st.streamId, pcm, stamp);
       return;
     }
     // Not open yet: queue (bounded, drop-oldest) and kick off ingest.open once.
     if (st.queue.length >= OPENING_QUEUE_LIMIT) {
       st.queue.shift();
       st.dropped++;
+      this.perf?.dropped.add();
     }
-    st.queue.push(pcm);
+    st.queue.push({ pcm, stamp });
+    this.perf?.queued.set(st.queue.length);
     if (!st.opening) this.openStream(participantId, st);
   }
 
@@ -170,18 +199,28 @@ export class EarsSocket {
     });
   }
 
-  private sendFrame(st: ParticipantState, streamId: string, pcm: Uint8Array): void {
+  private sendFrame(
+    st: ParticipantState,
+    streamId: string,
+    pcm: Uint8Array,
+    stamp?: FrameStamp,
+  ): void {
     if (!this.ws) return;
+    const buffered = this.ws.bufferedAmount;
+    this.perf?.buffered.set(buffered);
     // Back-pressure: drop the freshest-past-limit frame rather than grow unbounded.
-    if (this.ws.bufferedAmount > BUFFERED_AMOUNT_LIMIT) {
+    if (buffered > BUFFERED_AMOUNT_LIMIT) {
       st.dropped++;
+      this.perf?.dropped.add();
       if (st.dropped % 50 === 1) {
         console.warn(`[ears][transport] back-pressure drop for ${streamId}: ${st.dropped} frame(s)`);
       }
       return;
     }
-    const frame = encodeBinaryFrame(streamId, pcm); // fresh, full-length array
+    const frame = encodeBinaryFrame(streamId, pcm, stamp); // fresh, full-length array
     this.ws.send(frame.buffer as ArrayBuffer);
+    this.perf?.sent.add();
+    this.perf?.bytes.add(frame.byteLength);
   }
 
   participantLeft(participantId: ParticipantId): void {
@@ -221,7 +260,7 @@ export class EarsSocket {
       st.streamId = parsed.data.stream_id;
       const frames = st.queue;
       st.queue = [];
-      for (const f of frames) this.sendFrame(st, st.streamId, f);
+      for (const f of frames) this.sendFrame(st, st.streamId, f.pcm, f.stamp);
       this.onStreamOpened?.(req.participantId, st.platform);
     } else {
       // No per-frame retry: mark failed and drop this participant's audio.

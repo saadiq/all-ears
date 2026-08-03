@@ -84,7 +84,7 @@ struct Transcribe: AsyncParsableCommand {
   @Option(
     name: .customLong("file"),
     help:
-      "Transcribe a standalone audio file (e.g. a .m4a) directly, bypassing the capture store; repeatable, one transcript written per file."
+      "Transcribe a standalone audio file (e.g. a .m4a) directly, bypassing the capture store; repeatable, one transcript written per file, next to its input (--out overrides, single file only)."
   )
   var files: [String] = []
 
@@ -134,10 +134,14 @@ struct Transcribe: AsyncParsableCommand {
     // `run.summary`; the summary now reflects the outcome we return here,
     // never a `status=ok` logged before the work could fail (issue #25). The
     // `--print-config`/`--config-path` fast paths return before `work` runs.
+    // A `--file` run writes next to each input, never into `output_root`, so
+    // its `run.start` omits that field instead of advertising a directory the
+    // run won't touch.
     let diagnostics = RunDiagnostics()
     let exitCode = await EarsCLI.run(
-      tool: "transcribe", version: "0.1.0", arguments: arguments
-    ) { _ in
+      tool: "transcribe", version: "0.1.0", arguments: arguments,
+      usesOutputRoot: files.isEmpty
+    ) { bootstrap in
       if !files.isEmpty {
         return await TranscribeRuntime.runFiles(
           arguments: arguments,
@@ -150,12 +154,15 @@ struct Transcribe: AsyncParsableCommand {
           inputs: TranscribeFollowPipeline.Inputs(source: follow, json: json, out: out),
           diagnostics: diagnostics)
       }
+      // Stage spans go to the same sink as run.start/run.summary, so per-stage
+      // timing correlates with the run it belongs to (docs/logging.md).
       return await TranscribeRuntime.run(
         arguments: arguments,
         inputs: TranscribePipeline.Inputs(
           last: last, from: from, to: to, session: session, meeting: meeting, sourceIDs: sources,
           out: out),
-        diagnostics: diagnostics)
+        diagnostics: diagnostics,
+        spans: bootstrap.stageSpans(tool: "transcribe"))
     }
     guard exitCode == 0 else { throw ExitCode(exitCode) }
   }

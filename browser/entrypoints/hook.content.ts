@@ -1,11 +1,13 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import { installHook, hookDebugState } from "../lib/rtc-hook";
+import { installHook, hookDebugState, setMeetGraphSinks, stopMeetGraphProbe } from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
+import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
+import { perfTag, setPerfState } from "../lib/perf-main";
 // Side-effect imports: each adapter registers itself with selectAdapter.
 import "../lib/identity/meet";
 import "../lib/identity/zoom";
@@ -47,6 +49,15 @@ export default defineContentScript({
   world: "MAIN",
   main() {
     installHook();
+    // Meet audio-graph probe plumbing (rtc-hook.ts §graph probe). rtc-hook
+    // cannot import perf-main or audio-tap (audio-tap imports rtc-hook), so
+    // this realm's entrypoint — which already imports both — injects the two
+    // capabilities the probe needs: shipping records into the perf ring, and
+    // feeding a bridged stream into the real capture pipeline.
+    setMeetGraphSinks({
+      emitPerf: (metric, fields) => mainPerf().emit(metric, fields),
+      bridgeStream: (stream, id) => __devCaptureStream(stream, id, "graph-bridge"),
+    });
 
     const host = location.host;
     const adapter = selectAdapter(host);
@@ -56,6 +67,8 @@ export default defineContentScript({
     let captureOn = false;
     let stopMeetingWatch: (() => void) | null = null;
     let lastMeetingId: string | null = null;
+
+    perfTag("platform", platform);
 
     // On-demand state snapshot for the popup's "Report state" button. Dumps to
     // THIS tab's console (where the [ears] logs already live) so it can be read
@@ -104,17 +117,24 @@ export default defineContentScript({
         setDebugLogging(msg.enabled);
         return;
       }
+      if (msg.kind === "perf-state") {
+        setPerfState(msg.enabled, msg.detail);
+        return;
+      }
       if (msg.kind !== "capture-state" || msg.enabled === captureOn) return;
       captureOn = msg.enabled;
       if (captureOn) {
         startEpoch(platform, adapter);
-        stopMeetingWatch?.();
-        stopMeetingWatch = startMeetingWatch(platform, (id) => (lastMeetingId = id));
+        stopMeetingWatch = startMeetingWatch(platform, (id) => {
+          lastMeetingId = id;
+          perfTag("meeting", id);
+        });
       } else {
         stopCapture();
         stopMeetingWatch?.();
         stopMeetingWatch = null;
         lastMeetingId = null;
+        perfTag("meeting", undefined);
       }
     });
 
@@ -142,6 +162,11 @@ function startEpoch(platform: Platform, adapter: PlatformAdapter | null): void {
 function stopCapture(): void {
   claimEpoch();
   (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.();
+  // The graph probe attaches analysers to Meet's own worklets, and an output
+  // connection keeps an AudioWorkletNode actively processing. An idle
+  // extension must not hold those (and the WASM decoder behind each) alive —
+  // monitoring re-arms on the next worklet Meet constructs.
+  stopMeetGraphProbe();
   console.debug("[ears][hook] capture disabled — epoch released, pipelines torn down");
 }
 

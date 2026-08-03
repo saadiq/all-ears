@@ -75,6 +75,37 @@ Expensive stages (ASR decode, LLM calls, encode/flush) are additionally wrapped 
 - Never log audio content or transcript/LLM bodies above `debug` — metadata and counts only, so logs stay shareable.
 - Anything actionable lives in a **field**, so no consumer ever has to regex `msg`.
 
+## Performance events
+
+Timing and resource events, and what each answers.
+
+| Event | Emitted by | Fields | Answers |
+|-------|-----------|--------|---------|
+| `stage.start` / `stage.end` | `transcribe` | `span_id`, `stage`, `session`, `duration_ms`, `rtf`, `audio_seconds`, `status` | Where a run's time went. Stages: `model_load`, `diarizer_load`, `asr`, `diarize`. |
+| `capture.chunk_finalized` | `earsd` | `asr_encode_ms`, `native_encode_ms`, `open_check_ms`, `encode_rtf`, plus the existing integrity fields | Whether chunk encoding keeps up with realtime capture. |
+| `capture.ingest_stats` | `earsd` | `source`, `frames`, `frames_per_second`, `audio_seconds`, `delay_mean_ms`, `delay_max_ms`, `frames_lost` | Whether the browser extension is delivering on time. Emitted per source every 30s. |
+| `capture.delivery_gap` | `earsd` | `cause`, `send_gap_ms`, `seq_gap`, `one_way_ms`, plus `seconds` | Whether an audio gap was a quiet speaker or a broken capture path — see below. |
+| `proc.resource` | `earsd` | `cpu_seconds`, `cpu_percent`, `rss_bytes`, `peak_rss_bytes`, `thread_count` | Whether the daemon itself is costing the machine anything. Sampled every 60s. |
+
+`capture.delivery_gap`'s `cause` is the one that needs explaining. Meet sends
+per-speaker streams, so a stream falling silent is normal and a dead capture
+path looks identical from arrival times alone. The extension stamps each PCM
+frame with a sequence number and send time, which lets the daemon separate:
+
+| `cause` | Meaning |
+|---------|---------|
+| `silence` | The sender's own clock shows the same gap — no audio was produced. The normal case. |
+| `delivery-stall` | The sender kept producing; frames arrived bunched. The delay is downstream of capture. |
+| `frames-lost` | The sequence skipped: frames were produced and never arrived. |
+| `unknown` | An extension too old to stamp frames, or the first frame of a stream. |
+
+Browser-side metrics do not appear in these files. The extension collects its
+own (long tasks, WebRTC video receive stats, per-stage capture timing, heap,
+transport back-pressure) into a separate IndexedDB ring, exported from the
+popup as `ears-perf-*.jsonl`. See `docs/specs/browser/extension.md`. Both sides
+timestamp in epoch/UTC and tag records with the same
+`browser:<platform>:<participant>` source label, so the two streams join.
+
 ## Consuming logs
 
 ```sh
@@ -83,6 +114,15 @@ tail -f ~/Library/Application\ Support/ears/logs/earsd.jsonl | jq 'select(.level
 
 # every ASR stage timing across a day
 jq 'select(.event=="stage.end" and .stage=="asr") | {ts, session, duration_ms, rtf}' logs/transcribe.jsonl
+
+# audio gaps that were NOT just a quiet speaker
+jq 'select(.event=="capture.delivery_gap" and .cause!="silence")' logs/earsd.jsonl
+
+# ingest delay per source
+jq 'select(.event=="capture.ingest_stats") | {ts, source, frames_per_second, delay_mean_ms}' logs/earsd.jsonl
+
+# the daemon's own CPU over a call
+jq 'select(.event=="proc.resource") | {ts, cpu_percent, rss_bytes}' logs/earsd.jsonl
 
 # the unified-logging mirror
 log stream --predicate 'subsystem == "net.tomelliot.ears" && category == "earsd"' --level debug

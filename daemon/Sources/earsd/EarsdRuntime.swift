@@ -26,6 +26,11 @@ import Foundation
 /// The decision logic it delegates to (``DaemonConfigResolution``) is unit
 /// tested directly.
 enum EarsdRuntime {
+  /// How often `earsd` samples its own CPU/memory. One record a minute is a
+  /// negligible log volume next to the per-chunk stream, and fine enough to
+  /// localize a regression to the meeting that caused it.
+  static let procResourceIntervalSeconds: Double = 60
+
   static func run(arguments: EarsCLI.Arguments) async -> Int32 {
     // Installed before any config loading or daemon construction, not just
     // before the final wait: a `SIGTERM` arriving mid-startup must still be
@@ -91,11 +96,23 @@ enum EarsdRuntime {
     // is non-fatal: `logHandle` keeps its stderr fallback and the daemon logs
     // through a no-op sink, so capture still runs.
     var daemonLogSink: any LogRecordSink = NoOpLogRecordSink()
+    var resourceLogger: ProcessResourceLogger?
     if let bootstrap = try? EarsCLI.makeLogSink(
       loaded: loaded, tool: "earsd", clock: SystemClock())
     {
       daemonLogSink = bootstrap.sink
       await logHandle.set(bootstrap.sink, effectiveLevel: bootstrap.effectiveLevel)
+      // Periodic `proc.resource`. A long-running daemon is exactly the process
+      // whose CPU and memory drift matters and exactly the one where nobody is
+      // watching a terminal, so it samples itself.
+      resourceLogger = ProcessResourceLogger(
+        sink: bootstrap.sink,
+        clock: SystemClock(),
+        tool: "earsd",
+        subsystem: bootstrap.subsystem,
+        category: "earsd",
+        pid: bootstrap.pid,
+        intervalSeconds: procResourceIntervalSeconds)
     }
 
     let resolution = DaemonConfigResolution.resolve(config: loaded.value, now: SystemClock().now())
@@ -153,6 +170,11 @@ enum EarsdRuntime {
       return 1
     }
     await logHandle.emit("started (socket: \(resolution.configuration.socketPath))")
+
+    if let resourceLogger {
+      await resourceLogger.emit()  // baseline reading at boot
+      await resourceLogger.start()
+    }
 
     await waitForever()
     // Unreachable: `waitForever()` only returns via the SIGTERM handler's

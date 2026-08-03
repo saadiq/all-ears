@@ -127,8 +127,15 @@ public enum EarsCLI {
   /// lifecycle logging (`ears`' fast-path-only invocations; `earsd`'s
   /// long-running daemon, which logs its own `run.summary` at shutdown), so
   /// no `run.summary` is emitted here.
+  ///
+  /// `usesOutputRoot` says whether this invocation writes into the configured
+  /// `output_root`. `transcribe --file` doesn't — each transcript lands next
+  /// to its input — so it passes `false` and `run.start` omits the
+  /// `output_root` field rather than advertising a directory the run never
+  /// writes to.
   public static func run(
     tool: String, version: String, arguments: Arguments,
+    usesOutputRoot: Bool = true,
     work: (@Sendable (LogBootstrap) async -> RunOutcome)? = nil
   ) async -> Int32 {
     let environment = ProcessInfo.processInfo.environment
@@ -167,7 +174,7 @@ public enum EarsCLI {
 
     do {
       return try await bootstrapLoggingAndRun(
-        tool: tool, version: version, loaded: loaded, work: work)
+        tool: tool, version: version, loaded: loaded, usesOutputRoot: usesOutputRoot, work: work)
     } catch {
       writeStderr("error: \(tool) failed to start: \(error)")
       return 1
@@ -210,6 +217,14 @@ public enum EarsCLI {
       self.effectiveLevel = effectiveLevel
       self.subsystem = subsystem
       self.pid = pid
+    }
+
+    /// A ``StageSpans`` emitter on this same sink, so `stage.start`/`stage.end`
+    /// land in the same file, subsystem, and category as `run.start`/
+    /// `run.summary` and correlate without any extra plumbing.
+    public func stageSpans(tool: String, clock: any NowProviding = SystemClock()) -> StageSpans {
+      StageSpans(
+        sink: sink, clock: clock, tool: tool, subsystem: subsystem, category: tool, pid: pid)
     }
   }
 
@@ -269,11 +284,11 @@ public enum EarsCLI {
   /// optimistic `ok` logged before the work that can still fail (issue #25).
   private static func bootstrapLoggingAndRun(
     tool: String, version: String, loaded: LoadedConfig,
+    usesOutputRoot: Bool,
     work: (@Sendable (LogBootstrap) async -> RunOutcome)?
   ) async throws -> Int32 {
     let config = loaded.value
     let dataRoot = stringValue(config, ["data_root"])
-    let outputRoot = stringValue(config, ["output_root"])
 
     let clock = SystemClock()
     let bootstrap = try makeLogSink(loaded: loaded, tool: tool, clock: clock)
@@ -281,6 +296,19 @@ public enum EarsCLI {
     let subsystem = bootstrap.subsystem
     let pid = bootstrap.pid
     let effectiveLevel = bootstrap.effectiveLevel
+
+    var startupFields: [LogField] = [
+      LogField("config_path", .string(loaded.configFilePath)),
+      LogField("log_level", .string(effectiveLevel.rawValue)),
+      LogField("version", .string(version)),
+      LogField("data_root", .string(dataRoot)),
+    ]
+    // A run that never writes into `output_root` (`transcribe --file`) omits
+    // the field: `run.start` states where *this run's* output goes, not every
+    // configured path.
+    if usesOutputRoot {
+      startupFields.append(LogField("output_root", .string(stringValue(config, ["output_root"]))))
+    }
 
     let startup = LogRecord(
       ts: clock.now(),
@@ -290,13 +318,7 @@ public enum EarsCLI {
       category: tool,
       pid: pid,
       event: "run.start",
-      fields: [
-        LogField("config_path", .string(loaded.configFilePath)),
-        LogField("log_level", .string(effectiveLevel.rawValue)),
-        LogField("version", .string(version)),
-        LogField("data_root", .string(dataRoot)),
-        LogField("output_root", .string(outputRoot)),
-      ]
+      fields: startupFields
     )
     if startup.level >= effectiveLevel {
       try await sink.log(startup)

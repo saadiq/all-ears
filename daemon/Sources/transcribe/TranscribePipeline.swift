@@ -1,6 +1,7 @@
 import EarsCore
 import EarsDataStore
 import EarsDiarizeKit
+import EarsLogging
 import EarsTranscribeKit
 import Foundation
 
@@ -51,6 +52,11 @@ enum TranscribePipeline {
     /// a run that failed (issue #25). Optional: unit tests that only assert
     /// exit codes leave it `nil`.
     var onSummary: (@Sendable ([LogField]) -> Void)? = nil
+    /// Emits the `stage.start`/`stage.end` pairs `docs/logging.md` specifies,
+    /// so per-stage timing and `rtf` are queryable instead of only whole-run
+    /// wall time. Optional: unit tests that don't assert on logging leave it
+    /// `nil` and every `measure` call becomes a plain passthrough.
+    var spans: StageSpans? = nil
 
     /// The real backend: ``ParakeetTranscriber``, FluidAudio-backed Parakeet
     /// on the ANE/Metal (`docs/specs/model-interface.md`'s "Backend
@@ -69,7 +75,8 @@ enum TranscribePipeline {
       diarizeBackendName: String = "none",
       diarizerLoadOptions: LoadOptions = LoadOptions(),
       onError: (@Sendable (String) -> Void)? = nil,
-      onSummary: (@Sendable ([LogField]) -> Void)? = nil
+      onSummary: (@Sendable ([LogField]) -> Void)? = nil,
+      spans: StageSpans? = nil
     ) -> Dependencies {
       // One shared ANE gate for both the ASR and diarization backends: the
       // macOS 14 Core ML SIGBUS this serializes against is process-wide, so
@@ -96,7 +103,8 @@ enum TranscribePipeline {
           FileHandle.standardError.write(Data((line + "\n").utf8))
           onError?(line)
         },
-        onSummary: onSummary
+        onSummary: onSummary,
+        spans: spans
       )
     }
   }
@@ -265,10 +273,24 @@ enum TranscribePipeline {
       plans = sourceIDs.map { SourceAudioPlan(sourceID: $0, reader: reader, store: nil) }
     }
 
+    // Session id is resolved up front (rather than at write time, where it used
+    // to be) so every stage record below can carry it as its correlation key,
+    // matching the worked example in docs/logging.md.
+    let sessionIdentifier =
+      resolved.sessionIdentifier
+      ?? OutputPathResolution.sessionIdentifier(
+        requestedStart: requestedRange.start, sourceIDs: sourceIDs)
+
     let transcriber: any Transcriber
     do {
-      transcriber = try dependencies.transcriberFactory()
-      try transcriber.load(dependencies.loadOptions)
+      transcriber = try await measure(
+        dependencies.spans, "model_load", session: sessionIdentifier,
+        fields: [LogField("backend", .string(backendName))]
+      ) {
+        let loaded = try dependencies.transcriberFactory()
+        try loaded.load(dependencies.loadOptions)
+        return loaded
+      }
     } catch {
       dependencies.writeStderr("error: failed to load transcriber: \(error)")
       return 1
@@ -281,9 +303,13 @@ enum TranscribePipeline {
     var diarizer: (any Diarizer)?
     if let factory = dependencies.diarizerFactory {
       do {
-        let loaded = try factory()
-        try loaded.load(dependencies.diarizerLoadOptions)
-        diarizer = loaded
+        diarizer = try await measure(
+          dependencies.spans, "diarizer_load", session: sessionIdentifier
+        ) {
+          let loaded = try factory()
+          try loaded.load(dependencies.diarizerLoadOptions)
+          return loaded
+        }
       } catch {
         dependencies.log(
           "diarizer.load failed: \(error); continuing without diarization")
@@ -339,43 +365,56 @@ enum TranscribePipeline {
           speech: speechIntervals, slices: slices.count))
 
       var segments: [Segment] = []
-      for slice in slices {
-        speechSeconds += slice.audio.duration
-        // Segment.start/end are relative to the audio buffer a Transcriber
-        // decoded (its own doc comment), i.e. relative to *this slice*'s
-        // start -- not the overall requested range. Shifting by the
-        // slice's own offset from the range start puts every source's
-        // segments on one shared timeline before TranscriptAssembly merges
-        // them, per docs/specs/transcribe.md's "merge sources on a shared
-        // timeline" step.
-        let sliceOffset = slice.range.start.interval(since: requestedRange.start)
-
-        // `Transcriber.transcribe` is a plain synchronous, throwing call
-        // (docs/specs/model-interface.md's base protocol). ParakeetTranscriber
-        // bridges FluidAudio's async API with a blocking semaphore inside a
-        // detached Task (see that type's doc comment for exactly when that
-        // bridge is and isn't safe): it is safe here because `transcribe` is
-        // a single-shot batch CLI process running one command to completion
-        // on its own cooperative-thread-pool task, not a long-lived,
-        // multi-actor runtime -- and this loop calls
-        // `transcribe(_:context:)` sequentially, never from inside a
-        // spawned concurrent `Task`, so the blocking wait here cannot starve
-        // other in-flight work. If sources/slices are ever parallelised with
-        // `withThrowingTaskGroup`, a blocking call from inside each spawned
-        // Task would risk exhausting the limited cooperative thread pool and
-        // should move to a genuinely async transcribe API or a dedicated
-        // thread instead.
-        do {
-          let sliceSegments = try transcriber.transcribe(slice.audio, context: TranscribeContext())
-          for segment in sliceSegments {
-            segments.append(shifted(segment, by: sliceOffset))
+      let sliceAudioSeconds = slices.reduce(0.0) { $0 + $1.audio.duration }
+      // `Transcriber.transcribe` is a plain synchronous, throwing call
+      // (docs/specs/model-interface.md's base protocol). ParakeetTranscriber
+      // bridges FluidAudio's async API with a blocking semaphore inside a
+      // detached Task (see that type's doc comment for exactly when that
+      // bridge is and isn't safe): it is safe here because `transcribe` is
+      // a single-shot batch CLI process running one command to completion
+      // on its own cooperative-thread-pool task, not a long-lived,
+      // multi-actor runtime -- and this loop calls
+      // `transcribe(_:context:)` sequentially, never from inside a
+      // spawned concurrent `Task`, so the blocking wait here cannot starve
+      // other in-flight work. If sources/slices are ever parallelised with
+      // `withThrowingTaskGroup`, a blocking call from inside each spawned
+      // Task would risk exhausting the limited cooperative thread pool and
+      // should move to a genuinely async transcribe API or a dedicated
+      // thread instead. The `measure` wrapper adds no concurrency: it awaits
+      // the body inline on this same task.
+      do {
+        segments = try await measure(
+          dependencies.spans, "asr", session: sessionIdentifier,
+          audioSeconds: sliceAudioSeconds,
+          fields: [
+            LogField("source", .string(sourceID.rawValue)),
+            LogField("slices", .int(slices.count)),
+          ]
+        ) {
+          var shiftedSegments: [Segment] = []
+          for slice in slices {
+            // Segment.start/end are relative to the audio buffer a Transcriber
+            // decoded (its own doc comment), i.e. relative to *this slice*'s
+            // start -- not the overall requested range. Shifting by the
+            // slice's own offset from the range start puts every source's
+            // segments on one shared timeline before TranscriptAssembly merges
+            // them, per docs/specs/transcribe.md's "merge sources on a shared
+            // timeline" step.
+            let sliceOffset = slice.range.start.interval(since: requestedRange.start)
+            let sliceSegments = try transcriber.transcribe(
+              slice.audio, context: TranscribeContext())
+            for segment in sliceSegments {
+              shiftedSegments.append(shifted(segment, by: sliceOffset))
+            }
           }
-        } catch {
-          dependencies.writeStderr(
-            "error: transcription failed for source '\(sourceID.rawValue)': \(error)")
-          return 1
+          return shiftedSegments
         }
+      } catch {
+        dependencies.writeStderr(
+          "error: transcription failed for source '\(sourceID.rawValue)': \(error)")
+        return 1
       }
+      speechSeconds += sliceAudioSeconds
 
       transcriptions.append(SourceTranscription(sourceID: sourceID, segments: segments))
 
@@ -385,8 +424,14 @@ enum TranscribePipeline {
       // the source keeps its source-only label rather than failing the run.
       if let diarizer, shouldDiarize(sourceID), !slices.isEmpty {
         do {
-          let spans = try diarizeSource(
-            slices: slices, requestedStart: requestedRange.start, diarizer: diarizer)
+          let spans = try await measure(
+            dependencies.spans, "diarize", session: sessionIdentifier,
+            audioSeconds: sliceAudioSeconds,
+            fields: [LogField("source", .string(sourceID.rawValue))]
+          ) {
+            try diarizeSource(
+              slices: slices, requestedStart: requestedRange.start, diarizer: diarizer)
+          }
           if !spans.isEmpty { diarization[sourceID] = spans }
         } catch {
           dependencies.log(
@@ -398,10 +443,6 @@ enum TranscribePipeline {
     let generated = dependencies.clock.now()
     let modelInfo = TranscriptModelInfo(
       name: transcriber.info.name, backend: backendName, version: transcriber.info.version)
-    let sessionIdentifier =
-      resolved.sessionIdentifier
-      ?? OutputPathResolution.sessionIdentifier(
-        requestedStart: requestedRange.start, sourceIDs: sourceIDs)
 
     // The meeting roster's name map (attendee source → display name) feeds
     // speaker labels, so real names flow into the transcript directly.
@@ -593,6 +634,24 @@ enum TranscribePipeline {
     log(
       "meeting \(meetingID) source \(sourceID.rawValue): consulted \(store.label) store at \(path) — \(result)"
     )
+  }
+
+  /// Run `body` as a measured stage when a ``StageSpans`` emitter is wired,
+  /// otherwise call it directly. Keeping the optionality here rather than at
+  /// each call site means instrumenting a stage costs one wrapper and never
+  /// changes its control flow — a pipeline built without logging behaves
+  /// exactly as it did before.
+  private static func measure<T>(
+    _ spans: StageSpans?,
+    _ stage: String,
+    session: String? = nil,
+    audioSeconds: Double? = nil,
+    fields: [LogField] = [],
+    _ body: () async throws -> T
+  ) async rethrows -> T {
+    guard let spans else { return try await body() }
+    return try await spans.measure(
+      stage, session: session, audioSeconds: audioSeconds, fields: fields, body: body)
   }
 
   private static func shifted(_ segment: Segment, by offset: Double) -> Segment {

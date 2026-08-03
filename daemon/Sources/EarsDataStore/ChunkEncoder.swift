@@ -228,6 +228,11 @@ public actor ChunkEncoder {
       DataStoreLayout.asrDirectory(dataRoot: dataRoot, sourceID: sourceID)
       .appendingPathComponent(filename)
 
+    // Encode wall time, split by feed. A chunk rolls over every 30s, so an
+    // encode that starts taking seconds is squeezing the capture path — and
+    // until now nothing recorded how long it took at all.
+    let encodeStarted = ContinuousClock.now
+
     var nativeFrames = 0
     var nativeFailed = false
     if storeNative {
@@ -239,6 +244,7 @@ public actor ChunkEncoder {
         nativeFailed = true
       }
     }
+    let nativeElapsed = Self.millisecondsSince(encodeStarted)
 
     var asrFrames = 0
     var asrFailed = false
@@ -250,6 +256,7 @@ public actor ChunkEncoder {
     } catch {
       asrFailed = true
     }
+    let totalElapsed = Self.millisecondsSince(encodeStarted)
 
     let canonicalFrames = storeNative ? nativeFrames : asrFrames
     let writtenDuration = Double(canonicalFrames) / Double(nativeSampleRate)
@@ -271,7 +278,10 @@ public actor ChunkEncoder {
       await logChunkFinalized(
         file: asrFinalURL,
         declaredSampleRate: Int(asrSettings.sampleRate),
-        indexedFrames: canonicalFrames)
+        indexedFrames: canonicalFrames,
+        nativeEncodeMs: storeNative ? nativeElapsed : nil,
+        asrEncodeMs: totalElapsed - nativeElapsed,
+        audioSeconds: writtenDuration)
     }
 
     pendingBuffers = []
@@ -289,7 +299,15 @@ public actor ChunkEncoder {
   /// `indexedFrames`. A clean open logs at `debug` (per-chunk, quiet in normal
   /// runs); a failed open logs at `error` with the underlying reason, so an
   /// unreadable chunk surfaces loudly the moment it is written.
-  private func logChunkFinalized(file: URL, declaredSampleRate: Int, indexedFrames: Int) async {
+  private func logChunkFinalized(
+    file: URL,
+    declaredSampleRate: Int,
+    indexedFrames: Int,
+    nativeEncodeMs: Double?,
+    asrEncodeMs: Double,
+    audioSeconds: Double
+  ) async {
+    let checkStarted = ContinuousClock.now
     var openOK = false
     var decodedFrames = 0
     var openError: String?
@@ -300,6 +318,7 @@ public actor ChunkEncoder {
     } catch {
       openError = String(describing: error)
     }
+    let checkMs = Self.millisecondsSince(checkStarted)
 
     var fields: [LogField] = [
       LogField("source", .string(sourceID.rawValue)),
@@ -308,11 +327,31 @@ public actor ChunkEncoder {
       LogField("indexed_frames", .int(indexedFrames)),
       LogField("decoded_frames", .int(decodedFrames)),
       LogField("open_check", .string(openOK ? "ok" : "failed")),
+      LogField("asr_encode_ms", .double(asrEncodeMs.rounded())),
+      LogField("open_check_ms", .double(checkMs.rounded())),
     ]
+    if let nativeEncodeMs {
+      fields.append(LogField("native_encode_ms", .double(nativeEncodeMs.rounded())))
+    }
+    // Encode cost relative to the audio it covers: the capture-side counterpart
+    // of the ASR stage's `rtf`, and the number that says whether a chunk
+    // rollover can keep up with realtime capture.
+    if audioSeconds > 0 {
+      let encodeSeconds = ((nativeEncodeMs ?? 0) + asrEncodeMs) / 1000
+      fields.append(
+        LogField("encode_rtf", .double((encodeSeconds / audioSeconds * 10000).rounded() / 10000)))
+    }
     if let openError {
       fields.append(LogField("error", .string(openError)))
     }
     await log(event: "capture.chunk_finalized", level: openOK ? .debug : .error, fields: fields)
+  }
+
+  /// Elapsed milliseconds on a monotonic clock. Wall-clock differencing would
+  /// report a negative encode time across an NTP step.
+  private static func millisecondsSince(_ started: ContinuousClock.Instant) -> Double {
+    let components = (ContinuousClock.now - started).components
+    return Double(components.seconds) * 1000 + Double(components.attoseconds) / 1e15
   }
 
   /// Forwards one structured ``LogRecord`` to the shared ``LogRecordSink``,
