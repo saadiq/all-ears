@@ -55,7 +55,7 @@ summarize <transcript.md> [more...] [--preset brief] [--preset actions] [--all-p
 The stages chain but never depend on each other at runtime — each reads and writes files:
 
 ```sh
-transcribe --session "$SID" \
+transcribe --meeting "$MEETING_ID" \
   && cleanup "$OUT/…standup.transcript.md" \
   && summarize "$OUT/…standup.clean.md" --preset brief --preset actions
 ```

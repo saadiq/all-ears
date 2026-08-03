@@ -94,6 +94,23 @@ struct TranscriptRenderingTests {
     #expect(TranscriptRenderer.renderMarkdown(document) == expected)
   }
 
+  @Test("a meeting transcript renders meeting: with no session: line at all")
+  func meetingFrontmatterOmitsSession() throws {
+    var frontmatter = Self.standupFrontmatter()
+    frontmatter.session = nil
+    frontmatter.meeting = "0d5e1111-aaaa-bbbb-cccc-222233334444"
+    let document = TranscriptDocument(frontmatter: frontmatter, segments: [])
+
+    let rendered = TranscriptRenderer.renderMarkdown(document)
+    #expect(!rendered.contains("session:"))
+    #expect(rendered.contains("kind: transcript\nmeeting: 0d5e1111-aaaa-bbbb-cccc-222233334444\n"))
+
+    // And parses back with the same optionality.
+    let parsed = try TranscriptParser.parseFrontmatter(rendered)
+    #expect(parsed.session == nil)
+    #expect(parsed.meeting == "0d5e1111-aaaa-bbbb-cccc-222233334444")
+  }
+
   @Test("kind: clean renders derived_from after kind")
   func cleanKindWithDerivedFrom() {
     let frontmatter = Self.standupFrontmatter(

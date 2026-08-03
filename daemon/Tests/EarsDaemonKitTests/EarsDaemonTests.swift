@@ -657,7 +657,7 @@ struct EarsDaemonTests {
     let publisher = try await ControlSocketClient.connect(toPath: socketPath)
     _ = try await publisher.hello(client: "test/0")
     let segment = SegmentPublishParams(
-      session: "s_call", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
+      meeting: "s_call", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
     _ = try await publisher.send(.segmentPublish(segment), expecting: EmptyData.self)
     await publisher.close()
 

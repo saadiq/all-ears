@@ -192,6 +192,7 @@ enum SummarizePipeline {
       schema: first.schema,
       kind: .summary,
       session: first.session,
+      meeting: first.meeting,
       sources: sources,
       range: TimeRange(start: start, end: end),
       model: first.model,

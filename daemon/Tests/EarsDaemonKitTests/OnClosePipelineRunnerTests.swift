@@ -49,8 +49,6 @@ struct OnClosePipelineRunnerTests {
     var calls: [(name: String, arguments: [String])] { recorded.withLock { $0 } }
   }
 
-  private static let outputRoot = URL(fileURLWithPath: "/tmp/on-close-runner-tests")
-
   // MARK: - meeting on_end
 
   @Test("a successful meeting transcribe logs the spawn argv and a success line, returns true")
@@ -58,7 +56,7 @@ struct OnClosePipelineRunnerTests {
     let logs = LogCollector()
     let runner = ScriptedRunner([SpawnOutcome(exitCode: 0)])
     let pipeline = OnClosePipelineRunner(
-      outputRoot: Self.outputRoot, runProcess: runner.runner, log: { logs.append($0) })
+      runProcess: runner.runner, log: { logs.append($0) })
 
     let succeeded = await pipeline.runMeetingTranscribe(
       meetingID: "b7acc61f", context: "meeting-end")
@@ -81,7 +79,7 @@ struct OnClosePipelineRunnerTests {
       SpawnOutcome(exitCode: 1, stderr: "error: unknown source 'mic': no data found")
     ])
     let pipeline = OnClosePipelineRunner(
-      outputRoot: Self.outputRoot, runProcess: runner.runner, log: { logs.append($0) })
+      runProcess: runner.runner, log: { logs.append($0) })
 
     let succeeded = await pipeline.runMeetingTranscribe(
       meetingID: "b7acc61f", context: "meeting-end")
@@ -98,7 +96,7 @@ struct OnClosePipelineRunnerTests {
     let logs = LogCollector()
     let runner = ScriptedRunner([SpawnOutcome(exitCode: 2, stderr: "   \n")])
     let pipeline = OnClosePipelineRunner(
-      outputRoot: Self.outputRoot, runProcess: runner.runner, log: { logs.append($0) })
+      runProcess: runner.runner, log: { logs.append($0) })
 
     _ = await pipeline.runMeetingTranscribe(meetingID: "55815f35", context: "meeting-end")
 
@@ -106,35 +104,6 @@ struct OnClosePipelineRunnerTests {
       logs.snapshot().contains {
         $0.contains("transcribe failed (exit 2)") && $0.contains("no stderr captured")
       })
-  }
-
-  // MARK: - session on_close
-
-  @Test("a failed on_close stage logs its stderr alongside the failure notice and stops the chain")
-  func onCloseFailureLogsStderr() async throws {
-    let logs = LogCollector()
-    // transcribe ok, cleanup fails with a message → summarize must never run.
-    let runner = ScriptedRunner([
-      SpawnOutcome(exitCode: 0),
-      SpawnOutcome(exitCode: 1, stderr: "error: cleanup backend timed out"),
-    ])
-    let pipeline = OnClosePipelineRunner(
-      outputRoot: Self.outputRoot, runProcess: runner.runner, log: { logs.append($0) })
-
-    let descriptor = SessionDescriptor(
-      schema: 1, id: "2026-07-23T14-00-00Z_call", slug: "call",
-      sources: ["mic"], start: Instant(secondsSinceEpoch: 1_784_284_800),
-      end: Instant(secondsSinceEpoch: 1_784_285_000), state: .closed, trigger: .browserExtension)
-
-    await pipeline.run(
-      stages: ["transcribe", "cleanup", "summarize"], for: descriptor,
-      context: "trigger 'meetings'")
-
-    #expect(runner.calls.map(\.name) == ["transcribe", "cleanup"])
-    let failure = try #require(
-      logs.snapshot().first { $0.contains("stage 'cleanup' failed (exit 1)") })
-    #expect(failure.contains("stderr: error: cleanup backend timed out"))
-    #expect(failure.contains("stopping the chain"))
   }
 
   // MARK: - bounded stderr

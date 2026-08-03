@@ -19,17 +19,6 @@ public struct SessionDescriptor: Sendable, Hashable, Codable {
   public var triggerDetail: String?
   /// Path to the optional per-session vocabulary file, relative to the data root.
   public var vocab: String?
-  /// Seconds of already-buffered ring audio a reader (`transcribe --session`)
-  /// should widen this session's effective range backward by, when reading
-  /// it -- **not** a shift of ``start`` itself. `start` stays the accurate
-  /// historical record of when the session actually opened; pre-roll is a
-  /// read-time widening layered on top, since a session is "metadata over
-  /// the recorded audio, not a separate recording" (see
-  /// `docs/data-formats.md`'s session format, and
-  /// `TranscribeRangeResolution`, which applies it). `0` (the
-  /// default) means no widening -- every session opened before this field
-  /// existed decodes to `0`, matching prior behavior exactly.
-  public var preRollSeconds: Int
   /// The `[speakers]` name map (`docs/data-formats.md`'s speaker
   /// attribution): source id or diarization label → display name. Written by
   /// the daemon at `meeting.end` from the meeting's roster (attendee `source`
@@ -48,7 +37,6 @@ public struct SessionDescriptor: Sendable, Hashable, Codable {
     trigger: TriggerKind,
     triggerDetail: String? = nil,
     vocab: String? = nil,
-    preRollSeconds: Int = 0,
     speakers: [String: String] = [:]
   ) {
     self.schema = schema
@@ -61,7 +49,6 @@ public struct SessionDescriptor: Sendable, Hashable, Codable {
     self.trigger = trigger
     self.triggerDetail = triggerDetail
     self.vocab = vocab
-    self.preRollSeconds = preRollSeconds
     self.speakers = speakers
   }
 

@@ -146,7 +146,10 @@ public enum TranscriptParser {
     }
     let derivedFrom = fields["derived_from"].map(unquote)
     let preset = fields["preset"].map(unquote)
-    let session = try field("session")
+    // `session:` (a synthesized range-run identifier) and `meeting:` are each
+    // optional: a meeting transcript carries only `meeting:`, a plain range
+    // transcript only `session:`.
+    let session = fields["session"].map(unquote)
     let meeting = fields["meeting"].map(unquote)
     let sources = try splitFlowArray(field("sources")).map { SourceID(unquote($0)) }
 

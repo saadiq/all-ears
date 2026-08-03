@@ -123,10 +123,6 @@ state = "closed"                  # open | closed
 trigger = "app-signal"            # app-signal | manual | browser-extension
 trigger_detail = "us.zoom.xos"
 vocab = "vocab/2026-07-17T10-30-00Z_standup.txt"  # optional
-pre_roll_seconds = 0              # seconds of already-captured audio a
-                                   # `transcribe --session` read widens this
-                                   # session's range backward by; never
-                                   # shifts `start` itself. 0 = no widening.
 
 [speakers]                        # optional name map (see speaker attribution);
 "browser:meet:jane-a1b2" = "Jane Doe"  # written by the daemon at meeting.end

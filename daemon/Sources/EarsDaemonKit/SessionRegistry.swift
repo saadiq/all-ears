@@ -91,10 +91,6 @@ public actor SessionRegistry {
   ///   - vocab: Optional per-session vocabulary path, relative to the data root.
   ///   - trigger: What opened the session (`.manual` for `ears session open`;
   ///     `.appSignal` for an auto-trigger).
-  ///   - preRollSeconds: Recorded on the descriptor for a later
-  ///     `transcribe --session` to widen its read range by (see
-  ///     ``SessionDescriptor/preRollSeconds``'s doc comment) -- never
-  ///     applied to `start` itself. `0` (the default) means no widening.
   /// - Returns: The new open `SessionDescriptor` (domain type; `ControlServer`
   ///   maps it to `SessionOpenData`).
   /// - Throws: ``SessionRegistryError/noSources`` /
@@ -104,8 +100,7 @@ public actor SessionRegistry {
     slug: String,
     start: Instant?,
     vocab: String?,
-    trigger: TriggerKind = .manual,
-    preRollSeconds: Int = 0
+    trigger: TriggerKind = .manual
   ) async throws -> SessionDescriptor {
     try await validate(sources: sources)
     let startInstant = start ?? clock.now()
@@ -118,8 +113,7 @@ public actor SessionRegistry {
       end: nil,
       state: .open,
       trigger: trigger,
-      vocab: vocab,
-      preRollSeconds: preRollSeconds
+      vocab: vocab
     )
     try SessionStore.write(descriptor, dataRoot: dataRoot)
     sessions[descriptor.id] = descriptor

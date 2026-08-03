@@ -17,9 +17,9 @@ public enum MeetingRegistryError: Error, Sendable, Hashable {
 
 /// Owns the v2 **Meeting** lifecycle (`docs/specs/control-protocol.md`):
 /// start (idempotent on identity), pause/resume as interval marks, the
-/// attendee roster, rename, end-with-materialization, and the orphaned-
-/// meeting grace policy. This is what v1's client-side meeting tracker
-/// becomes — the daemon, not any frontend, owns the state machine.
+/// attendee roster, rename, end, and the orphaned-meeting grace policy.
+/// This is what v1's client-side meeting tracker becomes — the daemon, not
+/// any frontend, owns the state machine.
 ///
 /// ## Persistence
 ///
@@ -67,10 +67,10 @@ public actor MeetingRegistry {
     case orphaned
   }
 
-  /// Called after every meeting end with the final meeting and the sessions
-  /// materialized from its intervals — the seam ``EarsDaemon`` hangs
-  /// auto-transcription off.
-  public typealias EndedHook = @Sendable (Meeting, [SessionDescriptor]) async -> Void
+  /// Called after every meeting end with the final meeting — the seam
+  /// ``EarsDaemon`` hangs auto-transcription (`transcribe --meeting <id>`)
+  /// off.
+  public typealias EndedHook = @Sendable (Meeting) async -> Void
 
   private let dataRoot: URL
   private let clock: any NowProviding
@@ -88,7 +88,6 @@ public actor MeetingRegistry {
   private let browserAudioWarnSeconds: Double
   /// Injectable wait, so orphan-grace tests never sleep real time.
   private let sleep: @Sendable (Double) async -> Void
-  private let sessionSchema: Int
   private let onEnded: EndedHook?
   /// `[earsd.meetings].local_sources`: locally-captured source ids folded into
   /// every *browser-triggered* meeting at start, so the host's own audio is
@@ -146,7 +145,6 @@ public actor MeetingRegistry {
     sleep: @escaping @Sendable (Double) async -> Void = { seconds in
       try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
     },
-    sessionSchema: Int = ActorContracts.sessionSchemaVersion,
     onEnded: EndedHook? = nil,
     localBrowserSources: [SourceID] = [],
     knownSourceIDs: @escaping @Sendable () async -> Set<SourceID> = { [] },
@@ -161,7 +159,6 @@ public actor MeetingRegistry {
     self.graceSeconds = graceSeconds
     self.browserAudioWarnSeconds = browserAudioWarnSeconds
     self.sleep = sleep
-    self.sessionSchema = sessionSchema
     self.onEnded = onEnded
     self.localBrowserSources = localBrowserSources
     self.knownSourceIDs = knownSourceIDs
@@ -180,7 +177,7 @@ public actor MeetingRegistry {
   /// keeps recording. Every *other* `active`/`paused` record on disk is a stale
   /// leak from an earlier instance (the daemon died without a `meeting.end`) and
   /// is ended as ``EndReason/orphaned`` through the normal on_end pipeline, so
-  /// its audio is materialized rather than stranded — and can never claim
+  /// its audio is transcribed rather than stranded — and can never claim
   /// capture actors ahead of a real meeting (#19/#24).
   ///
   /// A resumed *browser* meeting whose streams don't return starts its orphan
@@ -245,8 +242,8 @@ public actor MeetingRegistry {
   ///
   /// A start for a *new* identity (or a manual start) **supersedes** any meeting
   /// still live: one user, one Mac, one call at a time. The superseded meeting
-  /// is run through its full end pipeline (interval close, session
-  /// materialization, on_end, capture teardown — ``EndReason/superseded``)
+  /// is run through its full end pipeline (interval close, on_end, capture
+  /// teardown — ``EndReason/superseded``)
   /// *before* the successor is created, so the new meeting rebuilds its capture
   /// actors against its own directory and the wrong-directory hazard (#19)
   /// becomes structurally impossible: at most one active meeting means exactly
@@ -335,11 +332,9 @@ public actor MeetingRegistry {
     return meeting
   }
 
-  /// `meeting.end`: closes the open interval, materializes one closed
-  /// session per interval (slug = meeting UUID, trigger preserved, roster
-  /// written into each session's `[speakers]` map), and fires the ended
-  /// hook. Idempotent: ending an already-ended (still-known) meeting
-  /// returns its final state.
+  /// `meeting.end`: closes the open interval, persists the final state, and
+  /// fires the ended hook with the final meeting. Idempotent: ending an
+  /// already-ended (still-known) meeting returns its final state.
   @discardableResult
   public func end(id: String, reason: EndReason = .client) async throws -> Meeting {
     guard var meeting = knownMeeting(id) else {
@@ -356,13 +351,9 @@ public actor MeetingRegistry {
     meeting.ended = now
 
     logRosterSummary(meeting)
-    let sessions = materializeSessions(for: meeting)
     try persist(meeting)
     appendEvent(meeting.id, event: "ended", at: now, reason: reason.rawValue)
     await publish(&meeting)
-    for session in sessions {
-      await bus?.publish(.session(SessionSummary(session)))
-    }
     meetings[meeting.id] = meeting
     if let identity = meeting.identity, byIdentity[identity] == meeting.id {
       byIdentity[identity] = nil
@@ -378,7 +369,7 @@ public actor MeetingRegistry {
     await stopCapture(meeting.id, meeting.sources)
 
     if let onEnded {
-      await onEnded(meeting, sessions)
+      await onEnded(meeting)
     }
     return meeting
   }
@@ -771,39 +762,6 @@ public actor MeetingRegistry {
       changed = true
     }
     return changed
-  }
-
-  /// One closed `SessionDescriptor` per non-empty interval: slug = the
-  /// meeting UUID, trigger preserved, and the roster written into the
-  /// session's `[speakers]` map (attendee `source` → `display_name`).
-  private func materializeSessions(for meeting: Meeting) -> [SessionDescriptor] {
-    var speakers: [String: String] = [:]
-    for attendee in meeting.attendees {
-      if let source = attendee.source, let name = attendee.displayName {
-        speakers[source.rawValue] = name
-      }
-    }
-    var sessions: [SessionDescriptor] = []
-    for interval in meeting.intervals {
-      guard let end = interval.end, interval.start < end else { continue }
-      let descriptor = SessionDescriptor(
-        schema: sessionSchema,
-        id: "\(FilenameTimestampCodec.string(for: interval.start))_\(meeting.id)",
-        slug: meeting.id,
-        sources: meeting.sources,
-        start: interval.start,
-        end: end,
-        state: .closed,
-        trigger: meeting.trigger,
-        speakers: speakers)
-      do {
-        try SessionStore.write(descriptor, dataRoot: dataRoot)
-        sessions.append(descriptor)
-      } catch {
-        log("meeting \(meeting.id): failed to materialize session \(descriptor.id): \(error)")
-      }
-    }
-    return sessions
   }
 
   private func persist(_ meeting: Meeting) throws {

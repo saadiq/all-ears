@@ -234,9 +234,8 @@ struct TranscribeFollowPipelineTests {
     #expect(steps[0].frameCount == Int(1.5 * Double(asrRate)) + Int(0.25 * Double(asrRate)))
     #expect(steps[1].frameCount == Int(2.0 * Double(asrRate)) + Int(0.25 * Double(asrRate)))
 
-    // Live feed: one segment event per commit, same session id and speaker.
-    let sessionID = OutputPathResolution.sessionIdentifier(
-      requestedStart: now, sourceIDs: [sourceID])
+    // Live feed: one segment event per commit, keyed by the meeting whose
+    // capture the run attached to, same speaker.
     let events = harness.published.withLock { $0 }
     #expect(events.count == 2)
     guard case .segment(let segment) = events.first
@@ -244,7 +243,7 @@ struct TranscribeFollowPipelineTests {
       Issue.record("expected a segment event, got \(String(describing: events.first))")
       return
     }
-    #expect(segment.session == sessionID)
+    #expect(segment.meeting == fixture.meetingID)
     #expect(segment.speaker == "You")
     #expect(segment.start == 0)
     #expect(abs(segment.end - 1.5) < 0.001)
@@ -257,7 +256,7 @@ struct TranscribeFollowPipelineTests {
     let markdown = try String(contentsOf: paths.markdown, encoding: .utf8)
     #expect(markdown.hasPrefix("---\n"))
     #expect(markdown.contains("kind: transcript"))
-    #expect(markdown.contains("session: \(sessionID)"))
+    #expect(markdown.contains("meeting: \(fixture.meetingID)"))
     #expect(markdown.contains("sources: [mic]"))
     #expect(markdown.contains("hello world"))
     #expect(markdown.contains("second segment"))

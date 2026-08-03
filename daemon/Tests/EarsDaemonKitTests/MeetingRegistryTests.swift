@@ -10,7 +10,7 @@ import Testing
 /// Real-temp-directory tests for ``MeetingRegistry``, the v2 meeting
 /// lifecycle owner: idempotent `meeting.start`, pause/resume interval
 /// bookkeeping, restart recovery, the orphan grace timer, rename
-/// compare-and-set, and the `[speakers]` write-back at `meeting.end` — with
+/// compare-and-set, and the ended hook fired at `meeting.end` — with
 /// a ``ManualClock`` and an injected sleep so no test touches real time.
 @Suite("MeetingRegistry")
 struct MeetingRegistryTests {
@@ -352,17 +352,19 @@ struct MeetingRegistryTests {
     }
   }
 
-  // MARK: - end + materialization
+  // MARK: - end
 
-  @Test("end materializes one closed session per interval with the roster's speakers map")
-  func endMaterializes() async throws {
+  @Test(
+    "end closes every interval, persists the final state, fires the ended hook with the final meeting, and writes no session.toml"
+  )
+  func endFiresHookWithFinalMeeting() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
-    let endedMeetings = Mutex<[(Meeting, [SessionDescriptor])]>([])
+    let endedMeetings = Mutex<[Meeting]>([])
     let registry = makeRegistry(
       dataRoot: dataRoot, clock: clock,
-      onEnded: { meeting, sessions in
-        endedMeetings.withLock { $0.append((meeting, sessions)) }
+      onEnded: { meeting in
+        endedMeetings.withLock { $0.append(meeting) }
       })
 
     let started = try await registry.start(
@@ -384,31 +386,31 @@ struct MeetingRegistryTests {
     #expect(ended.ended == base.advanced(by: 1020))
     #expect(ended.intervals.allSatisfy { $0.end != nil })
 
+    // The hook receives only the final meeting — the roster (attendee
+    // `source` → `display_name`) travels on the meeting itself; speaker
+    // names are derived from it at transcribe time.
     let hooks = endedMeetings.withLock { $0 }
     #expect(hooks.count == 1)
-    let sessions = hooks[0].1
-    #expect(sessions.count == 2)
-    for session in sessions {
-      #expect(session.state == .closed)
-      #expect(session.slug == started.id)
-      #expect(session.trigger == .browserExtension)
-      #expect(session.speakers == ["browser:meet:jane": "Jane Doe"])
-      let onDisk = try SessionStore.read(sessionID: session.id, dataRoot: dataRoot)
-      #expect(onDisk == session)
-    }
+    #expect(hooks[0].state == .ended)
+    #expect(hooks[0].attendees.first?.displayName == "Jane Doe")
+    #expect(hooks[0].attendees.first?.source == "browser:meet:jane")
+
+    // No v1 session is materialized: meeting.end writes no sessions/…/session.toml.
+    let sessionsDirectory = dataRoot.appendingPathComponent("sessions")
+    #expect(!FileManager.default.fileExists(atPath: sessionsDirectory.path))
 
     let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: started.id)
     #expect(timeline.last?.event == "ended")
     #expect(timeline.last?.reason == "client")
   }
 
-  @Test("end is idempotent: a second end returns the final state without re-materializing")
+  @Test("end is idempotent: a second end returns the final state without re-firing the hook")
   func endIdempotent() async throws {
     let dataRoot = try makeDataRoot()
     let hookCount = Mutex(0)
     let registry = makeRegistry(
       dataRoot: dataRoot, clock: ManualClock(base),
-      onEnded: { _, _ in hookCount.withLock { $0 += 1 } })
+      onEnded: { _ in hookCount.withLock { $0 += 1 } })
     let meeting = try await registry.start(MeetingStartParams(title: "standup"))
 
     _ = try await registry.end(id: meeting.id)

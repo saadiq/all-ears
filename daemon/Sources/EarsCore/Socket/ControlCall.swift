@@ -268,16 +268,17 @@ extension SessionOpenParams: Codable {
 }
 
 /// `segment.publish` params — the notification-only republish a
-/// `transcribe --follow` process sends, unchanged from v1 in all but envelope.
+/// `transcribe --follow` process sends. Keyed by the meeting whose capture
+/// the follow run attached to.
 public struct SegmentPublishParams: Sendable, Hashable, Codable {
-  public var session: String
+  public var meeting: String
   public var speaker: String
   public var start: Double
   public var end: Double
   public var text: String
 
-  public init(session: String, speaker: String, start: Double, end: Double, text: String) {
-    self.session = session
+  public init(meeting: String, speaker: String, start: Double, end: Double, text: String) {
+    self.meeting = meeting
     self.speaker = speaker
     self.start = start
     self.end = end
@@ -302,18 +303,16 @@ public struct JobPublishParams: Sendable, Hashable, Codable {
   /// Today always `transcribe`.
   public var kind: String
   public var meeting: String?
-  public var session: String?
   public var state: JobState
   public var detail: String?
 
   public init(
-    job: String, kind: String, meeting: String? = nil, session: String? = nil,
+    job: String, kind: String, meeting: String? = nil,
     state: JobState, detail: String? = nil
   ) {
     self.job = job
     self.kind = kind
     self.meeting = meeting
-    self.session = session
     self.state = state
     self.detail = detail
   }
