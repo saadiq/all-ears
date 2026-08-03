@@ -74,7 +74,7 @@ struct ControlServerTests {
     let data = try result(await server.handle(.status))
     #expect(data["uptime_s"] as? Int == 900)
     #expect((data["sources"] as? [Any])?.isEmpty == true)
-    #expect((data["meetings"] as? [Any])?.isEmpty == true)
+    #expect((data["sessions"] as? [Any])?.isEmpty == true)
   }
 
   @Test("status never reports negative uptime, even if the clock precedes startInstant")
@@ -99,7 +99,7 @@ struct ControlServerTests {
 
     let data = try result(await server.handle(.subscribe(SubscribeParams())))
     #expect(data["rev"] as? Int == 2)
-    let snapshotSessions: [[String: Any]]? = data["meetings"] as? [[String: Any]]
+    let snapshotSessions: [[String: Any]]? = data["sessions"] as? [[String: Any]]
     #expect(try #require(snapshotSessions).count == 1)
     #expect(try #require(snapshotSessions).first?["id"] as? String == started.id)
   }
@@ -218,18 +218,18 @@ struct ControlServerTests {
     let server = makeServer(dataRoot: dataRoot, clock: clock, sessions: sessions)
 
     #expect(
-      try errorCode(await server.handle(.sessionPause(session: "nope"))) == "meeting_not_found")
+      try errorCode(await server.handle(.sessionPause(session: "nope"))) == "session_not_found")
 
     let started = try result(
       await server.handle(.sessionStart(SessionStartParams(title: "standup"))))
     let id = try #require(started["id"] as? String)
     _ = try result(await server.handle(.sessionEnd(session: id)))
-    #expect(try errorCode(await server.handle(.sessionResume(session: id))) == "meeting_ended")
+    #expect(try errorCode(await server.handle(.sessionResume(session: id))) == "session_ended")
     #expect(
       try errorCode(
         await server.handle(
           .sessionRename(SessionRenameParams(session: "nope", title: "x", ifRev: nil))))
-        == "meeting_not_found")
+        == "session_not_found")
 
     let second = try result(
       await server.handle(.sessionStart(SessionStartParams(title: "retro"))))
@@ -250,6 +250,6 @@ struct ControlServerTests {
     _ = try result(await server.handle(.sessionStart(SessionStartParams(title: "standup"))))
 
     let data = try result(await server.handle(.sessionList))
-    #expect((data["meetings"] as? [Any])?.count == 1)
+    #expect((data["sessions"] as? [Any])?.count == 1)
   }
 }

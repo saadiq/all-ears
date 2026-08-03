@@ -35,7 +35,7 @@ interface ParticipantState {
   platform: Platform;
   /** External meeting id the participant belongs to, when the tracker knows
    * it — stamped on ingest.open so the daemon links the source into the
-   * meeting itself (membership survives a respawned service worker). */
+   * session itself (membership survives a respawned service worker). */
   meetingExternalId?: string;
   streamId?: string; // set once ingest.open succeeds
   opening: boolean;
@@ -63,8 +63,8 @@ export interface TransportPerf {
 
 export class EarsSocket {
   /** Invoked when an ingest.open succeeds — the moment a participant's source
-   * actually exists on earsd (meeting-tracker.ts listens to attach the
-   * source to its meeting). */
+   * actually exists on earsd (session-tracker.ts listens to attach the
+   * source to its session). */
   onStreamOpened?: (participantId: ParticipantId, platform: Platform) => void;
 
   /** Optional perf sink; unset in tests and when perf collection is off. */
@@ -194,7 +194,7 @@ export class EarsSocket {
       source: sourceLabel(st.platform, participantId),
       format: INGEST_FORMAT,
       ...(st.meetingExternalId
-        ? { meeting: { platform: st.platform, external_id: st.meetingExternalId } }
+        ? { session: { platform: st.platform, external_id: st.meetingExternalId } }
         : {}),
     });
   }

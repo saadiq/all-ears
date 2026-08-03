@@ -9,7 +9,7 @@ import {
 } from "../../lib/capture-toggle";
 import { toJsonl, type LogEntry } from "../../lib/debug-log";
 import { perfToJsonl, type PerfRecord } from "../../lib/perf";
-import type { BadgeState } from "../../lib/meeting-tracker";
+import type { BadgeState } from "../../lib/session-tracker";
 
 // Popup: capture on/off toggle + earsd status badge + (while a meeting is
 // live) a pause-transcription toggle.
@@ -22,13 +22,13 @@ import type { BadgeState } from "../../lib/meeting-tracker";
 //
 // The pause toggle is deliberately NOT that mechanism: capture-toggle.ts is a
 // privacy kill switch that tears down the whole capture pipeline. Pausing
-// transcription only pauses/resumes the daemon meeting around the paused span
+// transcription only pauses/resumes the daemon session around the paused span
 // (audio keeps flowing into the ring buffer), so it goes straight to the
-// background's MeetingTracker via {kind:"set-transcription-paused"}.
+// background's SessionTracker via {kind:"set-transcription-paused"}.
 //
 // Status comes from the background: queried once on open ({kind:"get-status"},
 // which also wakes a suspended worker), then updated live off the
-// {kind:"status"} broadcasts. The badge now carries meeting states
+// {kind:"status"} broadcasts. The badge now carries session states
 // (recording/paused/transcribing) on top of the transport trio; transport
 // problems always win (you can't be "recording" while disconnected).
 
@@ -40,7 +40,7 @@ const pauseRowEl = document.getElementById("transcription-row");
 const pauseToggleEl = document.getElementById("transcription-toggle") as HTMLInputElement | null;
 const pauseLabelEl = document.getElementById("transcription-label");
 
-interface MeetingInfo {
+interface SessionInfo {
   active: boolean;
   paused: boolean;
 }
@@ -80,16 +80,16 @@ function renderToggle(enabled: boolean): void {
   if (toggleLabelEl) toggleLabelEl.textContent = enabled ? "Capture on" : "Capture off";
 }
 
-function renderMeeting(meeting: MeetingInfo | undefined): void {
-  const active = meeting?.active === true;
+function renderSession(session: SessionInfo | undefined): void {
+  const active = session?.active === true;
   if (pauseRowEl) pauseRowEl.hidden = !active;
   if (!active) return;
   if (pauseToggleEl) {
-    pauseToggleEl.checked = !meeting!.paused;
+    pauseToggleEl.checked = !session!.paused;
     pauseToggleEl.disabled = false;
   }
   if (pauseLabelEl) {
-    pauseLabelEl.textContent = meeting!.paused ? "Transcription paused" : "Transcription on";
+    pauseLabelEl.textContent = session!.paused ? "Transcription paused" : "Transcription on";
   }
 }
 
@@ -113,7 +113,7 @@ browser.storage.local.onChanged?.addListener?.((changes) => {
   if (dl) renderDebugLog(dl.newValue === true);
 });
 
-// ── Pause-transcription toggle → background MeetingTracker ──────────────────
+// ── Pause-transcription toggle → background SessionTracker ──────────────────
 
 pauseToggleEl?.addEventListener("change", () => {
   const paused = !pauseToggleEl.checked;
@@ -266,11 +266,11 @@ clearPerfEl?.addEventListener("click", () => {
     });
 });
 
-// ── Status + meeting state ──────────────────────────────────────────────────
+// ── Status + session state ──────────────────────────────────────────────────
 
 interface StatusPayload {
   status?: BadgeState;
-  meeting?: MeetingInfo;
+  session?: SessionInfo;
 }
 
 browser.runtime
@@ -278,7 +278,7 @@ browser.runtime
   .then((res) => {
     const payload = res as StatusPayload | undefined;
     if (payload?.status) renderStatus(payload.status);
-    renderMeeting(payload?.meeting);
+    renderSession(payload?.session);
   })
   .catch(() => renderStatus("disconnected"));
 
@@ -286,6 +286,6 @@ browser.runtime.onMessage.addListener((msg) => {
   const m = msg as { kind?: string } & StatusPayload;
   if (m.kind === "status" && m.status) {
     renderStatus(m.status);
-    renderMeeting(m.meeting);
+    renderSession(m.session);
   }
 });

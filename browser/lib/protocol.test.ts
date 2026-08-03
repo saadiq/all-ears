@@ -151,28 +151,28 @@ describe("controlRequest builders match the golden fixtures", () => {
     );
   });
 
-  it("meeting.start carries identity and the browser-extension trigger", () => {
-    expect(controlRequest.meetingStart(3, "meet", "abc-defg-hij")).toEqual(
-      fixture("requests", "meeting.start-browser"),
+  it("session.start carries identity and the browser-extension trigger", () => {
+    expect(controlRequest.sessionStart(3, "meet", "abc-defg-hij")).toEqual(
+      fixture("requests", "session.start-browser"),
     );
     expect(BROWSER_TRIGGER).toBe("browser-extension");
   });
 
-  it("meeting.pause / meeting.resume / meeting.end reference the meeting id", () => {
-    const meeting = "0d5e1111-aaaa-bbbb-cccc-222233334444";
-    expect(controlRequest.meetingPause(5, meeting)).toEqual(fixture("requests", "meeting.pause"));
-    expect(controlRequest.meetingResume(6, meeting)).toEqual(fixture("requests", "meeting.resume"));
-    expect(controlRequest.meetingEnd(7, meeting)).toEqual(fixture("requests", "meeting.end"));
+  it("session.pause / session.resume / session.end reference the session id", () => {
+    const session = "0d5e1111-aaaa-bbbb-cccc-222233334444";
+    expect(controlRequest.sessionPause(5, session)).toEqual(fixture("requests", "session.pause"));
+    expect(controlRequest.sessionResume(6, session)).toEqual(fixture("requests", "session.resume"));
+    expect(controlRequest.sessionEnd(7, session)).toEqual(fixture("requests", "session.end"));
   });
 
-  it("meeting.attendee upsert (display name + source link)", () => {
+  it("session.attendee upsert (display name + source link)", () => {
     expect(
-      controlRequest.meetingAttendee(9, "0d5e1111-aaaa-bbbb-cccc-222233334444", {
+      controlRequest.sessionAttendee(9, "0d5e1111-aaaa-bbbb-cccc-222233334444", {
         id: "spaces/x/devices/y",
         display_name: "Jane Doe",
         source: "browser:meet:jane-a1b2",
       }),
-    ).toEqual(fixture("requests", "meeting.attendee-upsert"));
+    ).toEqual(fixture("requests", "session.attendee-upsert"));
   });
 });
 
@@ -185,27 +185,27 @@ describe("fixture frames parse into the shapes the transport consumes", () => {
     };
     expect(result.protocol).toBe(PROTOCOL_VERSION);
     expect(result.boot_id).toBeTruthy();
-    expect(result.capabilities).toEqual(["observe", "meetings"]);
+    expect(result.capabilities).toEqual(["observe", "sessions"]);
   });
 
-  it("meeting result carries intervals-as-marks with a null open end", () => {
-    const meeting = fixture("responses", "meeting-result").result as {
+  it("session result carries intervals-as-marks with a null open end", () => {
+    const session = fixture("responses", "session-result").result as {
       state: string;
       intervals: Array<{ start: string; end: string | null }>;
       rev: number;
     };
-    expect(meeting.state).toBe("active");
-    expect(meeting.intervals.at(-1)!.end).toBeNull();
-    expect(meeting.rev).toBeGreaterThan(0);
+    expect(session.state).toBe("active");
+    expect(session.intervals.at(-1)!.end).toBeNull();
+    expect(session.rev).toBeGreaterThan(0);
   });
 
   it("error frames carry a stable machine-readable code", () => {
-    const error = fixture("responses", "error-meeting-not-found").error as { code: string };
-    expect(error.code).toBe("meeting_not_found");
+    const error = fixture("responses", "error-session-not-found").error as { code: string };
+    expect(error.code).toBe("session_not_found");
   });
 
   it("state events carry rev; telemetry events don't", () => {
-    expect(fixture("events", "meeting-event").rev).toBe(43);
+    expect(fixture("events", "session-event").rev).toBe(43);
     expect(fixture("events", "source-event").rev).toBe(44);
     expect(fixture("events", "vad-event").rev).toBeUndefined();
     expect(fixture("events", "segment-event").rev).toBeUndefined();

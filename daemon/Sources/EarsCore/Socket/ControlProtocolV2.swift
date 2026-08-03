@@ -16,8 +16,8 @@ public enum ControlProtocolV2 {
 public enum Capability: String, Sendable, Hashable, Codable, CaseIterable {
   /// `status` + `subscribe` (snapshot + live feed).
   case observe
-  /// The session lifecycle verbs (still `meeting.*` on the wire until #47).
-  case sessions = "meetings"
+  /// The session lifecycle verbs (`session.*`).
+  case sessions
   /// The notification-only publishes (`segment.publish`, `job.publish`).
   case publish
   /// `sources.list` / `sources.enable` / `sources.disable`.
@@ -41,10 +41,8 @@ public enum ControlErrorCode: String, Sendable, Hashable, Codable, CaseIterable 
   case invalidRequest = "invalid_request"
   case unknownMethod = "unknown_method"
   case notPermitted = "not_permitted"
-  // The error-code raw strings are wire strings; they keep the "meeting"
-  // spelling until the wire rename (#47).
-  case sessionNotFound = "meeting_not_found"
-  case sessionEnded = "meeting_ended"
+  case sessionNotFound = "session_not_found"
+  case sessionEnded = "session_ended"
   case sourceNotFound = "source_not_found"
   /// A failed `if_rev` compare-and-set (`session.rename`).
   case conflict
@@ -52,7 +50,7 @@ public enum ControlErrorCode: String, Sendable, Hashable, Codable, CaseIterable 
 }
 
 /// The `error` object of a failed v2 response:
-/// `{"code":"meeting_not_found","message":"no active session 0d5e…"}`.
+/// `{"code":"session_not_found","message":"no active session 0d5e…"}`.
 public struct WireError: Error, Sendable, Hashable, Codable {
   public var code: ControlErrorCode
   /// Human prose, never load-bearing.

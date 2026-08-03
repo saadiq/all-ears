@@ -8,17 +8,14 @@ public enum ControlMethod: String, Sendable, Hashable, Codable, CaseIterable {
   case status
   case subscribe
 
-  // The raw strings are the v2 wire method names and deliberately still say
-  // "meeting" — the wire rename happens in the lockstep daemon+extension
-  // change (#47), so the extension keeps working against this build.
-  case sessionStart = "meeting.start"
-  case sessionEnd = "meeting.end"
-  case sessionPause = "meeting.pause"
-  case sessionResume = "meeting.resume"
-  case sessionRename = "meeting.rename"
-  case sessionAttendee = "meeting.attendee"
-  case sessionList = "meeting.list"
-  case sessionGet = "meeting.get"
+  case sessionStart = "session.start"
+  case sessionEnd = "session.end"
+  case sessionPause = "session.pause"
+  case sessionResume = "session.resume"
+  case sessionRename = "session.rename"
+  case sessionAttendee = "session.attendee"
+  case sessionList = "session.list"
+  case sessionGet = "session.get"
 
   case segmentPublish = "segment.publish"
   case jobPublish = "job.publish"

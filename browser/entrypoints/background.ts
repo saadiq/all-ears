@@ -2,7 +2,7 @@ import { defineBackground } from "#imports";
 import { browser } from "wxt/browser";
 import { EarsSocket, type TransportStatus } from "../lib/transport";
 import { ControlSocket } from "../lib/control-transport";
-import { MeetingTracker, type BadgeState, type MeetingState } from "../lib/meeting-tracker";
+import { SessionTracker, type BadgeState, type SessionState } from "../lib/session-tracker";
 import { applyActionBadge } from "../lib/action-badge";
 import { KEEPALIVE_ALARM, KeepaliveTracker } from "../lib/keepalive";
 import { DEBUG_LOG_KEY, PERF_ENABLED_KEY, resolvePerfToggleState } from "../lib/capture-toggle";
@@ -22,10 +22,10 @@ import type { PortMessage } from "../lib/protocol";
 // accepts the "pcm" port from the isolated relay, decodes each frame, and
 // hands it to the transport, which lazily ingest.opens a stream per
 // participant and streams binary PCM. The control socket
-// (ws://127.0.0.1:<port>/control) carries meeting commands: the
-// MeetingTracker resolves each started meeting to a daemon-owned meeting UUID
+// (ws://127.0.0.1:<port>/control) carries session commands: the
+// SessionTracker resolves each started meeting to a daemon-owned session UUID
 // and drives its lifecycle (including the popup's pause-transcription toggle
-// — capture is never touched, meetings are metadata over the ring buffer).
+// — capture is never touched, sessions are metadata over the ring buffer).
 //
 // Chrome runs this as a suspendable MV3 service worker; Firefox as a
 // persistent background page. Everything here is written for the weaker
@@ -45,16 +45,16 @@ const CONTROL_PORT_STORAGE_KEY = "earsdControlPort";
 export default defineBackground(() => {
   console.debug("[ears][bg] background loaded");
 
-  // ── Badge state: transport status composed with meeting state ─────────────
-  // Transport problems win outright; otherwise the meeting layer's
+  // ── Badge state: transport status composed with session state ─────────────
+  // Transport problems win outright; otherwise the session layer's
   // recording/paused/transcribing, else plain "connected".
   let status: TransportStatus = "disconnected";
-  let meetingState: MeetingState = "idle";
+  let sessionState: SessionState = "idle";
 
   function badgeState(): BadgeState {
     if (status !== "connected") return status;
-    if (meetingState === "idle") return "connected";
-    return meetingState;
+    if (sessionState === "idle") return "connected";
+    return sessionState;
   }
 
   function broadcastStatus(): void {
@@ -67,7 +67,7 @@ export default defineBackground(() => {
       .sendMessage({
         kind: "status",
         status: state,
-        meeting: { active: meetings.meetingActive, paused: meetings.paused },
+        session: { active: sessions.sessionActive, paused: sessions.paused },
       })
       .catch(() => {});
   }
@@ -82,9 +82,9 @@ export default defineBackground(() => {
     console.debug(`[ears][bg] control transport status: ${s}`);
   });
 
-  const meetings = new MeetingTracker(control, (s) => {
-    meetingState = s;
-    console.debug(`[ears][bg] meeting state: ${s}`);
+  const sessions = new SessionTracker(control, (s) => {
+    sessionState = s;
+    console.debug(`[ears][bg] session state: ${s}`);
     broadcastStatus();
   });
 
@@ -167,18 +167,18 @@ export default defineBackground(() => {
     });
 
   // v2 recovery loop: every (re)connect hands the tracker a fresh snapshot,
-  // and it re-declares whatever the DOM says is live (meeting.start is
+  // and it re-declares whatever the DOM says is live (session.start is
   // idempotent). Job telemetry drives the "transcribing" badge with real
   // pipeline state instead of a guessed timer.
-  control.onReady = (snapshot, bootChanged) => meetings.onReady(snapshot, bootChanged);
-  control.onEvent = (frame) => meetings.jobEvent(frame);
+  control.onReady = (snapshot, bootChanged) => sessions.onReady(snapshot, bootChanged);
+  control.onEvent = (frame) => sessions.jobEvent(frame);
 
   // participantId → the port (tab) its PCM arrives on, so an ingest-stream
-  // open can be routed to that tab's meeting record.
+  // open can be routed to that tab's session record.
   const participantPorts = new Map<string, string>();
   socket.onStreamOpened = (participantId, platform) => {
     const portId = participantPorts.get(participantId);
-    if (portId) meetings.streamOpened(portId, platform, participantId);
+    if (portId) sessions.streamOpened(portId, platform, participantId);
   };
 
   // browser.storage.session is the browser API (browsing-session-scoped
@@ -234,18 +234,18 @@ export default defineBackground(() => {
       const msg = raw as PortMessage;
       switch (msg.type) {
         case "joined":
-          meetings.participantJoined(portId, msg.platform, msg.participantId, msg.displayName);
+          sessions.participantJoined(portId, msg.platform, msg.participantId, msg.displayName);
           return;
         case "roster":
-          meetings.rosterUpdate(portId, msg.platform, msg.entries);
+          sessions.rosterUpdate(portId, msg.platform, msg.entries);
           return;
         case "renamed":
-          meetings.participantRenamed(portId, msg.platform, msg.fromId, msg.toId);
+          sessions.participantRenamed(portId, msg.platform, msg.fromId, msg.toId);
           return;
         case "left":
           tracker.participantLeft(portId, msg.participantId);
           socket.participantLeft(msg.participantId);
-          meetings.participantLeft(portId, msg.participantId);
+          sessions.participantLeft(portId, msg.participantId);
           participantPorts.delete(msg.participantId);
           return;
         case "capture-failed":
@@ -260,10 +260,10 @@ export default defineBackground(() => {
           );
           return;
         case "meeting-started":
-          meetings.meetingStarted(portId, msg.platform, msg.externalMeetingId);
+          sessions.meetingStarted(portId, msg.platform, msg.externalMeetingId);
           return;
         case "meeting-ended":
-          meetings.meetingEnded(msg.externalMeetingId);
+          sessions.meetingEnded(msg.externalMeetingId);
           return;
         case "pcm": {
           tracker.participantActive(portId, msg.participantId, msg.platform);
@@ -273,7 +273,7 @@ export default defineBackground(() => {
             msg.participantId,
             msg.platform,
             pcm,
-            meetings.externalIdFor(portId, msg.platform),
+            sessions.externalIdFor(portId, msg.platform),
             { seq: msg.seq, sentAt: msg.sentAt },
           );
           const n = (counts.get(msg.participantId) ?? 0) + 1;
@@ -286,13 +286,13 @@ export default defineBackground(() => {
     port.onDisconnect.addListener(() => {
       // Tab closed / navigated away mid-call: close its participants' streams
       // now rather than leaking them on earsd until the socket reconnects —
-      // and end its meetings.
+      // and end its sessions.
       const orphaned = tracker.portDisconnected(portId);
       for (const id of orphaned) {
         socket.participantLeft(id);
         participantPorts.delete(id);
       }
-      meetings.portDisconnected(portId);
+      sessions.portDisconnected(portId);
       console.debug(
         `[ears][bg] pcm port disconnected (${portId})` +
           (orphaned.length ? ` — closed ${orphaned.length} orphaned stream(s)` : ""),
@@ -347,12 +347,12 @@ export default defineBackground(() => {
     if (m.kind === "get-status") {
       sendResponse({
         status: badgeState(),
-        meeting: { active: meetings.meetingActive, paused: meetings.paused },
+        session: { active: sessions.sessionActive, paused: sessions.paused },
       });
       return true;
     }
     if (m.kind === "set-transcription-paused") {
-      void meetings
+      void sessions
         .setPaused(m.paused === true)
         .then(() => broadcastStatus())
         .catch((err) => console.warn("[ears][bg] pause toggle failed:", err));

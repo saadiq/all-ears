@@ -114,7 +114,7 @@ struct ControlWebSocketServerTests {
 
     connection.feed(
       TestWebSocketClient.text(
-        #"{"id":3,"method":"meeting.start","params":{"platform":"meet","external_id":"AbC","trigger":"browser-extension"}}"#
+        #"{"id":3,"method":"session.start","params":{"platform":"meet","external_id":"AbC","trigger":"browser-extension"}}"#
       ))
     guard let replyBytes = await firstChunk(connection),
       let frame = decodeServerFrame(replyBytes)

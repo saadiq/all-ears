@@ -158,8 +158,7 @@ public struct SessionRenameParams: Sendable, Hashable, Codable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    // `session` is the wire's `meeting` key until the wire rename (#47).
-    case session = "meeting"
+    case session
     case title
     case ifRev = "if_rev"
   }
@@ -190,8 +189,7 @@ public struct SessionAttendeeParams: Sendable, Hashable {
 
 extension SessionAttendeeParams: Codable {
   private enum CodingKeys: String, CodingKey {
-    // `session` is the wire's `meeting` key until the wire rename (#47).
-    case session = "meeting"
+    case session
     case id, joined, left, source
     case displayName = "display_name"
   }
@@ -236,8 +234,7 @@ public struct SegmentPublishParams: Sendable, Hashable, Codable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    // `session` is the wire's `meeting` key until the wire rename (#47).
-    case session = "meeting"
+    case session
     case speaker, start, end, text
   }
 }
@@ -274,8 +271,7 @@ public struct JobPublishParams: Sendable, Hashable, Codable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    // `session` is the wire's `meeting` key until the wire rename (#47).
-    case session = "meeting"
+    case session
     case job, kind, state, detail
   }
 }

@@ -247,7 +247,7 @@ function relay(
         ...(msg.displayName ? { displayName: msg.displayName } : {}),
       });
       // Forward identity (display name included) so the background can
-      // upsert the daemon meeting's attendee roster.
+      // upsert the daemon session's attendee roster.
       port.post({
         type: "joined",
         participantId: msg.participantId,

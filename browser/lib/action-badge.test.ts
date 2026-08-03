@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyActionBadge, type ActionSurface } from "./action-badge";
-import type { BadgeState } from "./meeting-tracker";
+import type { BadgeState } from "./session-tracker";
 
 // A recording fake for the browser.action surface. Every setter resolves (the
 // real API returns promises); we just capture the last-applied values.

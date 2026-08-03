@@ -3,7 +3,7 @@ import {
   type AttendeeUpsert,
   type EventFrame,
   type HelloResult,
-  type MeetingWire,
+  type SessionWire,
   type Platform,
   type RequestId,
   type ResponseFrame,
@@ -22,8 +22,8 @@ import type { TransportStatus } from "./transport";
 //
 // On every (re)connect the transport performs the mandatory `hello`
 // handshake and re-subscribes to the live feed, then invokes `onReady` with
-// the fresh snapshot — the MeetingTracker's cue to re-declare whatever the
-// DOM says is live (meeting.start is idempotent, so recovery is just
+// the fresh snapshot — the SessionTracker's cue to re-declare whatever the
+// DOM says is live (session.start is idempotent, so recovery is just
 // re-declaration).
 
 const BASE_BACKOFF_MS = 500;
@@ -137,7 +137,7 @@ export class ControlSocket {
       }
       const bootChanged = this.lastBootId !== undefined && this.lastBootId !== hello.boot_id;
       this.lastBootId = hello.boot_id;
-      // State events (meeting/session/source) are always delivered; the
+      // State events (session/source) are always delivered; the
       // filter names the telemetry we care about (job progress).
       const snapshot = (await this.request(
         (id) => controlRequest.subscribe(id, ["job"]),
@@ -152,32 +152,32 @@ export class ControlSocket {
     }
   }
 
-  // ── Typed command surface (what meeting-tracker.ts consumes) ──────────────
+  // ── Typed command surface (what session-tracker.ts consumes) ──────────────
 
-  /** meeting.start (idempotent on platform+external id) → the meeting. */
-  async meetingStart(platform: Platform, externalMeetingId: string): Promise<MeetingWire> {
+  /** session.start (idempotent on platform+external id) → the session. */
+  async sessionStart(platform: Platform, externalMeetingId: string): Promise<SessionWire> {
     return (await this.request((id) =>
-      controlRequest.meetingStart(id, platform, externalMeetingId),
-    )) as MeetingWire;
+      controlRequest.sessionStart(id, platform, externalMeetingId),
+    )) as SessionWire;
   }
 
-  async meetingEnd(meeting: string): Promise<MeetingWire> {
-    return (await this.request((id) => controlRequest.meetingEnd(id, meeting))) as MeetingWire;
+  async sessionEnd(session: string): Promise<SessionWire> {
+    return (await this.request((id) => controlRequest.sessionEnd(id, session))) as SessionWire;
   }
 
-  async meetingPause(meeting: string): Promise<MeetingWire> {
-    return (await this.request((id) => controlRequest.meetingPause(id, meeting))) as MeetingWire;
+  async sessionPause(session: string): Promise<SessionWire> {
+    return (await this.request((id) => controlRequest.sessionPause(id, session))) as SessionWire;
   }
 
-  async meetingResume(meeting: string): Promise<MeetingWire> {
-    return (await this.request((id) => controlRequest.meetingResume(id, meeting))) as MeetingWire;
+  async sessionResume(session: string): Promise<SessionWire> {
+    return (await this.request((id) => controlRequest.sessionResume(id, session))) as SessionWire;
   }
 
-  /** meeting.attendee upsert (roster + optional source link). */
-  async meetingAttendee(meeting: string, attendee: AttendeeUpsert): Promise<MeetingWire> {
+  /** session.attendee upsert (roster + optional source link). */
+  async sessionAttendee(session: string, attendee: AttendeeUpsert): Promise<SessionWire> {
     return (await this.request((id) =>
-      controlRequest.meetingAttendee(id, meeting, attendee),
-    )) as MeetingWire;
+      controlRequest.sessionAttendee(id, session, attendee),
+    )) as SessionWire;
   }
 
   // ── id-correlated request/response plumbing ───────────────────────────────

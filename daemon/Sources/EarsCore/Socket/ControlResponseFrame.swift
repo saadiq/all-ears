@@ -3,7 +3,7 @@
 ///
 /// ```jsonc
 /// {"id": 7, "result": {…}}
-/// {"id": 7, "error": {"code": "meeting_not_found", "message": "…"}}
+/// {"id": 7, "error": {"code": "session_not_found", "message": "…"}}
 /// ```
 ///
 /// Generic over the result payload the caller expects, mirroring how v1's

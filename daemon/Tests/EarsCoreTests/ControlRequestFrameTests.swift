@@ -46,7 +46,7 @@ struct ControlRequestFrameTests {
     "decodes params-less methods",
     arguments: [
       ("status", ControlCall.status),
-      ("meeting.list", ControlCall.sessionList),
+      ("session.list", ControlCall.sessionList),
       ("sources.list", ControlCall.sourcesList),
       ("flush", ControlCall.flush),
     ])
@@ -58,7 +58,7 @@ struct ControlRequestFrameTests {
   @Test("decodes session.start with identity, sources, and trigger")
   func decodesSessionStart() throws {
     let json = """
-      {"id":3,"method":"meeting.start","params":{"platform":"meet","external_id":"abc",
+      {"id":3,"method":"session.start","params":{"platform":"meet","external_id":"abc",
        "title":"Weekly sync","sources":["mic"],"trigger":"browser-extension"}}
       """
     let frame = try decode(json)
@@ -71,7 +71,7 @@ struct ControlRequestFrameTests {
 
   @Test("session.start with no identity params is a manual session")
   func manualSessionStart() throws {
-    let frame = try decode("{\"id\":4,\"method\":\"meeting.start\"}")
+    let frame = try decode("{\"id\":4,\"method\":\"session.start\"}")
     guard case .call(_, .sessionStart(let params)) = frame else {
       Issue.record("expected sessionStart")
       return
@@ -83,23 +83,23 @@ struct ControlRequestFrameTests {
   @Test("decodes the session-ref verbs")
   func sessionRefVerbs() throws {
     #expect(
-      try decode("{\"id\":5,\"method\":\"meeting.pause\",\"params\":{\"meeting\":\"m1\"}}")
+      try decode("{\"id\":5,\"method\":\"session.pause\",\"params\":{\"session\":\"m1\"}}")
         == .call(id: .int(5), call: .sessionPause(session: "m1")))
     #expect(
-      try decode("{\"id\":6,\"method\":\"meeting.resume\",\"params\":{\"meeting\":\"m1\"}}")
+      try decode("{\"id\":6,\"method\":\"session.resume\",\"params\":{\"session\":\"m1\"}}")
         == .call(id: .int(6), call: .sessionResume(session: "m1")))
     #expect(
-      try decode("{\"id\":7,\"method\":\"meeting.end\",\"params\":{\"meeting\":\"m1\"}}")
+      try decode("{\"id\":7,\"method\":\"session.end\",\"params\":{\"session\":\"m1\"}}")
         == .call(id: .int(7), call: .sessionEnd(session: "m1")))
     #expect(
-      try decode("{\"id\":8,\"method\":\"meeting.get\",\"params\":{\"meeting\":\"m1\"}}")
+      try decode("{\"id\":8,\"method\":\"session.get\",\"params\":{\"session\":\"m1\"}}")
         == .call(id: .int(8), call: .sessionGet(session: "m1")))
   }
 
   @Test("decodes session.rename's if_rev compare-and-set")
   func sessionRename() throws {
     let json = """
-      {"id":8,"method":"meeting.rename","params":{"meeting":"m1","title":"New","if_rev":41}}
+      {"id":8,"method":"session.rename","params":{"session":"m1","title":"New","if_rev":41}}
       """
     #expect(
       try decode(json)
@@ -111,7 +111,7 @@ struct ControlRequestFrameTests {
   @Test("decodes a session.attendee upsert with ISO-8601 join/leave instants")
   func sessionAttendee() throws {
     let json = """
-      {"id":9,"method":"meeting.attendee","params":{"meeting":"m1","id":"spaces/x/devices/y",
+      {"id":9,"method":"session.attendee","params":{"session":"m1","id":"spaces/x/devices/y",
        "display_name":"Jane Doe","joined":"2026-07-17T10:30:00Z","source":"browser:meet:jane"}}
       """
     let frame = try decode(json)
@@ -139,7 +139,7 @@ struct ControlRequestFrameTests {
   func jobPublish() throws {
     let json = """
       {"id":12,"method":"job.publish","params":{"job":"j3","kind":"transcribe",
-       "meeting":"m1","state":"running"}}
+       "session":"m1","state":"running"}}
       """
     #expect(
       try decode(json)
@@ -152,7 +152,7 @@ struct ControlRequestFrameTests {
   @Test("an unknown method fails to decode")
   func unknownMethod() {
     #expect(throws: (any Error).self) {
-      try decode("{\"id\":1,\"method\":\"meeting.resolve\",\"params\":{}}")
+      try decode("{\"id\":1,\"method\":\"session.resolve\",\"params\":{}}")
     }
   }
 
@@ -160,9 +160,9 @@ struct ControlRequestFrameTests {
   func headDecode() throws {
     let head = try JSONDecoder().decode(
       ControlRequestHead.self,
-      from: Data("{\"id\":\"x\",\"method\":\"meeting.pause\",\"params\":42}".utf8))
+      from: Data("{\"id\":\"x\",\"method\":\"session.pause\",\"params\":42}".utf8))
     #expect(head.id == .string("x"))
-    #expect(head.method == "meeting.pause")
+    #expect(head.method == "session.pause")
   }
 
   @Test(

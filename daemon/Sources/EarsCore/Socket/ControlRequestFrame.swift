@@ -207,8 +207,7 @@ extension ControlRequestFrame: Codable {
     var session: String
 
     private enum CodingKeys: String, CodingKey {
-      // `session` is the wire's `meeting` key until the wire rename (#47).
-      case session = "meeting"
+      case session
     }
   }
   private struct SourceRef: Codable {

@@ -104,7 +104,7 @@ struct ControlWebSocketServerRealSocketTests {
 
     try await client.send(
       TestWebSocketClient.text(
-        #"{"id":1,"method":"meeting.start","params":{"platform":"meet","external_id":"x"}}"#))
+        #"{"id":1,"method":"session.start","params":{"platform":"meet","external_id":"x"}}"#))
     let replyBytes = try await client.receive()
     guard let frame = decodeServerFrame(replyBytes) else {
       Issue.record("no decodable reply frame")

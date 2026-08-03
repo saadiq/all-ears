@@ -2,11 +2,11 @@
 /// envelope's `event` field (see ``EventFrame``):
 ///
 /// ```jsonc
-/// {"event":"meeting","params":{"meeting":{…}},"rev":42}
+/// {"event":"session","params":{"session":{…}},"rev":42}
 /// {"event":"source","params":{"id":"mic","state":"paused"},"rev":44}
 /// {"event":"vad","params":{"source":"mic","state":"speech","t":"…"}}
-/// {"event":"segment","params":{"meeting":"…","speaker":"You","start":604.1,"end":611.9,"text":"…"}}
-/// {"event":"job","params":{"job":"j3","kind":"transcribe","meeting":"0d5e…","state":"running"}}
+/// {"event":"segment","params":{"session":"…","speaker":"You","start":604.1,"end":611.9,"text":"…"}}
+/// {"event":"job","params":{"job":"j3","kind":"transcribe","session":"0d5e…","state":"running"}}
 /// ```
 public enum EarsEvent: Sendable, Hashable {
   /// A VAD state change on `source` at wall-clock instant `t` (telemetry).
@@ -63,8 +63,7 @@ extension EventFrame: Codable {
   private enum ParamsKeys: String, CodingKey {
     case source, state, t, id
     case speaker, start, end, text
-    // `session` is the wire's `meeting` key until the wire rename (#47).
-    case session = "meeting"
+    case session
   }
 
   public init(from decoder: any Decoder) throws {

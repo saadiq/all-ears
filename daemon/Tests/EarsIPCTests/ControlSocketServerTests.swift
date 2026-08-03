@@ -142,7 +142,7 @@ struct ControlSocketServerTests {
     let connection = FakeSocketConnection()
     listener.accept(connection)
     sendHello(connection)
-    connection.feed(Array(#"{"id":1,"method":"meeting.resolve"}"#.utf8) + [0x0A])
+    connection.feed(Array(#"{"id":1,"method":"session.resolve"}"#.utf8) + [0x0A])
     connection.feed(Array(#"{"nonsense":true}"#.utf8) + [0x0A])
 
     let replies = try await lines(connection, count: 3)

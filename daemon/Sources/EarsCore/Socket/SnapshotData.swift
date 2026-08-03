@@ -21,8 +21,7 @@ public struct SnapshotData: Sendable, Hashable, Codable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    // `sessions` is the wire's `meetings` key until the wire rename (#47).
-    case sessions = "meetings"
+    case sessions
     case rev, sources
   }
 }

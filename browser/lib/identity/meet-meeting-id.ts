@@ -11,8 +11,8 @@ import { PARTICIPANT_ID_ATTRIBUTES } from "./meet";
 //      audio-tap already posts (hook.content.ts feeds them in).
 //
 // The <space> segment is never used directly as a daemon-facing slug: it is
-// only ever handed to `meeting.resolve` as `external_id`, and the daemon
-// mints/looks up its own meeting UUID (see daemon MeetingRegistry). Same
+// only ever handed to `session.start` as `external_id`, and the daemon
+// mints/looks up its own session UUID (see daemon SessionRegistry). Same
 // contract as every other identity path here: best-effort, never blocks,
 // throws into, or delays capture — an unresolved id just means the meeting
 // can't be marked (yet); audio keeps flowing regardless.

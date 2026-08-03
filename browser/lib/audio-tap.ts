@@ -173,7 +173,7 @@ export function initCapture(config: CaptureConfig): void {
   cfg.adapter?.onIdentify?.(handleIdentityUpgrade);
   cfg.adapter?.onRename?.(handleLateIdentity);
   // Forward roster names (id → display name) the adapter resolves to the daemon,
-  // decoupled from track capture, so a participant's name reaches meeting.toml
+  // decoupled from track capture, so a participant's name reaches session.toml
   // even when the speaking-onset correlation never tied them to a track (#23).
   cfg.adapter?.onRoster?.((entries) => {
     if (!isCurrentEpoch(cfg.epoch) || entries.length === 0) return;

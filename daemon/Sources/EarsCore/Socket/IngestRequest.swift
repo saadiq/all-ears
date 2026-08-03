@@ -5,7 +5,7 @@
 ///
 /// ```jsonc
 /// {"cmd":"ingest.open","source":"browser:meet","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"}}
-/// {"cmd":"ingest.open","source":"browser:meet:dev-2","format":{…},"meeting":{"platform":"meet","external_id":"kQ0DRVtDaekB"}}
+/// {"cmd":"ingest.open","source":"browser:meet:dev-2","format":{…},"session":{"platform":"meet","external_id":"kQ0DRVtDaekB"}}
 /// {"cmd":"ingest.close","stream_id":"s7"}
 /// ```
 ///
@@ -26,8 +26,7 @@ public enum IngestRequest: Sendable, Hashable {
 extension IngestRequest: Codable {
   private enum CodingKeys: String, CodingKey {
     case cmd, source, format
-    // `session` is the wire's `meeting` tag until the wire rename (#47).
-    case session = "meeting"
+    case session
     case streamID = "stream_id"
   }
 
