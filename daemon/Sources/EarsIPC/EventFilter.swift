@@ -6,7 +6,7 @@ import EarsCore
 /// control transports.
 ///
 /// Semantics (`docs/specs/control-protocol.md`'s "State sync"):
-/// - **State frames** (`meeting`, `session`, `source`) are always delivered
+/// - **State frames** (`meeting`, `source`) are always delivered
 ///   to every subscriber — unconditional delivery is what keeps `rev`
 ///   contiguous — so neither filter list applies to them.
 /// - **Telemetry frames** (`vad`, `segment`, `job`) pass the `events` filter

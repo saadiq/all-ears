@@ -17,11 +17,6 @@ public enum ControlMethod: String, Sendable, Hashable, Codable, CaseIterable {
   case meetingList = "meeting.list"
   case meetingGet = "meeting.get"
 
-  case sessionOpen = "session.open"
-  case sessionClose = "session.close"
-  case sessionList = "session.list"
-  case sessionAddSource = "session.add_source"
-  case mark
   case segmentPublish = "segment.publish"
   case jobPublish = "job.publish"
 
@@ -46,9 +41,8 @@ public enum ControlMethod: String, Sendable, Hashable, Codable, CaseIterable {
     case .meetingStart, .meetingEnd, .meetingPause, .meetingResume, .meetingRename,
       .meetingAttendee, .meetingList, .meetingGet:
       return .meetings
-    case .sessionOpen, .sessionClose, .sessionList, .sessionAddSource, .mark,
-      .segmentPublish, .jobPublish:
-      return .sessions
+    case .segmentPublish, .jobPublish:
+      return .publish
     case .sourcesList, .sourcesEnable, .sourcesDisable:
       return .sources
     case .sourcesAdd, .sourcesRemove, .capturePause, .captureResume, .flush:

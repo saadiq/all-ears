@@ -28,7 +28,7 @@ struct ControlWebSocketServerTests {
       switch call {
       case .subscribe:
         return ControlReply(
-          result: SnapshotData(rev: 41, meetings: [], sources: [], sessions: []))
+          result: SnapshotData(rev: 41, meetings: [], sources: []))
       case .meetingStart:
         return ControlReply(
           result: Meeting(
@@ -136,7 +136,7 @@ struct ControlWebSocketServerTests {
     _ = await runner.value
   }
 
-  @Test("session and admin verbs are not permitted on this transport")
+  @Test("publish and admin verbs are not permitted on this transport")
   func capabilityEnforcement() async throws {
     let handler = RecordingHandler()
     let (server, listener) = makeServer(
@@ -149,7 +149,8 @@ struct ControlWebSocketServerTests {
 
     connection.feed(
       TestWebSocketClient.text(
-        #"{"id":4,"method":"session.open","params":{"sources":["mic"],"slug":"x"}}"#))
+        #"{"id":4,"method":"job.publish","params":{"job":"j1","kind":"transcribe","state":"running"}}"#
+      ))
     guard let bytes = await firstChunk(connection), let frame = decodeServerFrame(bytes) else {
       Issue.record("no reply")
       return

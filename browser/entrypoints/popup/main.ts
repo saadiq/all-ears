@@ -22,7 +22,7 @@ import type { BadgeState } from "../../lib/meeting-tracker";
 //
 // The pause toggle is deliberately NOT that mechanism: capture-toggle.ts is a
 // privacy kill switch that tears down the whole capture pipeline. Pausing
-// transcription only closes/reopens the daemon session around the paused span
+// transcription only pauses/resumes the daemon meeting around the paused span
 // (audio keeps flowing into the ring buffer), so it goes straight to the
 // background's MeetingTracker via {kind:"set-transcription-paused"}.
 //
@@ -58,7 +58,7 @@ const STATUS_TITLE: Record<BadgeState, string> = {
   connected: "connected to earsd",
   connecting: "connecting to earsd…",
   disconnected: "earsd not reachable",
-  recording: "meeting in progress — session open on earsd",
+  recording: "meeting in progress — recording on earsd",
   paused: "meeting in progress — transcription paused",
   transcribing: "meeting ended — transcribing",
 };

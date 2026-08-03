@@ -2,7 +2,7 @@
 ///
 /// Times are seconds relative to the start of the decoded range (not wall-clock
 /// instants), matching the canonical JSON sidecar in `docs/data-formats.md`; the
-/// renderer combines these with a session's range start to place segments on the
+/// renderer combines these with the decoded range's start to place segments on the
 /// wall clock. ``words`` is empty unless the backend is a ``WordTimingTranscriber``.
 public struct Segment: Sendable, Hashable, Codable {
   /// Start offset in seconds from the range start.

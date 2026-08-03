@@ -47,7 +47,6 @@ struct ControlRequestFrameTests {
     arguments: [
       ("status", ControlCall.status),
       ("meeting.list", ControlCall.meetingList),
-      ("session.list", ControlCall.sessionList),
       ("sources.list", ControlCall.sourcesList),
       ("flush", ControlCall.flush),
     ])
@@ -126,55 +125,6 @@ struct ControlRequestFrameTests {
               joined: base, source: "browser:meet:jane"))))
   }
 
-  @Test("decodes session.open with v1-compatible param fields")
-  func sessionOpen() throws {
-    let json = """
-      {"id":10,"method":"session.open","params":{"sources":["mic"],"slug":"standup",
-       "trigger":"browser-extension"}}
-      """
-    #expect(
-      try decode(json)
-        == .call(
-          id: .int(10),
-          call: .sessionOpen(
-            SessionOpenParams(sources: ["mic"], slug: "standup", trigger: .browserExtension))))
-  }
-
-  @Test("mark accepts exactly one of last_seconds or start+end")
-  func markDualShape() throws {
-    let relative = """
-      {"id":11,"method":"mark","params":{"sources":["mic"],"slug":"chat","last_seconds":1800}}
-      """
-    #expect(
-      try decode(relative)
-        == .call(
-          id: .int(11), call: .mark(sources: ["mic"], slug: "chat", range: .lastSeconds(1800)))
-    )
-
-    let absolute = """
-      {"id":12,"method":"mark","params":{"sources":["mic"],"slug":"chat",
-       "start":"2026-07-17T10:30:00Z","end":"2026-07-17T11:00:00Z"}}
-      """
-    #expect(
-      try decode(absolute)
-        == .call(
-          id: .int(12),
-          call: .mark(
-            sources: ["mic"], slug: "chat",
-            range: .absolute(start: base, end: base.advanced(by: 1800)))))
-
-    let both = """
-      {"id":13,"method":"mark","params":{"sources":["mic"],"slug":"chat","last_seconds":60,
-       "start":"2026-07-17T10:30:00Z","end":"2026-07-17T11:00:00Z"}}
-      """
-    #expect(throws: (any Error).self) { try decode(both) }
-
-    let neither = """
-      {"id":14,"method":"mark","params":{"sources":["mic"],"slug":"chat"}}
-      """
-    #expect(throws: (any Error).self) { try decode(neither) }
-  }
-
   @Test("decodes subscribe filters, defaulting omitted lists to empty")
   func subscribeParams() throws {
     let filtered = try decode(
@@ -224,10 +174,6 @@ struct ControlRequestFrameTests {
         MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension)),
       .meetingPause(meeting: "m1"),
       .meetingAttendee(MeetingAttendeeParams(meeting: "m1", id: "a", displayName: "Jane")),
-      .sessionOpen(SessionOpenParams(sources: ["mic"], slug: "standup")),
-      .sessionClose(id: "sid"),
-      .sessionAddSource(id: "sid", source: "browser:meet:jane"),
-      .mark(sources: ["mic"], slug: "chat", range: .lastSeconds(1800)),
       .segmentPublish(
         SegmentPublishParams(meeting: "m1", speaker: "You", start: 1, end: 2, text: "hi")),
       .jobPublish(JobPublishParams(job: "j1", kind: "transcribe", state: .done)),

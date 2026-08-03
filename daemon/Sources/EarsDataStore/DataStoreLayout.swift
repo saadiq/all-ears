@@ -58,22 +58,6 @@ public enum DataStoreLayout {
     sourceDirectory(dataRoot: dataRoot, sourceID: sourceID).appendingPathComponent("meta.toml")
   }
 
-  /// `<data-root>/sessions/`.
-  public static func sessionsDirectory(dataRoot: URL) -> URL {
-    dataRoot.appendingPathComponent("sessions")
-  }
-
-  /// `<data-root>/sessions/<session-id>/`.
-  public static func sessionDirectory(dataRoot: URL, sessionID: String) -> URL {
-    sessionsDirectory(dataRoot: dataRoot).appendingPathComponent(sessionID)
-  }
-
-  /// `<data-root>/sessions/<session-id>/session.toml`.
-  public static func sessionTomlFile(dataRoot: URL, sessionID: String) -> URL {
-    sessionDirectory(dataRoot: dataRoot, sessionID: sessionID).appendingPathComponent(
-      "session.toml")
-  }
-
   /// `<data-root>/meetings/`.
   public static func meetingsDirectory(dataRoot: URL) -> URL {
     dataRoot.appendingPathComponent("meetings")

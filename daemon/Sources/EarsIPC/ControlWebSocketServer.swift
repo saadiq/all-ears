@@ -7,7 +7,7 @@ import Foundation
 /// the privileged Unix socket. Identical frames on both transports;
 /// **privilege differs by transport**: connections here get only
 /// ``Capability/controlWebSocket`` (`observe` + `meetings`), so even an
-/// allowed Origin cannot reach source/session/admin verbs.
+/// allowed Origin cannot reach source/publish/admin verbs.
 ///
 /// Structured like ``IngestWebSocketServer`` — the same hand-rolled HTTP
 /// upgrade (``HTTPHandshakeReader``) and RFC 6455 framing

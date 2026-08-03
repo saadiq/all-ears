@@ -27,7 +27,7 @@ import Foundation
 /// can add chunking if a real transcript ever needs it.
 ///
 /// **Scope decision — no speaker name map:** `docs/specs/llm-stages.md`'s
-/// optional "apply a speaker name map if present in the session" step is
+/// optional "apply a speaker name map if present" step is
 /// diarization-dependent (not yet built — see
 /// `docs/specs/model-interface.md`), so it is not applied here.
 enum CleanupPipeline {

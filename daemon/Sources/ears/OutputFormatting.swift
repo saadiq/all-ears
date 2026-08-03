@@ -39,16 +39,10 @@ enum OutputFormatting {
   static func humanStatus(_ data: StatusData) -> String {
     var lines = ["uptime: \(data.uptimeSeconds)s"]
     lines.append(contentsOf: data.sources.map { "source\t" + humanSourceLine($0) })
-    // Meetings and sessions each carry an explicit row-kind prefix so a meeting
-    // id can't be read as a source id (or a session) in the flat status list.
+    // Meetings carry an explicit row-kind prefix so a meeting id can't be
+    // read as a source id in the flat status list.
     if !data.meetings.isEmpty {
       lines.append(contentsOf: data.meetings.map(humanMeetingLine))
-    }
-    if !data.sessions.isEmpty {
-      lines.append(
-        contentsOf: data.sessions.map {
-          "session\t\($0.id)\t\($0.state.rawValue)"
-        })
     }
     return lines.joined(separator: "\n")
   }
@@ -60,19 +54,6 @@ enum OutputFormatting {
 
   private static func humanSourceLine(_ source: SourceStatus) -> String {
     "\(source.id.rawValue)\t\(source.state.rawValue)\t\(source.codec)\tbytes_used=\(source.bytesUsed)"
-  }
-
-  static func humanSessionOpen(_ data: SessionOpenData) -> String {
-    data.id
-  }
-
-  static func humanSessionList(_ data: SessionListData) -> String {
-    data.sessions.isEmpty
-      ? "(no sessions)"
-      : data.sessions.map {
-        "\($0.id)\t\($0.state.rawValue)\tsources=\($0.sources.map(\.rawValue).joined(separator: ","))"
-      }
-      .joined(separator: "\n")
   }
 
   static func humanEmpty(_: EmptyData) -> String {
@@ -131,8 +112,6 @@ enum OutputFormatting {
     switch frame.event {
     case .vad(let source, let state, let t):
       return "[\(t)] vad \(source.rawValue) \(state.rawValue)"
-    case .session(let summary):
-      return "[session] \(summary.id) \(summary.state.rawValue)\(revSuffix)"
     case .segment(let segment):
       return
         "[\(segment.meeting)] \(segment.speaker) (\(segment.start)-\(segment.end)): \(segment.text)"

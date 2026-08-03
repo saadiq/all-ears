@@ -10,7 +10,7 @@ import Synchronization
 /// publishing samples. Teardown (stop, or a route-change rebuild) calls
 /// ``invalidate()`` *first*, so any callback still draining from the old engine
 /// instance sees a stale generation and drops its data rather than corrupting a
-/// freshly-started session after a device hot-swap.
+/// freshly-started capture after a device hot-swap.
 ///
 /// Backed by a lock-free ``Atomic`` so the check on the realtime audio thread is
 /// wait-free. Genuinely `Sendable` — no `@unchecked` needed.

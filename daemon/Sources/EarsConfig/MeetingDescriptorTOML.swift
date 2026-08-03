@@ -5,7 +5,7 @@ import Foundation
 /// mirrors `meeting.toml` **schema 2**
 /// (`<data-root>/meetings/<uuid>/meeting.toml`) — the daemon-owned lifecycle
 /// record of `docs/specs/control-protocol.md`, superseding schema 1's
-/// identity-only shape. Mirrors ``SessionDescriptorTOML``: `TOMLBridge` does
+/// identity-only shape. `TOMLBridge` does
 /// the actual TOML text, this file only knows the fields.
 ///
 /// Optional scalars use the suite's "empty string ⇒ absent" sentinel

@@ -11,7 +11,7 @@
 /// capture engines/ingest streams are untouched throughout.
 public struct Meeting: Sendable, Hashable {
   /// The daemon-assigned meeting UUID — the one internal id used everywhere
-  /// (materialized session slugs, filenames, CLI output).
+  /// (filenames, CLI output).
   public var id: String
   /// The platform-specific external identity `meeting.start` is idempotent
   /// on; `nil` for manual meetings.
@@ -29,11 +29,10 @@ public struct Meeting: Sendable, Hashable {
   /// The roster, upserted by whoever knows it (the extension's DOM layer
   /// today).
   public var attendees: [MeetingAttendee]
-  /// Every source involved in this meeting — what materialized sessions
-  /// record, and (for `browser:*` entries) what the orphan grace timer
-  /// watches.
+  /// Every source involved in this meeting — what transcription reads, and
+  /// (for `browser:*` entries) what the orphan grace timer watches.
   public var sources: [SourceID]
-  /// Provenance, preserved onto every materialized session.
+  /// Provenance: what started this meeting.
   public var trigger: TriggerKind
   /// When this meeting's transcript last completed **successfully** — the
   /// durable marker retention keys off (`docs/specs/capture-daemon.md`'s

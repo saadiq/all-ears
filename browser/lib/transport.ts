@@ -63,8 +63,8 @@ export interface TransportPerf {
 
 export class EarsSocket {
   /** Invoked when an ingest.open succeeds — the moment a participant's source
-   * actually exists on earsd and can be named on a session
-   * (meeting-tracker.ts listens to open sessions / add sources). */
+   * actually exists on earsd (meeting-tracker.ts listens to attach the
+   * source to its meeting). */
   onStreamOpened?: (participantId: ParticipantId, platform: Platform) => void;
 
   /** Optional perf sink; unset in tests and when perf collection is off. */

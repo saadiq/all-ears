@@ -46,7 +46,7 @@ function connectAndOpen(socket: ControlSocket): FakeWebSocket {
   return ws;
 }
 
-const SNAPSHOT: SnapshotWire = { rev: 41, meetings: [], sources: [], sessions: [] };
+const SNAPSHOT: SnapshotWire = { rev: 41, meetings: [], sources: [] };
 
 /** Answers the hello + subscribe handshake so the socket reaches "ready". */
 async function completeHandshake(ws: FakeWebSocket, bootId = "boot-1"): Promise<void> {

@@ -243,8 +243,8 @@ struct DaemonConfigResolutionTests {
   }
 
   @Test("meeting-end auto-transcribe defaults to enabled in the resolved configuration")
-  func transcribeOnBrowserSessionCloseDefaultsOn() {
+  func transcribeOnBrowserMeetingEndDefaultsOn() {
     let result = DaemonConfigResolution.resolve(config: config(), now: now)
-    #expect(result.configuration.transcribeOnBrowserSessionClose == true)
+    #expect(result.configuration.transcribeOnBrowserMeetingEnd == true)
   }
 }

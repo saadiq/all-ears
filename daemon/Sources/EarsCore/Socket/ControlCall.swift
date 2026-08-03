@@ -16,11 +16,6 @@ public enum ControlCall: Sendable, Hashable {
   case meetingList
   case meetingGet(meeting: String)
 
-  case sessionOpen(SessionOpenParams)
-  case sessionClose(id: String)
-  case sessionList
-  case sessionAddSource(id: String, source: SourceID)
-  case mark(sources: [SourceID], slug: String, range: MarkRange)
   case segmentPublish(SegmentPublishParams)
   case jobPublish(JobPublishParams)
 
@@ -45,11 +40,6 @@ public enum ControlCall: Sendable, Hashable {
     case .meetingAttendee: .meetingAttendee
     case .meetingList: .meetingList
     case .meetingGet: .meetingGet
-    case .sessionOpen: .sessionOpen
-    case .sessionClose: .sessionClose
-    case .sessionList: .sessionList
-    case .sessionAddSource: .sessionAddSource
-    case .mark: .mark
     case .segmentPublish: .segmentPublish
     case .jobPublish: .jobPublish
     case .sourcesList: .sourcesList
@@ -67,9 +57,9 @@ public enum ControlCall: Sendable, Hashable {
 // MARK: - Params types
 
 /// `subscribe` params: which *telemetry* kinds (`vad`, `segment`, `job`) and
-/// which sources to receive. State kinds (`meeting`, `session`, `source`) are
-/// always delivered — unconditional delivery is what keeps `rev` contiguous —
-/// so they are not filterable. Both lists empty/omitted means "everything".
+/// which sources to receive. State kinds (`meeting`, `source`) are always
+/// delivered — unconditional delivery is what keeps `rev` contiguous — so
+/// they are not filterable. Both lists empty/omitted means "everything".
 public struct SubscribeParams: Sendable, Hashable, Codable {
   public var events: [EventKind]
   public var sources: [SourceID]
@@ -104,7 +94,7 @@ public struct SubscribeParams: Sendable, Hashable, Codable {
 /// idempotent on that identity; without them it creates a manual meeting.
 /// `sources` seeds the meeting's source list (`ears meeting start --source
 /// mic`); the roster's `source` links add more later. `trigger` records
-/// provenance (preserved onto materialized sessions); defaults to `.manual`.
+/// provenance; defaults to `.manual`.
 public struct MeetingStartParams: Sendable, Hashable, Codable {
   public var platform: String?
   public var externalID: String?
@@ -220,50 +210,6 @@ extension MeetingAttendeeParams: Codable {
     try container.encodeISO8601InstantIfPresent(joined, forKey: .joined)
     try container.encodeISO8601InstantIfPresent(left, forKey: .left)
     try container.encodeIfPresent(source, forKey: .source)
-  }
-}
-
-/// `session.open` params — same fields as v1's flat command.
-public struct SessionOpenParams: Sendable, Hashable {
-  public var sources: [SourceID]
-  public var slug: String
-  public var start: Instant?
-  public var vocab: String?
-  public var trigger: TriggerKind?
-
-  public init(
-    sources: [SourceID], slug: String, start: Instant? = nil, vocab: String? = nil,
-    trigger: TriggerKind? = nil
-  ) {
-    self.sources = sources
-    self.slug = slug
-    self.start = start
-    self.vocab = vocab
-    self.trigger = trigger
-  }
-}
-
-extension SessionOpenParams: Codable {
-  private enum CodingKeys: String, CodingKey {
-    case sources, slug, start, vocab, trigger
-  }
-
-  public init(from decoder: any Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    sources = try container.decode([SourceID].self, forKey: .sources)
-    slug = try container.decode(String.self, forKey: .slug)
-    start = try container.decodeISO8601InstantIfPresent(forKey: .start)
-    vocab = try container.decodeIfPresent(String.self, forKey: .vocab)
-    trigger = try container.decodeIfPresent(TriggerKind.self, forKey: .trigger)
-  }
-
-  public func encode(to encoder: any Encoder) throws {
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(sources, forKey: .sources)
-    try container.encode(slug, forKey: .slug)
-    try container.encodeISO8601InstantIfPresent(start, forKey: .start)
-    try container.encodeIfPresent(vocab, forKey: .vocab)
-    try container.encodeIfPresent(trigger, forKey: .trigger)
   }
 }
 

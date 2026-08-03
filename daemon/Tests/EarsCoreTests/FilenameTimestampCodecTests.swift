@@ -3,7 +3,7 @@ import Testing
 @testable import EarsCore
 
 /// Covers ``FilenameTimestampCodec``: the ISO-8601-with-`:`-replaced-by-`-`
-/// form used for chunk filenames and session directory names, per
+/// form used for chunk filenames and other timestamped directory names, per
 /// `docs/data-formats.md`.
 @Suite("FilenameTimestampCodec")
 struct FilenameTimestampCodecTests {
@@ -26,9 +26,9 @@ struct FilenameTimestampCodecTests {
     #expect(FilenameTimestampCodec.string(for: subSecond) == "2026-07-17T10-30-00Z")
   }
 
-  @Test("parses a session directory name, ignoring the trailing slug")
-  func parsesSessionDirectoryPrefix() {
-    // Session directory names append "_<slug>" after the timestamp
+  @Test("rejects a timestamped directory name's trailing slug")
+  func rejectsDirectoryNameSlug() {
+    // Timestamped directory names append "_<slug>" after the timestamp
     // (`2026-07-17T10-30-00Z_standup`); the codec only ever sees the
     // timestamp portion callers slice out, so this documents that a
     // trailing suffix after "Z" is rejected rather than silently ignored.

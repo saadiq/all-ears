@@ -6,8 +6,6 @@ import EarsCore
 public enum DataStoreError: Error, Sendable, Hashable {
   /// `meta.toml` doesn't exist for the given source.
   case sourceMetaNotFound(SourceID)
-  /// `session.toml` doesn't exist for the given session id.
-  case sessionNotFound(String)
   /// `meeting.toml` doesn't exist for the given meeting id.
   case meetingNotFound(String)
   /// An ``AudioBuffer`` was appended to a ``ChunkEncoder`` at a sample rate

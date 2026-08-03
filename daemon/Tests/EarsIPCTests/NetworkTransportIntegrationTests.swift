@@ -48,11 +48,11 @@ struct NetworkTransportIntegrationTests {
   func concurrentClients() async throws {
     let path = tempSocketPath()
     let listener = try await NetworkSocketListener.bind(toPath: path)
-    // Echo the requested session id back as the uptime.
+    // Echo the requested meeting id back as the uptime.
     let server = ControlSocketServer(
       listener: listener, identity: ControlServerIdentity(daemon: "earsd test", bootID: "boot-net")
     ) { call in
-      guard case .sessionClose(let id) = call else {
+      guard case .meetingEnd(let id) = call else {
         return .failure(.internalError, "no")
       }
       return ControlReply(result: StatusData(uptimeSeconds: Int(id) ?? -1, sources: []))
@@ -65,7 +65,7 @@ struct NetworkTransportIntegrationTests {
           let client = try await ControlSocketClient.connect(toPath: path)
           _ = try await client.hello(client: "test/0")
           let response = try await client.send(
-            .sessionClose(id: String(index)), expecting: StatusData.self)
+            .meetingEnd(meeting: String(index)), expecting: StatusData.self)
           #expect(response == StatusData(uptimeSeconds: index, sources: []))
           await client.close()
         }
@@ -85,7 +85,7 @@ struct NetworkTransportIntegrationTests {
       listener: listener, identity: ControlServerIdentity(daemon: "earsd test", bootID: "boot-net")
     ) { call in
       guard case .subscribe = call else { return .failure(.internalError, "no") }
-      return ControlReply(result: SnapshotData(rev: 5, meetings: [], sources: [], sessions: []))
+      return ControlReply(result: SnapshotData(rev: 5, meetings: [], sources: []))
     }
     let runner = Task { await server.run() }
 

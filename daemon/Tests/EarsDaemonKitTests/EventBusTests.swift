@@ -9,13 +9,6 @@ import Testing
 /// monotonic state revision. No sockets.
 @Suite("EventBus")
 struct EventBusTests {
-  private func sampleSession() -> SessionSummary {
-    SessionSummary(
-      SessionDescriptor(
-        schema: 1, id: "2026-07-17T10-30-00Z_s", slug: "s", sources: ["mic"],
-        start: Instant(secondsSinceEpoch: 1), state: .open, trigger: .manual))
-  }
-
   /// Waits until the drain task has delivered `count` frames.
   private func waitForFrames(
     _ recorded: borrowing Mutex<[EventFrame]>, count: Int
@@ -30,7 +23,7 @@ struct EventBusTests {
   func publishUnattachedDrops() async {
     let bus = EventBus()
     // Must neither crash nor hang; nothing observable to assert beyond that.
-    await bus.publish(.session(sampleSession()))
+    await bus.publish(.source(id: "mic", state: .capturing))
   }
 
   @Test("state events get contiguous revisions; telemetry events stay untagged")
@@ -39,7 +32,7 @@ struct EventBusTests {
     let recorded = Mutex<[EventFrame]>([])
     await bus.attach { frame in recorded.withLock { $0.append(frame) } }
 
-    let first = await bus.publish(.session(sampleSession()))
+    let first = await bus.publish(.source(id: "mic", state: .capturing))
     let telemetry = await bus.publish(
       .vad(source: "mic", state: .speech, t: Instant(secondsSinceEpoch: 1)))
     let second = await bus.publish(.source(id: "mic", state: .paused))
