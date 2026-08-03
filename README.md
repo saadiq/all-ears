@@ -5,7 +5,7 @@
 
 Local. Composable. Split by source (instead of untangled later).
 
-All Ears runs a small daemon that continuously records every audio source you configure (microphone, system audio, per-app audio, meeting-tab audio) into a rolling local buffer. It transcribes live while you're in the meeting, and cleans up and summarises when the meeting ends.
+All Ears runs a small daemon that records the audio sources you configure (microphone, system audio, per-app audio, meeting-tab audio) for the duration of each recording session, each source as its own local stream. It transcribes live while you're in the call, and transcribes, cleans up, and summarises when the session ends.
 
 ## Why All Ears
 
@@ -73,10 +73,10 @@ leading `.build/release/`.
 
 ## Usage
 
-**Live transcription.** Start a meeting and watch the transcript arrive as people speak:
+**Live transcription.** Start a session and watch the transcript arrive as people speak:
 
 ```sh
-ears meeting start --source mic
+ears session start --source mic
 transcribe --follow mic
 ```
 
@@ -94,11 +94,11 @@ launchctl kickstart -k gui/$UID/net.tomelliot.ears.earsd
 ears config show | grep chunk    # confirm the resolved value
 ```
 
-**Full pipeline.** When the meeting ends, transcribe, correct, and summarise it as a unit:
+**Full pipeline.** When the call is over, end the session, then correct and summarise its transcript:
 
 ```sh
-ears meeting end <meeting-id>
-transcribe --meeting <meeting-id> --out call.transcript.md
+ears session end <session-id>
+transcribe --session <session-id> --out call.transcript.md
 cleanup call.transcript.md --out call.clean.md
 summarize call.clean.md --preset action-items --out call.summary.md
 ```
@@ -106,16 +106,7 @@ summarize call.clean.md --preset action-items --out call.summary.md
 A summary preset is a prompt file you write, named in your config — see
 [Your model, your prompts](#your-model-your-prompts).
 
-**Meeting notes, hands-free.** Open a session around a call so it's transcribed as a unit instead of a raw time range:
-
-```sh
-ears session open --slug weekly-sync --source mic --source browser:meet
-# ... take the call ...
-ears session close <session-id>
-transcribe --session <session-id> --out weekly-sync.md
-```
-
-**Browser-captured meeting audio.** The [browser extension](browser/) isolates each remote participant's audio in Google Meet, Zoom, and Teams tabs and streams it to the daemon as its own source. Install it once, join a call, and it shows up as `browser:<platform>:<participant>` alongside your other sources.
+**Meeting notes, hands-free.** The [browser extension](browser/) isolates each remote participant's audio in Google Meet, Zoom, and Teams tabs and streams it to the daemon as its own source — each participant shows up as `browser:<platform>:<participant>` alongside your other sources. It declares the call to the daemon as a session, and when the call ends the daemon transcribes the session automatically; `ears session list` shows it, `cleanup`/`summarize` run on the result.
 
 ## Your model, your prompts
 
@@ -148,13 +139,13 @@ Transcription currently has one model: Parakeet, running locally on the Neural E
 
 ## How it works
 
-A single always-on daemon (`earsd`) owns every audio source and writes it into a per-source ring buffer on disk: compressed, time-capped, and nothing is transcribed until asked. Four small tools operate on that buffer and its output:
+A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and nothing is transcribed until asked — except a browser call's session, which transcribes itself on end. Four small tools operate on that store and its output:
 
 | Tool | Job |
 |------|-----|
-| `earsd` | Capture daemon: records every source, exposes a control socket. |
-| `ears` | Control client: status, sources, sessions, marking ranges. |
-| `transcribe` | Turns ring-buffer audio into a transcript, batch or live. |
+| `earsd` | Capture daemon: owns sessions, records their sources, exposes a control socket. |
+| `ears` | Control client: status, sources, the session lifecycle. |
+| `transcribe` | Turns a session's captured audio into a transcript, batch or live. |
 | `cleanup` | Corrects a transcript with an LLM, guided by your vocabulary. |
 | `summarize` | Produces summaries from a transcript using configurable prompts. |
 

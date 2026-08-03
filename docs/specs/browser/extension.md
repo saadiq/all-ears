@@ -29,13 +29,13 @@ Four contexts, one direction of audio flow:
 │ hook.content.ts    │     │ content.ts   │     │ background.ts│     │ earsd         │
 │  RTCPeerConnection │ ──► │  (relay)     │ ──► │  WebSocket   │ ──► │ ws://127.0.0.1│
 │  hook + audio tap  │ win │ postMessage  │ rt  │ owner +      │ ws  │  /ingest      │
-│  platform adapter  │     │  ⇄ runtime   │     │ meeting ctl  │     │  /control     │
+│  platform adapter  │     │  ⇄ runtime   │     │ session ctl  │     │  /control     │
 └────────────────────┘     └──────────────┘     └──────────────┘     └───────────────┘
 ```
 
 The main world is the only place that can patch page globals; the isolated world is the only place with `chrome.runtime`; `content.ts` exists solely to bridge them via `window.postMessage`. The MV3 service worker holds the WebSockets directly (WebSocket activity keeps it alive, Chrome 116+) — there is no offscreen document, so Chrome and Firefox share one code path.
 
-Layout (WXT project in `browser/`): entrypoints `hook.content.ts` (MAIN world, `document_start`), `content.ts` (isolated relay), `background.ts` (socket owner), `popup/`; libraries `lib/rtc-hook.ts`, `audio-tap.ts`, `transport.ts`, `control-transport.ts`, `meeting-tracker.ts`, `keepalive.ts`, `capture-toggle.ts`, `pcm-port.ts`, `protocol.ts`, `epoch.ts`, and `lib/identity/` (the adapters). Build with `bun run build` / `bun run build:firefox`.
+Layout (WXT project in `browser/`): entrypoints `hook.content.ts` (MAIN world, `document_start`), `content.ts` (isolated relay), `background.ts` (socket owner), `popup/`; libraries `lib/rtc-hook.ts`, `audio-tap.ts`, `transport.ts`, `control-transport.ts`, `session-tracker.ts`, `keepalive.ts`, `capture-toggle.ts`, `pcm-port.ts`, `protocol.ts`, `epoch.ts`, and `lib/identity/` (the adapters). Build with `bun run build` / `bun run build:firefox`.
 
 ## Injection & timing
 
@@ -59,7 +59,7 @@ The hook is a `world: "MAIN"`, `runAt: "document_start"` content script — the 
 - **Stop:** on `track.onended`, delete from the map before stopping, so a late frame can't resurrect a dead entry.
 - **Mute/replace:** `onmute`/`onunmute` gate emission. Teams delivers tracks `muted=true` until first speech — accept enabled-but-muted tracks.
 - An async identity upgrade (see Meet below) restarts the track's pipeline as a new segment under the upgraded id rather than renaming in place.
-- An identity that confirms **after its track has ended** can't restart anything; it is sent as a `participant-renamed` message instead (adapter `onRename`). The background upserts the dead track's source label onto the *named* attendee (`meeting.attendee` with `id=<device>` + `source=browser:<platform>:<fallback>`), so audio already recorded under a `speaker-<n>` source is still transcript-labeled by the participant's name.
+- An identity that confirms **after its track has ended** can't restart anything; it is sent as a `participant-renamed` message instead (adapter `onRename`). The background upserts the dead track's source label onto the *named* attendee (`session.attendee` with `id=<device>` + `source=browser:<platform>:<fallback>`), so audio already recorded under a `speaker-<n>` source is still transcript-labeled by the participant's name.
 
 ## Platform adapters
 
@@ -126,8 +126,8 @@ Meet's internal audio path moved four times in twelve days (journal #31, #73, #8
 - **Main → isolated:** `window.postMessage({ __ears: true, ... })`, filtered on the marker and `event.source === window`. PCM frames carry `participantId`, `seq`, `sentAt`, and the payload. `seq`/`sentAt` ride all the way to earsd on the extended ingest frame, which is what lets the daemon tell a silent speaker from a stalled extension.
 - **Isolated → main:** `{ __earsCtl: true, ... }` — mirrors the capture toggle (and every change) into the page realm as `capture-state` messages.
 - **Isolated → background:** PCM rides a dedicated long-lived `runtime.connect` port (`lib/pcm-port.ts`), reconnected **lazily** on the next post after a disconnect so an idle tab never traps a suspended worker in a wake loop. Control events use typed runtime messaging.
-- **Respawn replay:** the content relay keeps the durable copy of what the worker holds only in memory — the live meeting and current participants — and replays `meeting-started` + `joined` into every *fresh* port ahead of the message that triggered the reconnect. A respawned worker therefore re-learns which meeting the tab's audio belongs to (both verbs are idempotent daemon-side), so it can tag `ingest.open` with the meeting identity and send `meeting.end` when the tab goes away. Without the replay, an evicted-mid-call worker forwards PCM it can't attribute and has nothing to end — the stranded-active-meeting bug.
-- **Meeting lifecycle:** `meeting-tracker.ts` (in the background) resolves DOM-detected meetings via `meeting.resolve` and opens/closes daemon sessions over the `/control` WebSocket — including pause/resume emulated as session close/re-open under the same meeting id. ([Control protocol v2](../control-protocol.md) moves this state machine into the daemon when it lands.)
+- **Respawn replay:** the content relay keeps the durable copy of what the worker holds only in memory — the live call and current participants — and replays `meeting-started` + `joined` into every *fresh* port ahead of the message that triggered the reconnect. A respawned worker therefore re-learns which session the tab's audio belongs to (the daemon-side verbs are idempotent), so it can tag `ingest.open` with the session identity and send `session.end` when the tab goes away. Without the replay, an evicted-mid-call worker forwards PCM it can't attribute and has nothing to end — the stranded-active-session bug.
+- **Session lifecycle:** `session-tracker.ts` (in the background) is a signal forwarder — the daemon owns the session state machine ([control protocol v2](../control-protocol.md)). It translates what the tabs' DOM layers observe into daemon verbs over the `/control` WebSocket: the platform's `meeting-started` signal → `session.start` (idempotent on platform + external meeting id), participant join/leave and ingest-stream opens → `session.attendee` upserts, the popup's pause toggle → `session.pause`/`session.resume` (marks, never capture), `meeting-ended` or the tab going away → `session.end`. Recovery after worker eviction or daemon restart is re-declaration through the same idempotent `session.start`.
 - **Persisted state:** `storage.local` holds the user-facing capture toggle (explicit privacy intent — survives browser restart; missing/corrupt values default to ON so a failed read can't silently kill capture). `storage.session` holds worker-respawn recovery (active-session flag re-arms the `chrome.alarms` keepalive; session area so a fresh browser start can't resurrect a stale alarm). The keepalive is armed only while ≥1 participant is live — an idle extension schedules zero wakes.
 
 ## Performance instrumentation

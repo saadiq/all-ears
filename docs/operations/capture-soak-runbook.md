@@ -1,7 +1,7 @@
 # Capture daemon soak-test runbook
 
 Manual procedure for checking the capture daemon's core reliability claim:
-"daemon runs for days at a flat memory baseline; disk usage tracks meeting
+"daemon runs for days at a flat memory baseline; disk usage tracks session
 activity and retention, not elapsed time; gaps recorded across sleep/wake and
 device unplug." This is a real-world, multi-day claim about a running process
 on real hardware — no automated test can establish it, and none here claims
@@ -10,9 +10,9 @@ to.
 ## What already exists, and what this fills in
 
 The CI suites (`EarsDaemonTests`, `EvictionSweeperTests`) prove the logic
-deterministically: an idle daemon writes nothing, a meeting's audio lands
-under its own `meetings/<id>/sources/` directory, and the retention sweeper
-deletes an ended meeting's audio at its transcript-driven deadline (driven by
+deterministically: an idle daemon writes nothing, a session's audio lands
+under its own `sessions/<id>/sources/` directory, and the retention sweeper
+deletes an ended session's audio at its transcript-driven deadline (driven by
 a `ManualClock`, so no real time passes). What they cannot demonstrate is
 flat process *memory* over real days, nor real sleep/wake or device unplug —
 those only happen on a real machine over real time. This runbook is the
@@ -52,12 +52,12 @@ this is automated — it isn't.
 4. Record the start timestamp, macOS version, and hardware.
 
 Run for **at least 48–72 hours continuously**, spanning at least one real
-overnight system sleep. Several times a day, drive a real meeting cycle:
+overnight system sleep. Several times a day, drive a real session cycle:
 
 ```sh
-ears meeting start --source mic     # prints the meeting id
+ears session start --source mic     # prints the session id
 # ...talk for a few minutes...
-ears meeting end <id>
+ears session end <id>
 ```
 
 Longer is better; the point is to see whether any of the sub-criteria below
@@ -82,36 +82,36 @@ equally well for a spot check — the log above is so you have a record to
 attach afterward.)
 
 **Expected:** RSS stays flat while idle, may tick up during an active
-meeting, and returns to the baseline after each meeting ends (its capture
+session, and returns to the baseline after each session ends (its capture
 actors are torn down). A slow, steady climb across hours/days — especially
-one that survives meeting teardown — is a leak: treat that as a failed run,
+one that survives session teardown — is a leak: treat that as a failed run,
 not noise, and file it before calling capture reliable.
 
-### 2. Disk usage tracks meetings and retention, not elapsed time
+### 2. Disk usage tracks sessions and retention, not elapsed time
 
 ```sh
-du -sh <data_root>/meetings/*/sources 2>/dev/null
-ls <data_root>/meetings
+du -sh <data_root>/sessions/*/sources 2>/dev/null
+ls <data_root>/sessions
 ```
 
 Sampled on the same cadence as RSS above. **Expected:** an idle daemon
-writes nothing (no new directories between meetings). Each meeting's
-`sources/` directory grows only while that meeting is active. Once a
-meeting's transcript completes, its `sources/` directory disappears within
-`evict_after_transcript_seconds` (plus up to one sweep interval); a meeting
+writes nothing (no new audio directories between sessions). Each session's
+`sources/` directory grows only while that session is active. Once a
+session's transcript completes, its `sources/` directory disappears within
+`evict_after_transcript_seconds` (plus up to one sweep interval); a session
 whose transcript failed keeps its audio until `max_audio_age_seconds` after
-it ended, then loses it too. `meeting.toml` and `events.jsonl` remain for
-every meeting. Audio directories that outlive their deadline mean retention
+it ended, then loses it too. `session.toml` and `events.jsonl` remain for
+every session. Audio directories that outlive their deadline mean retention
 is broken — file it.
 
 ### 3. Gaps are recorded across sleep/wake and device unplug
 
-Each source's `chunks.jsonl` (under the active meeting's directory)
+Each source's `chunks.jsonl` (under the active session's directory)
 discriminates events on `"t"`; watch it with `tail -f` **during an active
-meeting** for each scenario below (`docs/data-formats.md`'s "The index" and
+session** for each scenario below (`docs/data-formats.md`'s "The index" and
 `docs/specs/capture-daemon.md`'s "Power/idle awareness").
 
-**Sleep/wake.** With a meeting active, put the machine to sleep (lid close,
+**Sleep/wake.** With a session active, put the machine to sleep (lid close,
 or Apple menu → Sleep) for at least several minutes, then wake it. Confirm:
 - a `{"t":"gap", ..., "reason":"pause"}` event appears, covering the
   suspended interval (`PowerObserver` pauses every source on
@@ -120,16 +120,16 @@ or Apple menu → Sleep) for at least several minutes, then wake it. Confirm:
 - capture visibly resumes afterward — new `chunk`/`vad` events with
   timestamps past the gap's `end`.
 
-**Restart mid-meeting.** Stop `earsd` cleanly (`kill -TERM <pid>`, or Ctrl-C
-in the foreground terminal) while a meeting is active, wait a few minutes,
-then start it again with the same config. Confirm the meeting resumes
-capture (new `chunk` events appear under the *same* meeting directory) —
-`MeetingRegistry.loadFromDisk()` restarts a still-active meeting's sources.
+**Restart mid-session.** Stop `earsd` cleanly (`kill -TERM <pid>`, or Ctrl-C
+in the foreground terminal) while a session is active, wait a few minutes,
+then start it again with the same config. Confirm the session resumes
+capture (new `chunk` events appear under the *same* session directory) —
+`SessionRegistry.loadFromDisk()` restarts a still-active session's sources.
 
-**Device unplug/replug.** With a meeting active, physically unplug the
+**Device unplug/replug.** With a session active, physically unplug the
 configured microphone (or switch the default input device in System
 Settings → Sound) for at least a minute, then reconnect it. Watch both
-`earsd`'s own log (`--log-file`) and the meeting's `chunks.jsonl` across the
+`earsd`'s own log (`--log-file`) and the session's `chunks.jsonl` across the
 outage window.
 
 > **Known open gap, found by inspecting the code while writing this
@@ -148,7 +148,7 @@ outage window.
 For each run, keep:
 - start/end timestamps, macOS version, hardware, and the config file used.
 - the sampled RSS log and `du`/directory-listing samples.
-- for each of the sleep/wake, mid-meeting restart, and device-unplug
+- for each of the sleep/wake, mid-session restart, and device-unplug
   scenarios: the timestamp you triggered it, and the exact `chunks.jsonl`
   line(s) (or their absence) that resulted.
 - a plain statement of whether each sub-criterion held — and, if the
@@ -158,6 +158,6 @@ For each run, keep:
 ## Non-goals of this runbook
 
 - Does not replace the CI suites, which keep running on every commit as the
-  regression guard on the meeting-scoped capture and retention *logic*.
+  regression guard on the session-scoped capture and retention *logic*.
 - Does not cover multi-source scenarios — this procedure only exercises the
   single `mic` source.

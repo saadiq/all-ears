@@ -12,7 +12,7 @@ It does nothing else: no meeting-joining bots, no tab capture, no caption scrapi
 | Zoom (web) | One stream per remote participant | Participant id parsed from the track itself — stable across mute/rejoin |
 | Teams | One mixed far-end stream | `Speaker N` attribution from the dominant-speaker signal — honest, but degraded |
 
-Each speaking participant shows up in `ears sources list` as `browser:<platform>:<participant>` and is recorded, indexed, and transcribed like any other source. On Meet, the extension also registers the call with the daemon so every attendance of the same meeting correlates to one meeting id.
+Each speaking participant shows up in `ears sources list` as `browser:<platform>:<participant>` and is recorded, indexed, and transcribed like any other source. The extension also declares the call to the daemon, which owns it as a [session](./specs/control-protocol.md#session) carrying the platform's own meeting id — capture, the attendee roster, and the end-of-call auto-transcription all hang off that session.
 
 ## Setup
 
@@ -41,7 +41,7 @@ Each speaking participant shows up in `ears sources list` as `browser:<platform>
 
    Load the output directory as an unpacked extension (`chrome://extensions` → Load unpacked, or `about:debugging` in Firefox).
 
-3. Join a call. Capture is on by default; the popup has the on/off toggle, a connection indicator, and a pause-transcription toggle for the current meeting. Turning capture off persists across browser restarts.
+3. Join a call. Capture is on by default; the popup has the on/off toggle, a connection indicator, and a pause-transcription toggle for the current session. Turning capture off persists across browser restarts.
 
 ## Limitations
 

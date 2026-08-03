@@ -55,7 +55,7 @@ All tools read the same file. Tool-specific settings live in their own tables.
 schema = 1
 
 # --- Shared paths ---
-data_root   = "~/Library/Application Support/ears"  # meetings (audio), sessions, vocab, runtime
+data_root   = "~/Library/Application Support/ears"  # sessions (records + audio), vocab, runtime
 output_root = "~/Documents/Transcripts"             # transcripts, summaries
 socket_path = ""   # empty => <data_root>/runtime/earsd.sock
 
@@ -79,27 +79,27 @@ asr_sample_rate          = 16000  # derived asr/ feed for transcription
 store_native             = true   # keep the listenable copy alongside the ASR feed
 channels                 = 1
 
-# Transcript-driven retention. A meeting's audio (meetings/<id>/sources/) is
+# Transcript-driven retention. A session's audio (sessions/<id>/sources/) is
 # deleted once its transcript has been complete for evict_after_transcript_seconds;
-# a meeting whose transcript never completed keeps its audio until
+# a session whose transcript never completed keeps its audio until
 # max_audio_age_seconds after it ended (so a failed run can be retried), then
-# it is deleted regardless. meeting.toml/events.jsonl and transcripts are
+# it is deleted regardless. session.toml/events.jsonl and transcripts are
 # never deleted.
 [earsd.retention]
 evict_after_transcript_seconds = 7200    # 2h after a successful transcript
-max_audio_age_seconds          = 604800  # 7d hard cap for never-transcribed meetings
+max_audio_age_seconds          = 604800  # 7d hard cap for never-transcribed sessions
 
 [earsd.vad]
 backend        = "silero"  # currently ignored: an energy-threshold VAD is always used
 speech_pad_ms  = 300       # pad around detected speech spans
 min_silence_ms = 700       # gap before declaring silence
 
-[earsd.meetings]
-# How long a browser meeting's last ingest stream may stay closed before the
-# daemon ends the meeting on its own (events.jsonl reason "ingest-idle").
-# Manual meetings are never auto-ended.
+[earsd.sessions]
+# How long a browser session's last ingest stream may stay closed before the
+# daemon ends the session on its own (events.jsonl reason "ingest-idle").
+# Manual sessions are never auto-ended.
 ingest_close_grace_s = 120
-# Locally-captured sources folded into every browser meeting, so your own side
+# Locally-captured sources folded into every browser session, so your own side
 # is transcribed alongside the extension's per-participant streams. Each id is
 # included only if the daemon is actually capturing it. Set to [] to disable.
 local_sources = ["mic"]
@@ -111,7 +111,7 @@ port            = 47811   # loopback only
 allowed_origins = []      # e.g. ["chrome-extension://<id>", "moz-extension://<uuid>"];
                           # empty rejects every connection (fail closed)
 
-# Control plane for the browser extension (sessions, meetings, status). Off by default.
+# Control plane for the browser extension (session lifecycle, status). Off by default.
 [earsd.control_ws]
 enabled         = false
 port            = 47812   # loopback only
@@ -132,12 +132,6 @@ enabled = false           # opt-in: needs the system-audio-recording permission
 id    = "app:us.zoom.xos"
 class = "app"
 label = "Zoom"
-
-# --- Auto-triggers ---
-# Removed (#42): the app-signal trigger path (`[triggers]` / `[[triggers.rule]]`)
-# no longer exists. Recording is meeting-scoped and sessions are started
-# deliberately (browser extension or CLI); browser meetings auto-transcribe on
-# end. A leftover `[triggers]` table is rejected as an unknown config key.
 
 # --- LLM stages ---
 [llm]
@@ -183,8 +177,8 @@ compute = "automatic"    # "ane" | "gpu" | "cpu" | "automatic"
 
 With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAudio) as an offline pass and refines multi-speaker turns into `<source> · Speaker N`. Source-of-origin stays the primary label; the diarizer only adds the within-source split. A diarizer that fails to load or run is non-fatal: the transcript falls back to source-only labels. The Sortformer model downloads automatically on first use.
 
-- **Captured audio** (`--last`/`--from`/`--to`, `--meeting`): only multi-speaker far-end sources are diarized — `system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams (each already a single speaker).
-- **Standalone files** (`--file`): the whole file is treated as one multi-speaker source and always diarized when a backend is configured, since a file carries no source-of-origin separation. Example: `transcribe --file meeting.m4a`.
+- **Captured audio** (`--last`/`--from`/`--to`, `--session`): only multi-speaker far-end sources are diarized — `system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams (each already a single speaker).
+- **Standalone files** (`--file`): the whole file is treated as one multi-speaker source and always diarized when a backend is configured, since a file carries no source-of-origin separation. Example: `transcribe --file memo.m4a`.
 
 ## Conventions
 

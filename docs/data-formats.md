@@ -6,11 +6,11 @@ This document defines the on-disk contract. Because the storage layout *is* the 
 
 ```
 <data-root>/                         # default: ~/Library/Application Support/ears
-  meetings/
-    <uuid>/                          # one directory per meeting — audio is meeting-scoped
-      meeting.toml                   # meeting record (identity, state, intervals, roster);
-                                     #   kept forever, never evicted
-      events.jsonl                   # append-only meeting timeline; kept forever
+  sessions/
+    <uuid>/                          # one directory per session — audio is session-scoped
+      session.toml                   # session record (schema 3: identity, state, intervals,
+                                     #   roster, sources); kept forever, never evicted
+      events.jsonl                   # append-only session timeline; kept forever
       sources/                       # AUDIO — deleted as one unit by retention
         <source-id>/                 # e.g. mic, system, browser_meet_jane
           meta.toml                  # source descriptor (class, device, sample rate, codec)
@@ -22,12 +22,11 @@ This document defines the on-disk contract. Because the storage layout *is* the 
           chunks.jsonl               # structural index: chunk/gap events
           vad/                       # segmented VAD stream (speech/silence spans)
             2026-07-17T10-30-00Z.jsonl   # one size/time-rotated segment, named by first event
-  sessions/
-    2026-07-17T10-30-00Z_standup/    # session id: start-timestamp + slug
-      session.toml                   # session descriptor (sources, range, trigger, state)
+  sources/                           # legacy global ring — read-only fallback, never
+    <source-id>/                     #   written by live capture any more
   vocab/
     global.txt                       # global known-word list
-    <session-id>.txt                 # optional per-session vocabulary
+    <session-id>.txt                 # optional per-session vocabulary (session UUID)
   runtime/
     earsd.sock                       # control socket (path configurable)
     earsd.pid
@@ -42,19 +41,21 @@ This document defines the on-disk contract. Because the storage layout *is* the 
 
 `<source-id>` is the source's stable id with characters unsafe for paths replaced by `_` (e.g. `app:us.zoom.xos` → `app_us.zoom.xos`). The id itself, as used on the socket and in metadata, keeps its natural form.
 
-Audio is **meeting-scoped**: a source records only while a meeting names it, and everything it writes lands under that meeting's own `sources/` tree. Two consequences:
+Audio is **session-scoped**: a source records only while a session names it, and everything it writes lands under that session's own `sources/` tree. Two consequences:
 
 - **Transcripts** (under `<output-root>`) are never evicted — they are the durable artifact.
-- **Retention is a per-meeting delete.** Once an ended meeting's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the meeting has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `meetings/<uuid>/sources/` directory. `meeting.toml` and `events.jsonl` survive as the meeting's record. See `[earsd.retention]` in [configuration](./configuration.md).
+- **Retention is a per-session delete.** Once an ended session's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the session has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `sessions/<uuid>/sources/` directory. `session.toml` and `events.jsonl` survive as the session's record. See `[earsd.retention]` in [configuration](./configuration.md).
 
-A known, accepted limitation: two *concurrent* meetings that share one locally-captured source (e.g. the mic) reuse the first meeting's capture, so the second meeting's audio for that source lands in the first meeting's directory. Sequential meetings are unaffected — each gets its own directory.
+The daemon enforces a **single-active-session invariant**: a `session.start` for a new identity (or a manual start) supersedes any session still live, running the old one through its full end pipeline first. At most one active session means exactly one legal directory for any capture actor at any moment, so a source's audio can never land in the wrong session's directory.
+
+**Legacy directories are ignored, not migrated.** Pre-2026 layouts left two dead formats on disk: `sessions/<timestamp-slug>/` directories holding a schema-1 `session.toml`, and a `meetings/<uuid>/` tree holding schema-2 `meeting.toml` records. Nothing reads either — the session scan skips any descriptor whose `schema` isn't 3, and the `meetings/` tree is never consulted. They can be deleted by hand at any time.
 
 ## Audio chunks
 
 - Fixed-duration chunks (default 30 s), named by their UTC start instant, ISO-8601 with `:` replaced by `-`.
 - Compressed: AAC in an M4A container, or Opus. Codec and bitrate are per-source config, recorded in `meta.toml`.
 - Chunk boundaries are a storage detail, independent of speech. Speech spans live in the index and may cross chunk boundaries.
-- Chunks are never deleted individually. A meeting's audio grows for the meeting's duration and is deleted as one directory by transcript-driven retention (see above).
+- Chunks are never deleted individually. A session's audio grows for the session's duration and is deleted as one directory by transcript-driven retention (see above).
 - Written atomically (temp + rename); on flush, `fsync` both the file and its directory.
 
 ### Dual-rate storage
@@ -107,38 +108,42 @@ It maps wall-clock time to audio and records speech activity so transcription ca
 
 A reader reconstructs available audio for any range from `chunk` events, uses `vad` spans to skip silence, and honours `gap` events as known-missing. Both logs are append-only, so `tail -f chunks.jsonl` and `tail -f vad/*.jsonl` show live capture.
 
-## Sessions (`session.toml`)
+## Sessions (`sessions/<uuid>/`)
 
-A session is metadata over the recorded audio — a named time range across one or more sources — not a separate recording.
-
+The daemon-owned [Session](./specs/control-protocol.md#session) entity — the one lifecycle record. `session.toml` (**schema 3**) carries the fields of the wire's session object — identity, title, state, transcription intervals, roster, sources, trigger, transcript-completion marker — written atomically on every mutation and reloaded at daemon start. Optional scalar fields use an empty string for "absent"; `rev` is deliberately not persisted (revisions are scoped to a daemon boot).
 
 ```toml
-schema = 1
-id = "2026-07-17T10-30-00Z_standup"
-slug = "standup"
-sources = ["mic", "app:us.zoom.xos"]
-start = "2026-07-17T10:30:00Z"
-end   = "2026-07-17T11:02:00Z"   # absent while open
-state = "closed"                  # open | closed
-trigger = "app-signal"            # app-signal | manual | browser-extension
-trigger_detail = "us.zoom.xos"
-vocab = "vocab/2026-07-17T10-30-00Z_standup.txt"  # optional
+schema = 3
+id = "0d5e7f6a-…"                      # daemon-assigned UUID
+platform = "meet"                       # platform identity; "" for manual sessions
+external_id = "abc-defg-hij"            # the platform's own meeting id; "" for manual
+title = "Weekly sync"                   # renameable; defaults from identity or id
+state = "ended"                         # active | paused | ended
+started = "2026-07-19T10:00:00Z"
+ended = "2026-07-19T10:31:00Z"          # "" while active/paused
+transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succeeds;
+                                        #   the marker retention keys off
+trigger = "browser-extension"           # manual | browser-extension
+sources = ["mic", "browser:meet:jane-a1b2"]
 
-[speakers]                        # optional name map (see speaker attribution);
-"browser:meet:jane-a1b2" = "Jane Doe"  # written by the daemon at meeting.end
-                                   # from the meeting's roster
+[[interval]]                            # transcription marks over the recording;
+start = "2026-07-19T10:00:00Z"          #   pause closes one, resume opens the next
+end = "2026-07-19T10:12:30Z"
+[[interval]]
+start = "2026-07-19T10:20:05Z"
+end = ""                                # "" = currently marked
+
+[[attendee]]                            # roster, upserted by whoever knows it
+id = "spaces/x/devices/y"               #   (the extension's DOM layer today)
+display_name = "Jane Doe"
+joined = "2026-07-19T10:00:12Z"
+left = ""
+source = "browser:meet:jane-a1b2"       # optional link to a per-participant source
 ```
 
-## Meetings (`meetings/<uuid>/`)
+`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
-The daemon-owned [Meeting](./specs/control-protocol.md#meeting) entity, layered above
-sessions. `meeting.toml` (schema 2) carries the fields of the wire's meeting object — identity,
-title, state, transcription intervals, roster, sources, trigger — written atomically on every
-mutation and reloaded at daemon start. `events.jsonl` is the append-only per-meeting timeline
-(`started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`,
-`ended` with `reason = "client" | "ingest-idle"`), written for disk consumers, never used for
-protocol sync. On `meeting.end` the daemon materializes one closed session per interval
-(slug = the meeting UUID) with the roster written into each session's `[speakers]` map.
+Tools reject a `schema` other than 3 rather than guessing — which is exactly how the legacy schema-1 and schema-2 descriptors (above) stay inert on disk.
 
 ## Transcript format
 
@@ -148,9 +153,12 @@ Human-first Markdown with YAML frontmatter. This is the canonical human artifact
 ---
 schema: 1
 kind: transcript
-session: 2026-07-17T10-30-00Z_standup
-# meeting: 0d5e…            # present on `transcribe --meeting` output — the
-                            # interval union of one daemon-owned meeting
+session: 0d5e7f6a-…         # the session UUID this transcript unions the
+                            # intervals of (`transcribe --session`)
+# range_run: 2026-07-17T10-30-00Z_mic
+                            # instead of `session:` on a raw range run
+                            # (`--last`/`--from`/`--to`) — a synthesized
+                            # <start-timestamp>_<slug> identifier
 sources: [mic, "app:us.zoom.xos"]
 range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }
 model: { name: parakeet, backend: fluidaudio, version: "0.x" }
@@ -160,11 +168,11 @@ duration_seconds: 1920
 speech_seconds: 1440
 word_count: 3120
 vocab: [global, standup]
-# audio_stores: ["mic=ring", "app:us.zoom.xos=meeting"]
-#                           # present on `transcribe --meeting` output only —
-                            # which store each source was read from (`meeting` =
-                            # per-meeting copy, `ring` = global buffer, `none` =
-                            # no store held it), so a wrong-store read is visible
+# audio_stores: ["mic=ring", "app:us.zoom.xos=session"]
+#                           # present on `transcribe --session` output only —
+                            # which store each source was read from (`session` =
+                            # per-session copy, `ring` = legacy global buffer),
+                            # so a wrong-store read is visible
 ---
 
 ## [10:30:04] You
