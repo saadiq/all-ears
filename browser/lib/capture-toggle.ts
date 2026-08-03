@@ -4,7 +4,7 @@
 // turning OFF an audio-capture extension is explicit privacy intent, and least
 // surprise says it must survive a browser restart rather than silently
 // re-arming. (`storage.session` is still used for *worker-respawn* recovery
-// state — see session-state.ts — which is a different concern: that state
+// state — see keepalive.ts — which is a different concern: that state
 // SHOULD die with the browsing session.)
 //
 // How the toggle actually gates capture: the MAIN-world hook has no extension
