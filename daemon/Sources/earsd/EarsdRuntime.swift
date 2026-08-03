@@ -119,9 +119,6 @@ enum EarsdRuntime {
     for skip in resolution.skipped {
       await logHandle.emit("skipping source '\(skip.id)': \(skip.reason)")
     }
-    for skip in resolution.skippedTriggerRules {
-      await logHandle.emit("skipping trigger rule '\(skip.name)': \(skip.reason)")
-    }
     let sourceList =
       resolution.configuration.sources.isEmpty
       ? "(none)"

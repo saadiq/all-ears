@@ -1,10 +1,8 @@
 import AppKit
 
-/// A running (or just-changed) process's bundle id and pid — the shape both
-/// ``SystemAudioCaptureBackend``'s per-app tap rebuild and
-/// `EarsDaemonKit.AppSignalTriggerObserver`'s launch/terminate watching need,
-/// so the bundle-id/PID tracking logic lives once, shared by both, rather
-/// than duplicated.
+/// A running (or just-changed) process's bundle id and pid — the shape
+/// ``SystemAudioCaptureBackend``'s per-app tap rebuild needs to follow an
+/// app's processes as they come and go.
 public enum RunningApplicationEvent: Sendable, Hashable {
   case launched(bundleID: String, pid: pid_t)
   case terminated(bundleID: String, pid: pid_t)

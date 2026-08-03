@@ -24,10 +24,9 @@ public struct SpawnOutcome: Sendable, Equatable {
 }
 
 /// Runs an on-close pipeline (`transcribe` → `cleanup` → `summarize`) against
-/// a closed session — the stage-spawning logic ``AppSignalTriggerObserver``
-/// originally owned, extracted so a session closed by the browser extension
-/// (`trigger == .browserExtension`, see ``EarsDaemon``) can run the same
-/// pipeline without an app-signal rule match.
+/// a closed session or an ended meeting — the shared stage-spawner behind
+/// the meeting-end auto-transcription hook and the browser-extension
+/// session-close hook (`trigger == .browserExtension`, see ``EarsDaemon``).
 ///
 /// Stops the chain — loudly — on the first unrecognised stage or non-zero
 /// exit. Never silently continues past a failed stage as if the run
@@ -56,8 +55,7 @@ public struct OnClosePipelineRunner: Sendable {
   }
 
   /// Runs `stages` in order against the closed session. `context` names the
-  /// initiator in log lines (a trigger rule's name, or e.g.
-  /// `"browser-session-close"`).
+  /// initiator in log lines (e.g. `"browser-session-close"`).
   public func run(stages: [String], for descriptor: SessionDescriptor, context: String) async {
     for stage in stages {
       guard ["transcribe", "cleanup", "summarize"].contains(stage) else {

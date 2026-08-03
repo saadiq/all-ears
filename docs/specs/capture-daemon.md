@@ -54,9 +54,8 @@ Capture each active meeting's audio sources under the meeting's own directory, m
 
 ### Triggers
 
-- `[[triggers.rule]]` with `on = "app-audio-active"` opens a session when a matched app's own `app:<bundle-id>` source VAD goes to speech (genuine audio activity, not mere launch), and closes it when the app's last process exits.
-- On close, the rule's `on_close` list (`transcribe`, `cleanup`, `summarize`) is spawned in order over the session. `pre_roll_seconds` widens `transcribe`'s read range backward without rewriting the session's `start`.
-- Browser meeting sessions run the same pipeline on close by default via `[triggers].transcribe_on_browser_session_close` (set `false` to disable).
+- App-signal auto-triggers (`[triggers]` / `[[triggers.rule]]`) were removed (#42): recording is meeting-scoped and sessions are started deliberately (browser extension or CLI). A leftover `[triggers]` table in config is rejected as unknown.
+- Browser meetings run the transcribe stage automatically when they end (the meeting-end auto-transcription hook, via the shared on-close pipeline runner).
 
 ### Lifecycle
 
