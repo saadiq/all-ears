@@ -34,19 +34,9 @@ enum DaemonConfigResolution {
     var reason: String
   }
 
-  /// One `[[triggers.rule]]` entry that was not turned into a
-  /// ``TriggerRuleConfiguration``, and why -- reported the same way a
-  /// malformed `[[earsd.source]]` entry is, at config-resolution time rather
-  /// than deep inside the trigger observer.
-  struct SkippedTriggerRule: Equatable, Sendable {
-    var name: String
-    var reason: String
-  }
-
   struct Result {
     var configuration: EarsDaemonConfiguration
     var skipped: [SkippedSource]
-    var skippedTriggerRules: [SkippedTriggerRule] = []
   }
 
   static func resolve(config: ConfigValue, now: Instant) -> Result {
@@ -83,7 +73,6 @@ enum DaemonConfigResolution {
       }
     }
 
-    let (triggers, skippedTriggerRules) = resolveTriggers(root)
     let outputRootPath = string(root, "output_root", default: "")
 
     // `[earsd.meetings].local_sources`: absent defaults to `["mic"]`; an
@@ -116,76 +105,9 @@ enum DaemonConfigResolution {
       meetingIngestCloseGraceSeconds: Double(
         int(meetingsTable, "ingest_close_grace_s", default: 120)),
       browserMeetingLocalSources: browserMeetingLocalSources,
-      triggers: triggers,
       outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath)
     )
-    return Result(
-      configuration: configuration, skipped: skipped, skippedTriggerRules: skippedTriggerRules)
-  }
-
-  // MARK: - [triggers] / [[triggers.rule]] resolution
-
-  private static func resolveTriggers(_ root: [String: ConfigValue])
-    -> (TriggersConfiguration, [SkippedTriggerRule])
-  {
-    let triggersTable = nestedTable(root, "triggers")
-    let enabled = bool(triggersTable, "enabled", default: false)
-    let transcribeOnBrowserClose = bool(
-      triggersTable, "transcribe_on_browser_session_close", default: true)
-
-    var rules: [TriggerRuleConfiguration] = []
-    var skipped: [SkippedTriggerRule] = []
-    for entry in array(triggersTable, "rule") {
-      switch resolveTriggerRule(entry) {
-      case .included(let rule): rules.append(rule)
-      case .skipped(let skip): skipped.append(skip)
-      }
-    }
-    return (
-      TriggersConfiguration(
-        enabled: enabled, rules: rules,
-        transcribeOnBrowserSessionClose: transcribeOnBrowserClose),
-      skipped
-    )
-  }
-
-  private enum TriggerRuleResolution {
-    case included(TriggerRuleConfiguration)
-    case skipped(SkippedTriggerRule)
-  }
-
-  /// Never-throwing, matching ``resolveSource(_:defaults:now:)``'s own
-  /// contract: a malformed `[[triggers.rule]]` entry is skipped and
-  /// reported, not a fatal config error.
-  private static func resolveTriggerRule(_ entry: ConfigValue) -> TriggerRuleResolution {
-    guard case .table(let fields) = entry else {
-      return .skipped(
-        SkippedTriggerRule(name: "?", reason: "[[triggers.rule]] entry is not a table"))
-    }
-    guard case .string(let name)? = fields["name"], !name.isEmpty else {
-      return .skipped(
-        SkippedTriggerRule(name: "?", reason: "[[triggers.rule]] entry has no 'name'"))
-    }
-    let on = string(fields, "on", default: "")
-    guard !on.isEmpty else {
-      return .skipped(SkippedTriggerRule(name: name, reason: "trigger rule '\(name)' has no 'on'"))
-    }
-    let sources = stringArray(fields, "sources").map { SourceID($0) }
-    guard !sources.isEmpty else {
-      return .skipped(
-        SkippedTriggerRule(name: name, reason: "trigger rule '\(name)' has no 'sources'"))
-    }
-
-    return .included(
-      TriggerRuleConfiguration(
-        name: name,
-        on: on,
-        apps: stringArray(fields, "apps"),
-        openSession: bool(fields, "open_session", default: true),
-        sources: sources,
-        onClose: stringArray(fields, "on_close"),
-        preRollSeconds: int(fields, "pre_roll_seconds", default: 0)
-      ))
+    return Result(configuration: configuration, skipped: skipped)
   }
 
   /// `[earsd.ingest_ws]` → ``IngestWebSocketConfiguration``, or `nil` when

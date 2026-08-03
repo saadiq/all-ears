@@ -69,14 +69,16 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --meeting`. Default `["mic"]`; `[]` disables.
   public var browserMeetingLocalSources: [SourceID]
-  /// `[triggers]`/`[[triggers.rule]]`, resolved. Disabled (no rules) by
-  /// default — gates whether ``EarsDaemon/start()`` also starts an
-  /// ``AppSignalTriggerObserver``.
-  public var triggers: TriggersConfiguration
+  /// Whether a browser-triggered meeting (and, until the v1 session surface
+  /// is removed, a `trigger == .browserExtension` session) auto-runs the
+  /// transcribe stage via the shared ``OnClosePipelineRunner`` when it ends.
+  /// Default `true`; no config key — tests inject `false` so a meeting end
+  /// never spawns a real transcribe subprocess.
+  public var transcribeOnBrowserSessionClose: Bool
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; it's only needed
   /// to construct an `on_close` pipeline stage's file-path arguments (see
-  /// ``AppSignalTriggerObserver``).
+  /// ``OnClosePipelineRunner``).
   public var outputRoot: URL
 
   public init(
@@ -94,7 +96,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     meetingIngestCloseGraceSeconds: Double = 120,
     browserMeetingLocalSources: [SourceID] = ["mic"],
-    triggers: TriggersConfiguration = TriggersConfiguration(),
+    transcribeOnBrowserSessionClose: Bool = true,
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
     self.sources = sources
@@ -112,7 +114,7 @@ public struct EarsDaemonConfiguration: Sendable {
     self.controlWebSocket = controlWebSocket
     self.meetingIngestCloseGraceSeconds = meetingIngestCloseGraceSeconds
     self.browserMeetingLocalSources = browserMeetingLocalSources
-    self.triggers = triggers
+    self.transcribeOnBrowserSessionClose = transcribeOnBrowserSessionClose
   }
 }
 
@@ -218,7 +220,6 @@ public actor EarsDaemon {
   /// a reconnecting client the revision counters reset.
   private let bootID = UUID().uuidString.lowercased()
   private var powerObserver: PowerObserver?
-  private var appSignalTriggerObserver: AppSignalTriggerObserver?
   /// The daemon-owned, timer-driven retention enforcer — deletes each ended
   /// meeting's audio once its transcript-driven deadline passes. Started in
   /// ``start()`` after the control socket is bound, stopped in ``stop()``.
@@ -434,7 +435,7 @@ public actor EarsDaemon {
     // verbs on both control transports. Meeting end fires the meeting-level
     // auto-transcribe (gated the same way as the v1 per-session hook).
     let onMeetingEnded: MeetingRegistry.EndedHook?
-    if configuration.triggers.transcribeOnBrowserSessionClose {
+    if configuration.transcribeOnBrowserSessionClose {
       let pipeline = OnClosePipelineRunner(outputRoot: configuration.outputRoot, log: log)
       onMeetingEnded = { [weak self] meeting, _ in
         guard meeting.trigger == .browserExtension else { return }
@@ -476,14 +477,13 @@ public actor EarsDaemon {
     // control server so `status`/`sources.list` see it.
     meetingRegistry = meetings
 
-    // Browser-triggered on-close transcribe: the browser extension has no
-    // app-signal rule to hang a rule's `on_close` off, so a session closed
-    // with `trigger == .browserExtension` runs the transcribe stage directly
-    // — gated by `[triggers].transcribe_on_browser_session_close`, and
-    // spawned in its own task so the `session.close` reply is never blocked
-    // behind a full transcription run.
+    // Browser-triggered on-close transcribe: a session closed with
+    // `trigger == .browserExtension` runs the transcribe stage directly —
+    // gated by `transcribeOnBrowserSessionClose`, and spawned in its own
+    // task so the `session.close` reply is never blocked behind a full
+    // transcription run.
     let onSessionClosed: (@Sendable (SessionDescriptor) async -> Void)?
-    if configuration.triggers.transcribeOnBrowserSessionClose {
+    if configuration.transcribeOnBrowserSessionClose {
       let pipeline = OnClosePipelineRunner(outputRoot: configuration.outputRoot, log: log)
       onSessionClosed = { descriptor in
         guard descriptor.trigger == .browserExtension else { return }
@@ -539,33 +539,13 @@ public actor EarsDaemon {
     }
     let controlWebSocketServer = self.controlWebSocketServer
 
-    // Only started when configured with at least one rule -- disabled (the
-    // default) means no observer, no subscription, no behavior change from
-    // before this existed.
-    let triggerObserver: AppSignalTriggerObserver?
-    if configuration.triggers.enabled, !configuration.triggers.rules.isEmpty {
-      let observer = AppSignalTriggerObserver(
-        rules: configuration.triggers.rules,
-        sessions: sessions,
-        outputRoot: configuration.outputRoot,
-        log: log)
-      await observer.start()
-      appSignalTriggerObserver = observer
-      triggerObserver = observer
-    } else {
-      triggerObserver = nil
-    }
-
     // Only now does a pub/sub consumer exist: route every event published by
-    // the capture actors / session registry into the socket's fan-out (and,
-    // when configured, the app-signal trigger observer's own vad-event
-    // correlation). Events published before this line (during source
-    // startup) were dropped by design — no subscriber could have been
-    // connected yet anyway.
+    // the capture actors / session registry into the socket's fan-out.
+    // Events published before this line (during source startup) were dropped
+    // by design — no subscriber could have been connected yet anyway.
     await eventBus.attach { frame in
       await socketServer.publish(frame)
       await controlWebSocketServer?.publish(frame)
-      await triggerObserver?.handle(frame.event)
     }
 
     // Capture is meeting-scoped, so the set of live actors changes over the
@@ -698,11 +678,6 @@ public actor EarsDaemon {
       await powerObserver.stopObserving()
     }
     powerObserver = nil
-
-    if let appSignalTriggerObserver {
-      await appSignalTriggerObserver.stop()
-    }
-    appSignalTriggerObserver = nil
 
     for actor in captureActors.values {
       await actor.stop()

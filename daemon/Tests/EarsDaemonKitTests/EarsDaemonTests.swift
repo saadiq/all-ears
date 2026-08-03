@@ -824,7 +824,7 @@ struct EarsDaemonTests {
       socketPath: tempSocketPath(),
       // Keep meeting-end from spawning a real transcribe subprocess when the
       // first meeting is superseded — this test is about capture directories.
-      triggers: TriggersConfiguration(transcribeOnBrowserSessionClose: false))
+      transcribeOnBrowserSessionClose: false)
 
     let daemon = try EarsDaemon(
       configuration: configuration,
@@ -896,7 +896,7 @@ struct EarsDaemonTests {
       sources: [],
       dataRoot: dataRoot,
       socketPath: socketPath,
-      triggers: TriggersConfiguration(transcribeOnBrowserSessionClose: false))
+      transcribeOnBrowserSessionClose: false)
 
     let daemon = try EarsDaemon(
       configuration: configuration,

@@ -52,12 +52,7 @@ public enum EarsdConfigSchema {
           "device_uid": .string(""),
         ])
       ]),
-    ]),
-    "triggers": .table([
-      "enabled": .bool(false),
-      "transcribe_on_browser_session_close": .bool(true),
-      "rule": .array([]),
-    ]),
+    ])
   ])
 
   /// Schema for a single `[[earsd.source]]` element. Every field is optional
@@ -75,36 +70,6 @@ public enum EarsdConfigSchema {
         type: .string, description: "Core Audio device UID (device-class sources)."),
       "label": ConfigSchema.Field(type: .string, description: "Human-readable label."),
       "enabled": ConfigSchema.Field(type: .bool, description: "Whether this source is captured."),
-    ]
-  )
-
-  /// Schema for a single `[[triggers.rule]]` element, per
-  /// `docs/configuration.md`'s "Auto-triggers" example. `on`'s only
-  /// documented value today is `"app-audio-active"`; left as a plain string
-  /// (not an enum) since this schema engine has no closed-set-of-strings
-  /// concept and a stricter check belongs at resolution time, matching how
-  /// `class` is validated for `[[earsd.source]]`.
-  private static let triggerRuleElementSchema = ConfigSchema(
-    fields: [
-      "name": ConfigSchema.Field(type: .string, description: "Rule name."),
-      "on": ConfigSchema.Field(
-        type: .string, description: "Trigger signal (e.g. \"app-audio-active\")."),
-      // Array of scalars (bundle ids/app names) — left unvalidated
-      // element-wise, matching `ingest_ws.allowed_origins`'s convention.
-      "apps": ConfigSchema.Field(
-        type: .array, description: "Bundle ids / app names this rule matches."),
-      "open_session": ConfigSchema.Field(
-        type: .bool, description: "Open a capture session when the rule fires."),
-      "sources": ConfigSchema.Field(type: .array, description: "Sources to capture for this rule."),
-      "on_close": ConfigSchema.Field(
-        type: .array, description: "Stages to run when the rule's session closes."),
-      // Session pre-roll: widen the transcribed range backward by this many
-      // seconds of already-buffered ring audio when transcribing this
-      // rule's sessions (see `TranscribeRangeResolution`'s pre-roll
-      // widening). 0 (the default) means no widening.
-      "pre_roll_seconds": ConfigSchema.Field(
-        type: .int,
-        description: "Seconds of already-buffered audio to include before the session opened."),
     ]
   )
 
@@ -227,25 +192,6 @@ public enum EarsdConfigSchema {
           ]
         ),
         description: "Capture daemon settings: audio format, VAD, sources, and networking."),
-      "triggers": ConfigSchema.Field(
-        type: .table,
-        children: ConfigSchema(
-          fields: [
-            "enabled": ConfigSchema.Field(
-              type: .bool, description: "Enable app-signal auto-triggers."),
-            // Run the transcribe stage automatically when a session opened by
-            // the browser extension (`trigger = "browser-extension"`) closes
-            // — the browser-side analogue of a rule's `on_close`, which only
-            // fires on app-signal rule matches.
-            "transcribe_on_browser_session_close": ConfigSchema.Field(
-              type: .bool,
-              description: "Auto-transcribe when a browser-extension session closes."),
-            "rule": ConfigSchema.Field(
-              type: .array, elementSchema: triggerRuleElementSchema,
-              description: "App-signal trigger rules."),
-          ]
-        ),
-        description: "Automatic capture/transcribe triggers driven by app signals."),
     ],
     passthroughKeys: [
       "schema",
