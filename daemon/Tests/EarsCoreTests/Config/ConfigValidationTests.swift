@@ -96,7 +96,7 @@ struct ConfigValidationTests {
   @Test(
     "keys from not-yet-implemented sections pass through unvalidated",
     arguments: [
-      "earsd", "transcribe", "diarize", "llm", "cleanup", "summarize", "triggers", "vocab",
+      "earsd", "transcribe", "diarize", "llm", "cleanup", "summarize", "vocab",
       "schema",
     ]
   )

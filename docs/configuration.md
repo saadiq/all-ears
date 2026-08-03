@@ -134,20 +134,10 @@ class = "app"
 label = "Zoom"
 
 # --- Auto-triggers ---
-[triggers]
-enabled = false   # default off; set true to enable the app-signal rules below
-transcribe_on_browser_session_close = true  # transcribe when a browser meeting ends (default: true; set false to disable)
-
-[[triggers.rule]]
-name = "meetings"
-on   = "app-audio-active"           # fires on genuine audio activity (the matched app's
-                                    # own source VAD going speech), not app launch
-apps = ["us.zoom.xos", "com.microsoft.teams2"]      # exact bundle ids
-open_session = true
-sources = ["mic", "app:us.zoom.xos"]
-on_close = ["transcribe", "cleanup", "summarize"]   # pipeline to run when the session closes
-pre_roll_seconds = 15               # widen transcribe's read range backward by this many
-                                    # seconds of already-buffered audio
+# Removed (#42): the app-signal trigger path (`[triggers]` / `[[triggers.rule]]`)
+# no longer exists. Recording is meeting-scoped and sessions are started
+# deliberately (browser extension or CLI); browser meetings auto-transcribe on
+# end. A leftover `[triggers]` table is rejected as an unknown config key.
 
 # --- LLM stages ---
 [llm]

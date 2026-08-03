@@ -21,8 +21,7 @@ struct DaemonConfigResolutionTests {
     sources: [ConfigValue] = [
       .table(["id": .string("mic"), "class": .string("mic"), "device_uid": .string("")])
     ],
-    earsdOverrides: [String: ConfigValue] = [:],
-    triggers: ConfigValue? = nil
+    earsdOverrides: [String: ConfigValue] = [:]
   ) -> ConfigValue {
     var earsd: [String: ConfigValue] = [
       "chunk_seconds": .int(30),
@@ -36,12 +35,11 @@ struct DaemonConfigResolutionTests {
       "source": .array(sources),
     ]
     for (key, value) in earsdOverrides { earsd[key] = value }
-    var root: [String: ConfigValue] = [
+    let root: [String: ConfigValue] = [
       "data_root": .string(dataRoot),
       "socket_path": .string(socketPath),
       "earsd": .table(earsd),
     ]
-    if let triggers { root["triggers"] = triggers }
     return .table(root)
   }
 
@@ -196,94 +194,6 @@ struct DaemonConfigResolutionTests {
     #expect(result.skipped.isEmpty)
   }
 
-  // MARK: - [triggers] / [[triggers.rule]]
-
-  @Test("no [triggers] table resolves to disabled, no rules")
-  func triggersDefaultToDisabled() {
-    let result = DaemonConfigResolution.resolve(config: config(), now: now)
-    #expect(result.configuration.triggers.enabled == false)
-    #expect(result.configuration.triggers.rules.isEmpty)
-  }
-
-  @Test("the doc's [[triggers.rule]] example resolves into a TriggerRuleConfiguration")
-  func triggerRuleExampleResolves() {
-    let result = DaemonConfigResolution.resolve(
-      config: config(
-        triggers: .table([
-          "enabled": .bool(true),
-          "rule": .array([
-            .table([
-              "name": .string("meetings"),
-              "on": .string("app-audio-active"),
-              "apps": .array([.string("us.zoom.xos"), .string("com.microsoft.teams2")]),
-              "open_session": .bool(true),
-              "sources": .array([.string("mic"), .string("app:us.zoom.xos")]),
-              "on_close": .array([.string("transcribe"), .string("cleanup"), .string("summarize")]),
-              "pre_roll_seconds": .int(15),
-            ])
-          ]),
-        ])),
-      now: now
-    )
-
-    #expect(result.configuration.triggers.enabled == true)
-    #expect(result.configuration.triggers.rules.count == 1)
-    let rule = result.configuration.triggers.rules[0]
-    #expect(rule.name == "meetings")
-    #expect(rule.on == "app-audio-active")
-    #expect(rule.apps == ["us.zoom.xos", "com.microsoft.teams2"])
-    #expect(rule.openSession == true)
-    #expect(rule.sources == ["mic", "app:us.zoom.xos"])
-    #expect(rule.onClose == ["transcribe", "cleanup", "summarize"])
-    #expect(rule.preRollSeconds == 15)
-  }
-
-  @Test("a trigger rule with no 'sources' is skipped with a precise reason")
-  func triggerRuleMissingSourcesIsSkipped() {
-    let result = DaemonConfigResolution.resolve(
-      config: config(
-        triggers: .table([
-          "rule": .array([
-            .table(["name": .string("meetings"), "on": .string("app-audio-active")])
-          ])
-        ])),
-      now: now
-    )
-    #expect(result.configuration.triggers.rules.isEmpty)
-    #expect(result.skippedTriggerRules.map(\.name) == ["meetings"])
-    #expect(result.skippedTriggerRules[0].reason.contains("sources"))
-  }
-
-  @Test("a trigger rule with no 'name' is skipped rather than crashing")
-  func triggerRuleMissingNameIsSkipped() {
-    let result = DaemonConfigResolution.resolve(
-      config: config(
-        triggers: .table([
-          "rule": .array([.table(["on": .string("app-audio-active")])])
-        ])),
-      now: now
-    )
-    #expect(result.configuration.triggers.rules.isEmpty)
-    #expect(result.skippedTriggerRules.count == 1)
-  }
-
-  @Test("a trigger rule's pre_roll_seconds defaults to 0")
-  func triggerRulePreRollDefaultsToZero() {
-    let result = DaemonConfigResolution.resolve(
-      config: config(
-        triggers: .table([
-          "rule": .array([
-            .table([
-              "name": .string("meetings"), "on": .string("app-audio-active"),
-              "sources": .array([.string("mic")]),
-            ])
-          ])
-        ])),
-      now: now
-    )
-    #expect(result.configuration.triggers.rules.first?.preRollSeconds == 0)
-  }
-
   @Test("control_ws resolves only when enabled, mirroring ingest_ws (opt-in, fail-closed)")
   func controlWebSocketResolution() throws {
     let disabled = DaemonConfigResolution.resolve(config: config(), now: now)
@@ -332,16 +242,9 @@ struct DaemonConfigResolutionTests {
     #expect(disabled.configuration.browserMeetingLocalSources == [])
   }
 
-  @Test("transcribe_on_browser_session_close defaults to true and resolves when disabled")
-  func transcribeOnBrowserSessionCloseResolution() {
-    let defaulted = DaemonConfigResolution.resolve(config: config(), now: now)
-    #expect(defaulted.configuration.triggers.transcribeOnBrowserSessionClose == true)
-
-    let disabled = DaemonConfigResolution.resolve(
-      config: config(
-        triggers: .table(["transcribe_on_browser_session_close": .bool(false)])),
-      now: now
-    )
-    #expect(disabled.configuration.triggers.transcribeOnBrowserSessionClose == false)
+  @Test("meeting-end auto-transcribe defaults to enabled in the resolved configuration")
+  func transcribeOnBrowserSessionCloseDefaultsOn() {
+    let result = DaemonConfigResolution.resolve(config: config(), now: now)
+    #expect(result.configuration.transcribeOnBrowserSessionClose == true)
   }
 }

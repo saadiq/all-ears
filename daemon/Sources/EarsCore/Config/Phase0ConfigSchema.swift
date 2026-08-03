@@ -3,12 +3,14 @@
 /// table. Values match the reference config in `docs/configuration.md` exactly.
 ///
 /// Every other top-level table in that reference config — `[earsd]`,
-/// `[transcribe]`, `[llm]`, `[cleanup]`, `[[summarize.preset]]`, `[triggers]`,
+/// `[transcribe]`, `[llm]`, `[cleanup]`, `[[summarize.preset]]`,
 /// `[vocab]`, `[[earsd.source]]` — plus the top-level `schema` version key, is
 /// deliberately out of scope: later phases declare their own ``ConfigSchema``
 /// slice when they implement that subsystem. Until then, ``validateConfig(_:against:)``
 /// passes those keys through the merged tree untouched rather than rejecting
-/// them as unknown.
+/// them as unknown. `[triggers]` is deliberately NOT passed through: the
+/// app-signal trigger path was deleted (#42), so a leftover `[triggers]`
+/// table is rejected as unknown rather than silently ignored.
 public enum Phase0ConfigSchema {
   public static let defaults: ConfigValue = .table([
     "data_root": .string("~/Library/Application Support/ears"),
@@ -68,7 +70,6 @@ public enum Phase0ConfigSchema {
       "llm",
       "cleanup",
       "summarize",
-      "triggers",
       "vocab",
     ]
   )
