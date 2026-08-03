@@ -69,12 +69,13 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --session`. Default `["mic"]`; `[]` disables.
   public var browserSessionLocalSources: [SourceID]
-  /// Whether a browser-triggered session auto-runs the transcribe stage
-  /// (`transcribe --session <id>`) via the shared ``OnClosePipelineRunner``
-  /// when it ends.
-  /// Default `true`; no config key — tests inject `false` so a session end
-  /// never spawns a real transcribe subprocess.
-  public var transcribeOnBrowserSessionEnd: Bool
+  /// `[earsd.sessions].on_end_stages`: the pipeline stages a browser-triggered
+  /// session auto-runs (via the shared ``OnClosePipelineRunner``) when it
+  /// ends, in ``OnEndStage``'s canonical chain order. Default is the full
+  /// `transcribe` → `cleanup` → `summarize` chain; `[]` disables the chain
+  /// entirely — tests inject `[]` so a session end never spawns a real
+  /// subprocess. Resolved and validated by `OnEndStage.resolveList`.
+  public var onEndStages: [OnEndStage]
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; retained on the
   /// configuration so a future session-level `cleanup`/`summarize` chain can
@@ -96,7 +97,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     sessionIngestCloseGraceSeconds: Double = 120,
     browserSessionLocalSources: [SourceID] = ["mic"],
-    transcribeOnBrowserSessionEnd: Bool = true,
+    onEndStages: [OnEndStage] = OnEndStage.allCases,
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
     self.sources = sources
@@ -114,7 +115,7 @@ public struct EarsDaemonConfiguration: Sendable {
     self.controlWebSocket = controlWebSocket
     self.sessionIngestCloseGraceSeconds = sessionIngestCloseGraceSeconds
     self.browserSessionLocalSources = browserSessionLocalSources
-    self.transcribeOnBrowserSessionEnd = transcribeOnBrowserSessionEnd
+    self.onEndStages = onEndStages
   }
 }
 
@@ -418,20 +419,24 @@ public actor EarsDaemon {
   public func start() async throws {
 
     // The daemon-owned session lifecycle registry, serving the `session.*`
-    // verbs on both control transports. Session end fires the session-level
-    // auto-transcribe (`transcribe --session <id>`).
+    // verbs on both control transports. Session end fires the configured
+    // on-end stage chain (`transcribe --session <id>`, then `cleanup` and
+    // `summarize` over its output — see `OnClosePipelineRunner`).
     let onSessionEnded: SessionRegistry.EndedHook?
-    if configuration.transcribeOnBrowserSessionEnd {
+    if !configuration.onEndStages.isEmpty {
       let pipeline = OnClosePipelineRunner(log: log)
+      let stages = configuration.onEndStages
       onSessionEnded = { [weak self] session in
         guard session.trigger == .browserExtension else { return }
         // Spawned in its own task so `session.end` never blocks behind a full
-        // transcription run. On success, stamp the transcript-completion marker
-        // — which starts this session's retention clock.
+        // transcription-and-LLM run. On transcribe success — and only
+        // transcribe: the LLM stages are derived artifacts and never gate
+        // retention — stamp the transcript-completion marker, which starts
+        // this session's retention clock.
         Task { [weak self] in
-          let succeeded = await pipeline.runSessionTranscribe(
-            sessionID: session.id, context: "session-end")
-          if succeeded {
+          let transcribed = await pipeline.runOnEndChain(
+            sessionID: session.id, stages: stages, context: "session-end")
+          if transcribed {
             await self?.markSessionTranscriptCompleted(session.id)
           }
         }

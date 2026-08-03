@@ -40,6 +40,9 @@ public enum EarsdConfigSchema {
       "sessions": .table([
         "ingest_close_grace_s": .int(120),
         "local_sources": .array([.string("mic")]),
+        "on_end_stages": .array([
+          .string("transcribe"), .string("cleanup"), .string("summarize"),
+        ]),
       ]),
       "retention": .table([
         "evict_after_transcript_seconds": .int(7200),
@@ -163,6 +166,11 @@ public enum EarsdConfigSchema {
                   "local_sources": ConfigSchema.Field(
                     type: .array,
                     description: "Local sources folded into every browser session (e.g. your mic)."),
+                  "on_end_stages": ConfigSchema.Field(
+                    type: .array,
+                    description:
+                      "Pipeline stages auto-run when a session ends, from transcribe|cleanup|summarize. "
+                      + "cleanup/summarize require transcribe; [] disables the chain."),
                 ]
               ),
               description: "Session lifecycle knobs."),
@@ -191,7 +199,7 @@ public enum EarsdConfigSchema {
               description: "Audio sources to capture (mic, system, app:*, device:*)."),
           ]
         ),
-        description: "Capture daemon settings: audio format, VAD, sources, and networking."),
+        description: "Capture daemon settings: audio format, VAD, sources, and networking.")
     ],
     passthroughKeys: [
       "schema",

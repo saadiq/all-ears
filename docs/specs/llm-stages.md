@@ -60,4 +60,8 @@ transcribe --session "$SESSION_ID" \
   && summarize "$OUT/…standup.clean.md" --preset brief --preset actions
 ```
 
-The daemon's session-end auto-transcription runs only the first stage; the rest is run by hand or scripted. Any stage can be run alone against an existing file.
+The daemon runs this chain itself when a browser session ends (`[earsd.sessions] on_end_stages`, default all three stages — see [capture-daemon](capture-daemon.md)). Any stage can still be run alone against an existing file.
+
+### Output-path contract (stdout)
+
+The daemon chains stages without re-deriving each stage's output-path logic: a path-producing stage prints its primary output path as the **final non-empty line of stdout** on success. `transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path; `summarize` writes one file per preset and prints no path. Batch stdout carries nothing else, so the contract is also script-friendly: `` cleanup "$(transcribe --session "$SESSION_ID")" ``. A stage that exits 0 without printing a path is treated by the daemon as a failure.

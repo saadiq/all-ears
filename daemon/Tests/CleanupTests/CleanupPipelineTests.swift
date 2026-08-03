@@ -1,6 +1,7 @@
 import EarsCore
 import EarsCoreTestSupport
 import Foundation
+import Synchronization
 import Testing
 
 @testable import cleanup
@@ -49,7 +50,10 @@ struct CleanupPipelineTests {
     return markdownURL
   }
 
-  private static func dependencies(llmResults: [Result<LLMCompletionResult, Error>])
+  private static func dependencies(
+    llmResults: [Result<LLMCompletionResult, Error>],
+    writeStdout: @escaping @Sendable (String) -> Void = { _ in }
+  )
     -> (CleanupPipeline.Dependencies, FakeLLMBackend)
   {
     let backend = FakeLLMBackend(results: llmResults)
@@ -59,7 +63,8 @@ struct CleanupPipelineTests {
       validator: CleanupValidator(),
       skipPolicy: HighConfidenceSkipPolicy(),
       log: { _ in },
-      writeStderr: { _ in }
+      writeStderr: { _ in },
+      writeStdout: writeStdout
     )
     return (deps, backend)
   }
@@ -79,9 +84,12 @@ struct CleanupPipelineTests {
 
     // Punctuation/casing only -- no word changes -- so CleanupValidator's
     // novel-word-ratio check has nothing to flag.
-    let (deps, backend) = Self.dependencies(llmResults: [
-      .success(LLMCompletionResult(text: "Hello there, how are you?"))
-    ])
+    let stdoutLines = Mutex<[String]>([])
+    let (deps, backend) = Self.dependencies(
+      llmResults: [
+        .success(LLMCompletionResult(text: "Hello there, how are you?"))
+      ],
+      writeStdout: { line in stdoutLines.withLock { $0.append(line) } })
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
@@ -99,6 +107,11 @@ struct CleanupPipelineTests {
     // digit/special character), per FrontmatterRenderer's `needsQuoting`.
     #expect(cleanedMarkdown.contains("derived_from: standup.transcript.md"))
     #expect(cleanedMarkdown.contains("Hello there, how are you?"))
+    // The stdout path contract the daemon's on-end chain parses: the final
+    // stdout line of a successful run is the cleaned transcript's path.
+    #expect(
+      stdoutLines.withLock { $0 }.last
+        == directory.appendingPathComponent("standup.clean.md").path)
   }
 
   @Test("falls back to the original text when the LLM candidate fails validation")

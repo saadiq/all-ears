@@ -396,7 +396,8 @@ struct SessionRegistryTests {
     #expect(hooks[0].attendees.first?.source == "browser:meet:jane")
 
     // The final state is persisted as sessions/<id>/session.toml (schema 3).
-    let sessionTOML = dataRoot
+    let sessionTOML =
+      dataRoot
       .appendingPathComponent("sessions")
       .appendingPathComponent(started.id)
       .appendingPathComponent("session.toml")

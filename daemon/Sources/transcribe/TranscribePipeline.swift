@@ -45,6 +45,16 @@ enum TranscribePipeline {
     var diarizerLoadOptions: LoadOptions = LoadOptions()
     var log: @Sendable (String) -> Void
     var writeStderr: @Sendable (String) -> Void
+    /// The machine-readable stdout channel. A successful batch run's **final
+    /// stdout line is the written transcript's path** — the contract the
+    /// daemon's on-end stage chain (`OnClosePipelineRunner`) parses to feed
+    /// `cleanup` without re-deriving `OutputPathResolution`'s logic. Batch
+    /// stdout carries nothing else (`--follow`'s live segment lines are a
+    /// different pipeline). Defaults to real stdout so only tests that
+    /// assert on the contract need to inject.
+    var writeStdout: @Sendable (String) -> Void = { line in
+      FileHandle.standardOutput.write(Data((line + "\n").utf8))
+    }
     /// Structured headline counts for the final `run.summary` (segments,
     /// words, sources consulted, output path), surfaced so the *log* — not
     /// just the human-readable stdout/stderr line — carries them, and an
@@ -542,6 +552,11 @@ enum TranscribePipeline {
       LogField("duration_seconds", .double(requestedRange.duration)),
       LogField("output", .string(paths.markdown.path)),
     ])
+
+    // The stdout path contract (see Dependencies.writeStdout): last line of a
+    // successful run is the transcript path, emitted only after both files
+    // are durably written.
+    dependencies.writeStdout(paths.markdown.path)
 
     return 0
   }

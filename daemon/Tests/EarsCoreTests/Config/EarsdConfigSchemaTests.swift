@@ -47,6 +47,9 @@ struct EarsdConfigSchemaTests {
       "sessions": .table([
         "ingest_close_grace_s": .int(120),
         "local_sources": .array([.string("mic")]),
+        "on_end_stages": .array([
+          .string("transcribe"), .string("cleanup"), .string("summarize"),
+        ]),
       ]),
       "retention": .table([
         "evict_after_transcript_seconds": .int(7200),

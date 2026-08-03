@@ -721,9 +721,9 @@ struct EarsDaemonTests {
       sources: [],
       dataRoot: dataRoot,
       socketPath: tempSocketPath(),
-      // Keep session-end from spawning a real transcribe subprocess when the
+      // Keep session-end from spawning real pipeline subprocesses when the
       // first session is superseded — this test is about capture directories.
-      transcribeOnBrowserSessionEnd: false)
+      onEndStages: [])
 
     let daemon = try EarsDaemon(
       configuration: configuration,
@@ -795,7 +795,7 @@ struct EarsDaemonTests {
       sources: [],
       dataRoot: dataRoot,
       socketPath: socketPath,
-      transcribeOnBrowserSessionEnd: false)
+      onEndStages: [])
 
     let daemon = try EarsDaemon(
       configuration: configuration,

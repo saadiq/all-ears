@@ -2,6 +2,7 @@ import EarsCore
 import EarsCoreTestSupport
 import EarsDataStore
 import Foundation
+import Synchronization
 import Testing
 
 @testable import transcribe
@@ -340,6 +341,7 @@ struct TranscribePipelineTests {
       [Segment(start: 0, end: 2, text: "session hello")]
     ])
 
+    let stdoutLines = Mutex<[String]>([])
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
@@ -350,7 +352,8 @@ struct TranscribePipelineTests {
         transcriberFactory: { scripted },
         loadOptions: LoadOptions(),
         log: { _ in },
-        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") },
+        writeStdout: { line in stdoutLines.withLock { $0.append(line) } }
       )
     )
 
@@ -366,6 +369,9 @@ struct TranscribePipelineTests {
     // A session transcript is keyed by `session:` alone — no `range_run:`
     // line remains in its frontmatter.
     #expect(!markdown.contains("range_run:"))
+    // The stdout path contract the daemon's on-end chain parses: the final
+    // stdout line of a successful run is the written transcript's path.
+    #expect(stdoutLines.withLock { $0 }.last == paths.markdown.path)
   }
 
   @Test(

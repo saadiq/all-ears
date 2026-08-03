@@ -10,7 +10,7 @@ Capture each active session's audio sources under the session's own directory, m
 - Encode incoming audio and append time-stamped chunks (native + 16 kHz ASR feeds) to `<data-root>/sessions/<session-id>/sources/<id>/`.
 - Run a per-source VAD and append `chunk`/`gap` events to the structural index (`chunks.jsonl`) and `vad` spans to the segmented VAD stream (`vad/`) — see [data formats](../data-formats.md#the-index-chunksjsonl--vad).
 - Enforce transcript-driven retention: delete an ended session's audio once its deadline passes (below).
-- Own the session lifecycle ([control protocol v2](control-protocol.md#session)) and spawn the session-end auto-transcription.
+- Own the session lifecycle ([control protocol v2](control-protocol.md#session)) and spawn the session-end pipeline (`on_end_stages`).
 - Serve the control plane: query, source management, session lifecycle, live-feed pub/sub, audio ingestion.
 
 ### Explicit non-responsibilities
@@ -52,10 +52,11 @@ Capture each active session's audio sources under the session's own directory, m
 - An energy-threshold VAD runs per source on the captured stream, emitting coarse speech/silence spans with the configured padding/min-silence. (The `[earsd.vad].backend` key exists for a future model-based VAD; it is currently ignored.)
 - This is an *index for skipping silence*, not a recording gate — all audio is still written.
 
-### Session-end auto-transcription
+### Session-end pipeline
 
 - Recording is session-scoped and sessions are started deliberately (browser extension or CLI); there are no automatic capture triggers.
-- Browser-triggered sessions run the transcribe stage automatically when they end: the daemon spawns `transcribe --session <id>` via the on-close pipeline runner, captures its stderr for the daemon log, and on exit 0 stamps the session's `transcript_completed` marker (which starts the retention clock). Manual sessions are transcribed by hand.
+- Browser-triggered sessions run the `[earsd.sessions] on_end_stages` chain automatically when they end (default `transcribe` → `cleanup` → `summarize`): the daemon spawns `transcribe --session <id>`, feeds the transcript path it prints to `cleanup`, and the cleaned path to `summarize --all-presets`. Each stage's output path travels on its final stdout line (see [llm-stages](llm-stages.md)); each stage's stderr is captured for the daemon log. Manual sessions run the pipeline by hand.
+- The chain stops loudly at the first failing stage. On transcribe exit 0 — and regardless of what the LLM stages do afterwards — the daemon stamps the session's `transcript_completed` marker, which starts the retention clock: the raw transcript is the durable artifact, and derived stages never gate retention.
 
 ### Lifecycle
 

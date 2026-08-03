@@ -37,6 +37,10 @@ enum DaemonConfigResolution {
   struct Result {
     var configuration: EarsDaemonConfiguration
     var skipped: [SkippedSource]
+    /// Non-source config problems resolved leniently (e.g. an invalid
+    /// `on_end_stages` entry) — logged verbatim at boot, same policy as
+    /// ``skipped``.
+    var warnings: [String] = []
   }
 
   static func resolve(config: ConfigValue, now: Instant) -> Result {
@@ -86,6 +90,20 @@ enum DaemonConfigResolution {
 
     let retentionTable = nestedTable(earsd, "retention")
 
+    // `[earsd.sessions].on_end_stages`: absent defaults to the full chain; an
+    // explicit (possibly empty) list is resolved leniently — invalid entries
+    // are dropped with a warning, never a boot failure (same policy as
+    // malformed sources). `[]` disables the on-end chain.
+    let onEndStages: [OnEndStage]
+    var warnings: [String] = []
+    if sessionsTable["on_end_stages"] == nil {
+      onEndStages = OnEndStage.allCases
+    } else {
+      let resolved = OnEndStage.resolveList(stringArray(sessionsTable, "on_end_stages"))
+      onEndStages = resolved.stages
+      warnings = resolved.problems
+    }
+
     let configuration = EarsDaemonConfiguration(
       sources: descriptors,
       dataRoot: URL(fileURLWithPath: dataRoot.isEmpty ? "." : dataRoot),
@@ -105,9 +123,10 @@ enum DaemonConfigResolution {
       sessionIngestCloseGraceSeconds: Double(
         int(sessionsTable, "ingest_close_grace_s", default: 120)),
       browserSessionLocalSources: browserSessionLocalSources,
+      onEndStages: onEndStages,
       outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath)
     )
-    return Result(configuration: configuration, skipped: skipped)
+    return Result(configuration: configuration, skipped: skipped, warnings: warnings)
   }
 
   /// `[earsd.ingest_ws]` → ``IngestWebSocketConfiguration``, or `nil` when

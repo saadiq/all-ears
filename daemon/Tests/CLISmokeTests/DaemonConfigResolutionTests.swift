@@ -242,9 +242,41 @@ struct DaemonConfigResolutionTests {
     #expect(disabled.configuration.browserSessionLocalSources == [])
   }
 
-  @Test("session-end auto-transcribe defaults to enabled in the resolved configuration")
-  func transcribeOnBrowserSessionEndDefaultsOn() {
+  @Test("the on-end stage chain defaults to the full transcribe → cleanup → summarize run")
+  func onEndStagesDefaultFullChain() {
     let result = DaemonConfigResolution.resolve(config: config(), now: now)
-    #expect(result.configuration.transcribeOnBrowserSessionEnd == true)
+    #expect(result.configuration.onEndStages == [.transcribe, .cleanup, .summarize])
+    #expect(result.warnings.isEmpty)
+  }
+
+  @Test("an explicit on_end_stages list is honoured, including [] as a full disable")
+  func onEndStagesExplicit() {
+    let transcribeOnly = DaemonConfigResolution.resolve(
+      config: config(
+        earsdOverrides: [
+          "sessions": .table(["on_end_stages": .array([.string("transcribe")])])
+        ]),
+      now: now)
+    #expect(transcribeOnly.configuration.onEndStages == [.transcribe])
+
+    let disabled = DaemonConfigResolution.resolve(
+      config: config(earsdOverrides: ["sessions": .table(["on_end_stages": .array([])])]),
+      now: now)
+    #expect(disabled.configuration.onEndStages.isEmpty)
+    #expect(disabled.warnings.isEmpty)
+  }
+
+  @Test("an invalid on_end_stages entry is dropped with a warning, never a boot failure")
+  func onEndStagesInvalidEntryWarns() {
+    let result = DaemonConfigResolution.resolve(
+      config: config(
+        earsdOverrides: [
+          "sessions": .table([
+            "on_end_stages": .array([.string("transcribe"), .string("sumarize")])
+          ])
+        ]),
+      now: now)
+    #expect(result.configuration.onEndStages == [.transcribe])
+    #expect(result.warnings.contains { $0.contains("'sumarize'") })
   }
 }

@@ -2,7 +2,7 @@ import EarsCore
 import Foundation
 import Synchronization
 
-/// The exit status and captured stderr of one spawned pipeline stage.
+/// The exit status and captured output of one spawned pipeline stage.
 ///
 /// Carrying stderr — rather than letting the child inherit the daemon's own,
 /// where it vanished — is what makes an on-end transcribe failure diagnosable
@@ -10,27 +10,88 @@ import Synchronization
 /// captured nowhere, so the failing run's actual error message is
 /// unrecoverable"; capturing it "alone would have identified the root cause on
 /// day one".
+///
+/// stdout carries the stage's machine-readable output-path contract: a
+/// successful `transcribe`/`cleanup` run's final stdout line is the path of
+/// the file it wrote, which the stage chain feeds to the next stage.
 public struct SpawnOutcome: Sendable, Equatable {
   public var exitCode: Int32
   /// The child's stderr, verbatim. Callers bound it before logging via
   /// ``OnClosePipelineRunner/boundedStderr(_:)`` so a runaway child can't flood
   /// the daemon log.
   public var stderr: String
+  /// The child's stdout, verbatim (the output-path contract lives in its
+  /// final non-empty line — see ``OnClosePipelineRunner/finalStdoutLine(_:)``).
+  public var stdout: String
 
-  public init(exitCode: Int32, stderr: String = "") {
+  public init(exitCode: Int32, stderr: String = "", stdout: String = "") {
     self.exitCode = exitCode
     self.stderr = stderr
+    self.stdout = stdout
   }
 }
 
-/// Runs the on-end transcribe against an ended session — the stage-spawner
-/// behind the session-end auto-transcription hook (see ``EarsDaemon``).
+/// One stage of the on-end pipeline, in chain order. The raw values are the
+/// config vocabulary (`[earsd.sessions] on_end_stages`) *and* the spawned
+/// binary names.
+public enum OnEndStage: String, Sendable, Hashable, CaseIterable {
+  case transcribe
+  case cleanup
+  case summarize
+
+  /// Resolves the raw `on_end_stages` config list into a valid chain, with a
+  /// human-readable problem per entry dropped. Pure and lenient, matching the
+  /// per-source config policy ("skipped and reported, never takes down the
+  /// daemon"):
+  ///
+  /// - Unknown stage names are dropped with a problem.
+  /// - `cleanup`/`summarize` without `transcribe` are dropped with a problem —
+  ///   the LLM stages consume the transcribe stage's output, so a chain
+  ///   without it has nothing to run on.
+  /// - Duplicates collapse; config order is irrelevant. The result is always
+  ///   in canonical chain order (`allCases`).
+  public static func resolveList(_ raw: [String]) -> (stages: [OnEndStage], problems: [String]) {
+    var problems: [String] = []
+    var requested = Set<OnEndStage>()
+    for name in raw {
+      guard let stage = OnEndStage(rawValue: name) else {
+        problems.append(
+          "unknown on_end_stages entry '\(name)' "
+            + "(valid: \(allCases.map(\.rawValue).joined(separator: ", ")))")
+        continue
+      }
+      requested.insert(stage)
+    }
+    if !requested.contains(.transcribe) && !requested.isEmpty {
+      let dropped = allCases.filter { requested.contains($0) }.map(\.rawValue)
+      problems.append(
+        "on_end_stages \(dropped) require the transcribe stage; dropping the on-end chain")
+      requested = []
+    }
+    return (allCases.filter { requested.contains($0) }, problems)
+  }
+}
+
+/// Runs the on-end stage chain against an ended session — the stage-spawner
+/// behind the session-end hook (see ``EarsDaemon``):
 ///
-/// On any non-zero exit logs the child's captured stderr so the failure is
-/// diagnosable from the daemon log (issue #21).
+///     transcribe --session <id>   → prints the .transcript.md path
+///     cleanup <transcript path>   → prints the .clean.md path
+///     summarize <path> --all-presets
+///
+/// Output paths flow between stages via the stdout contract (each
+/// path-producing stage prints its output path as its final stdout line), so
+/// the daemon never re-derives `transcribe`'s `OutputPathResolution` logic.
+///
+/// The chain stops loudly on the first failure. A `cleanup`/`summarize`
+/// failure never un-succeeds the transcribe: the raw transcript is the
+/// durable artifact, and the caller's retention stamp keys on transcribe
+/// alone. On any non-zero exit the child's captured stderr lands in the
+/// daemon log so the failure is diagnosable from the log alone (issue #21).
 public struct OnClosePipelineRunner: Sendable {
-  /// Runs one pipeline stage (today only `"transcribe"`) with the given
-  /// arguments and returns its exit code plus captured stderr.
+  /// Runs one pipeline stage binary (`"transcribe"`, `"cleanup"`,
+  /// `"summarize"`) with the given arguments and returns its exit code plus
+  /// captured stderr and stdout.
   /// The production runner spawns the real binary via `Foundation.Process`
   /// (PATH-resolved through `/usr/bin/env`, matching
   /// `EarsLLMKit.CommandLLMBackend`); tests inject a scripted fake.
@@ -47,36 +108,96 @@ public struct OnClosePipelineRunner: Sendable {
     self.log = log
   }
 
-  /// Runs a session-level transcribe against an ended session — the v2
-  /// auto-transcription trigger (`transcribe --session <id>` unions the
-  /// session's intervals into one transcript; see
-  /// `docs/specs/control-protocol.md`'s "Transcription output").
-  /// Only the transcribe stage runs at session level today.
+  /// Runs the configured stage chain against an ended session.
   ///
   /// - Returns: `true` iff `transcribe --session` exited 0 — the signal the
   ///   caller uses to stamp the session's transcript-completion marker (which
-  ///   in turn starts the retention clock).
+  ///   in turn starts the retention clock). LLM-stage failures are logged but
+  ///   never affect the return value: derived artifacts must not hold the
+  ///   retention clock hostage.
   @discardableResult
-  public func runSessionTranscribe(sessionID: String, context: String) async -> Bool {
-    let arguments = ["--session", sessionID]
-    // Spawn record: the full argv, keyed by session id, logged *before* the run
-    // so the daemon log shows exactly what was spawned even for a child that
-    // dies instantly (issue #21).
-    log(
-      "\(context) on_end: spawning transcribe \(arguments.joined(separator: " ")) "
-        + "for session '\(sessionID)'")
-    let outcome = await runProcess("transcribe", arguments)
-    guard outcome.exitCode == 0 else {
-      // On a non-zero exit, the exit code and the child's captured stderr both
-      // land in the daemon log, keyed by session id — the missing diagnostic
-      // that left this failure's root cause unrecoverable (issue #21).
-      log(
-        "\(context) on_end: transcribe failed (exit \(outcome.exitCode)) for "
-          + "session '\(sessionID)'; \(Self.stderrNote(outcome.stderr))")
-      return false
+  public func runOnEndChain(
+    sessionID: String, stages: [OnEndStage], context: String
+  ) async -> Bool {
+    // Config validation (`EarsdConfigSchema`) rejects LLM stages without
+    // transcribe; an empty list means the whole chain is off. Defensive here
+    // so a mis-wired caller degrades to a no-op, not a cleanup of nothing.
+    guard stages.contains(.transcribe) else { return false }
+
+    guard
+      let transcriptPath = await runPathStage(
+        .transcribe, arguments: ["--session", sessionID], sessionID: sessionID, context: context)
+    else { return false }
+
+    var nextInput = transcriptPath
+    if stages.contains(.cleanup) {
+      guard
+        let cleanPath = await runPathStage(
+          .cleanup, arguments: [transcriptPath], sessionID: sessionID, context: context)
+      else { return true }  // transcribe already succeeded; chain stops here
+      nextInput = cleanPath
     }
-    log("\(context) on_end: transcribe succeeded for session '\(sessionID)'")
+
+    if stages.contains(.summarize) {
+      // Summarize writes one file per preset, so it has no single output path
+      // to thread — success is just exit 0.
+      _ = await spawn(
+        .summarize, arguments: [nextInput, "--all-presets"], sessionID: sessionID,
+        context: context)
+    }
     return true
+  }
+
+  /// Spawns a path-producing stage and returns its printed output path, or
+  /// `nil` on failure. Exit 0 with no path line is a failure too — a silent
+  /// success the chain can't build on is treated exactly like a crash, loudly.
+  private func runPathStage(
+    _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
+  ) async -> String? {
+    guard
+      let outcome = await spawn(
+        stage, arguments: arguments, sessionID: sessionID, context: context)
+    else { return nil }
+    guard let path = Self.finalStdoutLine(outcome.stdout) else {
+      log(
+        "\(context) on_end: \(stage.rawValue) exited 0 but printed no output path "
+          + "for session '\(sessionID)' — treating as failure (stdout contract)")
+      return nil
+    }
+    return path
+  }
+
+  /// Spawns one stage with the issue-#21 logging contract: the full argv is
+  /// logged *before* the run (so the log shows what was spawned even for a
+  /// child that dies instantly), and a non-zero exit logs the exit code plus
+  /// bounded stderr. Returns `nil` on non-zero exit.
+  private func spawn(
+    _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
+  ) async -> SpawnOutcome? {
+    log(
+      "\(context) on_end: spawning \(stage.rawValue) \(arguments.joined(separator: " ")) "
+        + "for session '\(sessionID)'")
+    let outcome = await runProcess(stage.rawValue, arguments)
+    guard outcome.exitCode == 0 else {
+      log(
+        "\(context) on_end: \(stage.rawValue) failed (exit \(outcome.exitCode)) for "
+          + "session '\(sessionID)'; \(Self.stderrNote(outcome.stderr))")
+      return nil
+    }
+    log("\(context) on_end: \(stage.rawValue) succeeded for session '\(sessionID)'")
+    return outcome
+  }
+
+  /// The stdout output-path contract's parse side: the last non-empty,
+  /// trimmed line of a stage's captured stdout, or `nil` when there is none.
+  /// Exposed (not private) so the contract is unit-testable directly.
+  static func finalStdoutLine(_ stdout: String) -> String? {
+    let line =
+      stdout
+      .split(separator: "\n", omittingEmptySubsequences: true)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .last { !$0.isEmpty }
+    return line
   }
 
   /// The largest slice of a child's stderr the daemon log carries, in bytes:
@@ -104,25 +225,32 @@ public struct OnClosePipelineRunner: Sendable {
   }
 
   /// The production ``ProcessRunner``: spawns `name` (PATH-resolved via
-  /// `/usr/bin/env`) with `arguments`, captures its stderr, waits for exit, and
-  /// returns both.
+  /// `/usr/bin/env`) with `arguments`, captures its stderr and stdout, waits
+  /// for exit, and returns all three.
   ///
-  /// stderr is drained *as the child writes it* (via the read handle's
-  /// readability callback), not read once after exit: a child that writes more
-  /// than one pipe buffer (~64 KB) of stderr would otherwise block on the write
-  /// — never reaching exit — while this waited for an exit that never comes.
+  /// Both pipes are drained *as the child writes them* (via each read
+  /// handle's readability callback), not read once after exit: a child that
+  /// writes more than one pipe buffer (~64 KB) would otherwise block on the
+  /// write — never reaching exit — while this waited for an exit that never
+  /// comes.
   public static let realProcessRunner: ProcessRunner = { name, arguments in
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = [name] + arguments
     let stderrPipe = Pipe()
     process.standardError = stderrPipe
+    let stdoutPipe = Pipe()
+    process.standardOutput = stdoutPipe
 
-    let collector = StderrCollector()
-    // The callback receives the read handle as its parameter, so no
+    let stderrCollector = PipeCollector()
+    let stdoutCollector = PipeCollector()
+    // The callbacks receive the read handle as their parameter, so no
     // non-`Sendable` `FileHandle` is captured across the concurrency boundary.
     stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-      collector.ingest(handle.availableData) { handle.readabilityHandler = nil }
+      stderrCollector.ingest(handle.availableData) { handle.readabilityHandler = nil }
+    }
+    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+      stdoutCollector.ingest(handle.availableData) { handle.readabilityHandler = nil }
     }
 
     let exitCode: Int32 = await withCheckedContinuation { continuation in
@@ -136,16 +264,19 @@ public struct OnClosePipelineRunner: Sendable {
       } catch {
         process.terminationHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        collector.finish()
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrCollector.finish()
+        stdoutCollector.finish()
         continuation.resume(returning: -1)
       }
     }
-    let stderr = await collector.value()
-    return SpawnOutcome(exitCode: exitCode, stderr: stderr)
+    let stderr = await stderrCollector.value()
+    let stdout = await stdoutCollector.value()
+    return SpawnOutcome(exitCode: exitCode, stderr: stderr, stdout: stdout)
   }
 }
 
-/// Accumulates a child process's stderr, delivered piecemeal by a
+/// Accumulates one pipe of a child process's output, delivered piecemeal by a
 /// `FileHandle.readabilityHandler`, and hands the full text to an `async`
 /// awaiter once the stream reaches EOF.
 ///
@@ -154,7 +285,7 @@ public struct OnClosePipelineRunner: Sendable {
 /// before or after ``value()`` is called — lives in one auditable place.
 /// `Sendable` without `@unchecked`: its only stored state is a
 /// `Synchronization.Mutex`, and every field it guards is itself `Sendable`.
-private final class StderrCollector: Sendable {
+private final class PipeCollector: Sendable {
   private struct State {
     var data = Data()
     var finished = false
@@ -190,7 +321,7 @@ private final class StderrCollector: Sendable {
     }
   }
 
-  /// The full captured stderr, awaiting EOF if it has not arrived yet.
+  /// The full captured text, awaiting EOF if it has not arrived yet.
   func value() async -> String {
     await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
       let immediate = state.withLock { s -> String? in

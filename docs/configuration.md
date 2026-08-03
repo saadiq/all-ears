@@ -103,6 +103,13 @@ ingest_close_grace_s = 120
 # is transcribed alongside the extension's per-participant streams. Each id is
 # included only if the daemon is actually capturing it. Set to [] to disable.
 local_sources = ["mic"]
+# Pipeline stages auto-run when a browser session ends, in chain order:
+# transcribe writes the transcript, cleanup corrects it with the [llm] backend,
+# summarize renders every [[summarize.preset]]. cleanup/summarize require
+# transcribe (they consume its output); an invalid entry is dropped with a
+# logged warning. Set to ["transcribe"] to skip the LLM stages, [] to disable
+# the chain entirely.
+on_end_stages = ["transcribe", "cleanup", "summarize"]
 
 # Audio ingestion from the browser extension (binary PCM). Off by default.
 [earsd.ingest_ws]

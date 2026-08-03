@@ -19,12 +19,13 @@ The ASR backend is currently fixed: Parakeet via FluidAudio on the Apple Neural 
 4. Run the ASR backend, producing timed segments with word timings/confidence where available.
 5. Merge sources onto a shared timeline, each segment tagged with its source and speaker label (`mic` → `You`, other sources → the source id). With `[diarize].backend = "sortformer"`, a multi-speaker far-end source (`system`/`app:*`/`device:*`) is additionally refined within-stream into `<source> · Speaker N` by an offline Sortformer pass; the `mic` and per-participant `browser:*` streams are single-speaker and left as-is. Overlapping speech is interleaved at **word** granularity: where one speaker's words begin during another's segment, the longer segment is split at that word boundary so the reply lands at its own timestamp rather than after the whole turn. Single-speaker runs are never split (a single-source transcript is byte-identical to ordering by segment start alone), and segments without word timings fall back to segment-start ordering. Because turns are grouped by the *resolved* speaker label, sources that resolve to the same name — e.g. one participant across a Meet identity upgrade, linked through the session's attendee roster — coalesce under one consistent label.
 6. Write the transcript Markdown (and JSON sidecar) atomically per the [transcript format](../data-formats.md#transcript-format).
+7. Print the written transcript's path as the final stdout line — the [output-path contract](llm-stages.md#output-path-contract-stdout) the daemon's session-end pipeline parses to chain `cleanup` onto the run. Batch stdout carries nothing else.
 
 Multiple sources are transcribed independently, then merged for output — keeping sources separate through the model is what preserves you-vs-them attribution.
 
 ## Session mode (`--session <uuid>`)
 
-`--session <uuid>` transcribes one daemon-owned session: it reads `session.toml`, unions the session's transcription intervals into the read range (paused spans are skipped exactly like silence), and takes the session's own source list and roster (so real participant names flow straight into speaker labels). This is the mode the daemon's session-end auto-transcription invokes.
+`--session <uuid>` transcribes one daemon-owned session: it reads `session.toml`, unions the session's transcription intervals into the read range (paused spans are skipped exactly like silence), and takes the session's own source list and roster (so real participant names flow straight into speaker labels). This is the mode the daemon's session-end pipeline invokes.
 
 **Per-source store lookup order.** A session's audio can live in two places, and `--session` resolves each source independently:
 

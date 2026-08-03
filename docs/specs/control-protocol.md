@@ -154,18 +154,21 @@ Semantics:
   source, which downstream feeds the transcript's speaker labels.
 - **On `session.end`,** the daemon closes the open interval, finalizes the session record
   (`session.toml` holds the intervals and roster that transcription reads directly), and stops
-  capture. For browser-triggered sessions the daemon then spawns the auto-transcription run
-  (`transcribe --session <id>`); when it exits 0 the daemon stamps `transcript_completed`,
-  which starts the retention clock ([capture-daemon](capture-daemon.md#storage-maintenance-and-retention)).
+  capture. For browser-triggered sessions the daemon then runs the on-end pipeline
+  (`transcribe --session <id>`, then `cleanup` and `summarize` over its output — see
+  [capture-daemon](capture-daemon.md#session-end-pipeline)); when the transcribe stage exits 0
+  the daemon stamps `transcript_completed`, which starts the retention clock
+  ([capture-daemon](capture-daemon.md#storage-maintenance-and-retention)).
 
 ### Transcription output
 
 The canonical artifact is **one transcript per session**. `transcribe --session <id>` reads
 `session.toml`, unions the session's intervals (paused spans are skipped exactly like silence),
 and writes a single transcript whose frontmatter carries a `session:` field (the UUID)
-alongside the `range:` fields. The session-level union is what the auto-transcription hook and
+alongside the `range:` fields. The session-level union is what the on-end pipeline and
 users invoke; raw ranges (`--last`/`--from`/`--to`) remain available and carry a synthesized
-`range_run:` identifier instead. `cleanup` and `summarize` are untouched.
+`range_run:` identifier instead. `cleanup` and `summarize` run over the transcript file, fed
+by the on-end pipeline or by hand ([llm-stages](llm-stages.md)).
 
 ### Sources
 

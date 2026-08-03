@@ -38,6 +38,14 @@ enum CleanupPipeline {
     var skipPolicy: HighConfidenceSkipPolicy
     var log: @Sendable (String) -> Void
     var writeStderr: @Sendable (String) -> Void
+    /// The machine-readable stdout channel: a successful run's **final stdout
+    /// line is the cleaned transcript's path** — the same contract
+    /// `transcribe` follows (see `TranscribePipeline.Dependencies`), parsed by
+    /// the daemon's on-end stage chain to feed `summarize`. Defaults to real
+    /// stdout so only tests that assert on the contract need to inject.
+    var writeStdout: @Sendable (String) -> Void = { line in
+      FileHandle.standardOutput.write(Data((line + "\n").utf8))
+    }
 
     static func production(
       llmBackend: any LLMBackend,
@@ -174,6 +182,9 @@ enum CleanupPipeline {
       "run.summary: segments=\(document.segments.count) accepted=\(accepted) "
         + "fallback=\(fellBack) skipped=\(skipped) output=\(outputURL.path)"
     )
+    // The stdout path contract (see Dependencies.writeStdout): emitted only
+    // after both output files are durably written.
+    dependencies.writeStdout(outputURL.path)
     return 0
   }
 
