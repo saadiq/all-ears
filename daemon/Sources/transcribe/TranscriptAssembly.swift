@@ -24,7 +24,7 @@ enum TranscriptAssembly {
   /// Speaker label for a source with no diarization stage (not implemented
   /// yet -- see `docs/specs/model-interface.md`'s `Diarizer`
   /// protocol, out of scope for this pass): a `speakers` name-map entry
-  /// (`docs/data-formats.md`'s `[speakers]` -- e.g. a meeting roster's
+  /// (`docs/data-formats.md`'s `[speakers]` -- e.g. a session roster's
   /// attendee names) wins; otherwise `mic` maps to `You` per the
   /// source-level attribution rule; any other source is labelled with its
   /// own raw source id, a defensible placeholder until per-speaker
@@ -139,15 +139,15 @@ enum TranscriptAssembly {
     return base
   }
 
-  /// Builds the final document. Exactly one of `session` (the synthesized
-  /// raw-range run identifier) and `meeting` (the meeting UUID) is normally
+  /// Builds the final document. Exactly one of `rangeRun` (the synthesized
+  /// raw-range run identifier) and `session` (the session UUID) is normally
   /// non-`nil`; each renders as its own frontmatter line only when present.
   static func assemble(
     sourceIDs: [SourceID],
     transcriptions: [SourceTranscription],
     requested: TimeRange,
+    rangeRun: String? = nil,
     session: String? = nil,
-    meeting: String? = nil,
     speakers: [String: String] = [:],
     diarization: [SourceID: [SpeakerSpan]] = [:],
     diarizationBackend: String? = nil,
@@ -183,8 +183,8 @@ enum TranscriptAssembly {
     let frontmatter = TranscriptFrontmatter(
       schema: 1,
       kind: .transcript,
+      rangeRun: rangeRun,
       session: session,
-      meeting: meeting,
       sources: sourceIDs,
       range: requested,
       model: model,

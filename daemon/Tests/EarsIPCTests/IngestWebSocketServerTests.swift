@@ -99,16 +99,16 @@ private actor RecordingIngestSink {
   private(set) var opened: [(source: String, format: AudioFormatSpec)] = []
   private(set) var pushed: [(streamID: String, samples: [Float], sampleRate: Int)] = []
   private(set) var closed: [String] = []
-  /// The `meeting` membership tag of each open, parallel to `opened`.
-  private(set) var openedMeetings: [MeetingIdentity?] = []
+  /// The `session` membership tag of each open, parallel to `opened`.
+  private(set) var openedSessions: [SessionIdentity?] = []
   var nextStreamID = 0
   var failOpen = false
 
   func open(
-    _ source: SourceID, _ format: AudioFormatSpec, _ meeting: MeetingIdentity?
+    _ source: SourceID, _ format: AudioFormatSpec, _ session: SessionIdentity?
   ) async throws -> String {
     opened.append((source.rawValue, format))
-    openedMeetings.append(meeting)
+    openedSessions.append(session)
     if failOpen { throw TestIngestError.rejected }
     nextStreamID += 1
     return "s\(nextStreamID)"
@@ -138,7 +138,7 @@ struct IngestWebSocketServerTests {
     let server = IngestWebSocketServer(
       listener: listener,
       allowedOrigins: allowedOrigins,
-      onOpen: { source, format, meeting in try await sink.open(source, format, meeting) },
+      onOpen: { source, format, session in try await sink.open(source, format, session) },
       onPush: { streamID, samples, rate, _ in await sink.push(streamID, samples, rate) },
       onClose: { streamID in await sink.close(streamID) })
     return (server, listener)
@@ -162,7 +162,7 @@ struct IngestWebSocketServerTests {
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let openRequest = IngestRequest.open(
       source: "browser:meet:jane-a1b2", format: format,
-      meeting: MeetingIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
+      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
     connection.feed(
       TestWebSocketClient.text(
         String(data: try JSONEncoder().encode(openRequest), encoding: .utf8)!))
@@ -182,7 +182,7 @@ struct IngestWebSocketServerTests {
     #expect(data.streamID == "s1")
     // The membership tag rode through to the open handler.
     #expect(
-      await sink.openedMeetings == [MeetingIdentity(platform: "meet", externalID: "kQ0DRVtDaekB")])
+      await sink.openedSessions == [SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB")])
 
     // pcm_s16le: two little-endian Int16 samples, min and max.
     let pcmBytes: [UInt8] = [0x00, 0x80, 0xFF, 0x7F]  // -32768, 32767
@@ -284,13 +284,13 @@ struct IngestWebSocketServerTests {
 
     // The connection must still be alive and usable afterwards.
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
-    let openRequest = IngestRequest.open(source: "browser:meet:jane", format: format, meeting: nil)
+    let openRequest = IngestRequest.open(source: "browser:meet:jane", format: format, session: nil)
     connection.feed(
       TestWebSocketClient.text(
         String(data: try JSONEncoder().encode(openRequest), encoding: .utf8)!))
     await wait { await sink.opened.count == 1 }
     // An untagged open reaches the handler with no membership tag.
-    #expect(await sink.openedMeetings == [nil])
+    #expect(await sink.openedSessions == [nil])
 
     await server.shutdown()
     _ = await runner.value

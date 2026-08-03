@@ -7,18 +7,18 @@ import Testing
 
 @testable import EarsDaemonKit
 
-/// Real-temp-directory tests for ``MeetingRegistry``, the v2 meeting
-/// lifecycle owner: idempotent `meeting.start`, pause/resume interval
+/// Real-temp-directory tests for ``SessionRegistry``, the v2 session
+/// lifecycle owner: idempotent `session.start`, pause/resume interval
 /// bookkeeping, restart recovery, the orphan grace timer, rename
-/// compare-and-set, and the ended hook fired at `meeting.end` — with
+/// compare-and-set, and the ended hook fired at `session.end` — with
 /// a ``ManualClock`` and an injected sleep so no test touches real time.
-@Suite("MeetingRegistry")
-struct MeetingRegistryTests {
+@Suite("SessionRegistry")
+struct SessionRegistryTests {
   private let base = Instant(secondsSinceEpoch: 1_784_284_200)  // 2026-07-17T10:30:00Z
 
   private func makeDataRoot() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "MeetingRegistryTests-\(UUID().uuidString)")
+      "SessionRegistryTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
   }
@@ -29,19 +29,19 @@ struct MeetingRegistryTests {
     bus: EventBus? = nil,
     graceSeconds: Double = 120,
     sleep: (@Sendable (Double) async -> Void)? = nil,
-    onEnded: MeetingRegistry.EndedHook? = nil,
+    onEnded: SessionRegistry.EndedHook? = nil,
     localBrowserSources: [SourceID] = [],
     knownSourceIDs: @escaping @Sendable () async -> Set<SourceID> = { [] },
     log: (@Sendable (String) -> Void)? = nil
-  ) -> MeetingRegistry {
+  ) -> SessionRegistry {
     let ids = Mutex(0)
-    return MeetingRegistry(
+    return SessionRegistry(
       dataRoot: dataRoot,
       clock: clock,
       makeID: {
         ids.withLock { next in
           next += 1
-          return "meeting-\(next)"
+          return "session-\(next)"
         }
       },
       bus: bus,
@@ -55,28 +55,28 @@ struct MeetingRegistryTests {
 
   // MARK: - start
 
-  @Test("start persists an active meeting with one open interval")
+  @Test("start persists an active session with one open interval")
   func startPersists() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["browser:meet:jane"],
         trigger: .browserExtension))
 
-    #expect(meeting.state == .active)
-    #expect(meeting.intervals == [MeetingInterval(start: base)])
-    #expect(meeting.trigger == .browserExtension)
-    let onDisk = try MeetingStore.read(meetingID: meeting.id, dataRoot: dataRoot)
+    #expect(session.state == .active)
+    #expect(session.intervals == [SessionInterval(start: base)])
+    #expect(session.trigger == .browserExtension)
+    let onDisk = try SessionStore.read(sessionID: session.id, dataRoot: dataRoot)
     #expect(onDisk.state == .active)
     #expect(onDisk.intervals.first?.end == nil)
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: meeting.id)
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
     #expect(timeline.map(\.event) == ["started", "interval_opened"])
   }
 
-  @Test("a browser meeting folds in the configured local sources it can capture")
+  @Test("a browser session folds in the configured local sources it can capture")
   func startInjectsLocalBrowserSources() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
@@ -85,14 +85,14 @@ struct MeetingRegistryTests {
       localBrowserSources: ["mic"],
       knownSourceIDs: { ["mic", "system"] })
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["browser:meet:jane"],
         trigger: .browserExtension))
 
     // Declared sources keep their order; the capturable local source appends.
-    #expect(meeting.sources == ["browser:meet:jane", "mic"])
-    let onDisk = try MeetingStore.read(meetingID: meeting.id, dataRoot: dataRoot)
+    #expect(session.sources == ["browser:meet:jane", "mic"])
+    let onDisk = try SessionStore.read(sessionID: session.id, dataRoot: dataRoot)
     #expect(onDisk.sources == ["browser:meet:jane", "mic"])
   }
 
@@ -105,14 +105,14 @@ struct MeetingRegistryTests {
       localBrowserSources: ["mic"],
       knownSourceIDs: { [] })  // mic isn't being captured
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", trigger: .browserExtension))
 
-    #expect(meeting.sources == [])
+    #expect(session.sources == [])
   }
 
-  @Test("local sources are folded into browser meetings only, not manual ones")
+  @Test("local sources are folded into browser sessions only, not manual ones")
   func startInjectsForBrowserTriggerOnly() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
@@ -122,73 +122,73 @@ struct MeetingRegistryTests {
       knownSourceIDs: { ["mic"] })
 
     let manual = try await registry.start(
-      MeetingStartParams(title: "standup", sources: ["app:zoom"]))
+      SessionStartParams(title: "standup", sources: ["app:zoom"]))
 
-    // A manual/CLI meeting names its own sources; mic is not force-added.
+    // A manual/CLI session names its own sources; mic is not force-added.
     #expect(manual.trigger == .manual)
     #expect(manual.sources == ["app:zoom"])
   }
 
-  @Test("start is idempotent on identity: re-declaring returns the same live meeting")
+  @Test("start is idempotent on identity: re-declaring returns the same live session")
   func startIdempotent() async throws {
     let dataRoot = try makeDataRoot()
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
 
     let first = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc"))
+      SessionStartParams(platform: "meet", externalID: "abc"))
     let second = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", title: "ignored on re-declare"))
+      SessionStartParams(platform: "meet", externalID: "abc", title: "ignored on re-declare"))
     let other = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "different"))
+      SessionStartParams(platform: "meet", externalID: "different"))
 
     #expect(second.id == first.id)
     #expect(second.title == first.title)
     #expect(other.id != first.id)
   }
 
-  @Test("re-declaring after end starts a fresh meeting under the same identity")
+  @Test("re-declaring after end starts a fresh session under the same identity")
   func rejoinAfterEnd() async throws {
     let dataRoot = try makeDataRoot()
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
 
-    let first = try await registry.start(MeetingStartParams(platform: "meet", externalID: "abc"))
+    let first = try await registry.start(SessionStartParams(platform: "meet", externalID: "abc"))
     _ = try await registry.end(id: first.id)
-    let second = try await registry.start(MeetingStartParams(platform: "meet", externalID: "abc"))
+    let second = try await registry.start(SessionStartParams(platform: "meet", externalID: "abc"))
 
     #expect(second.id != first.id)
     #expect(second.state == .active)
   }
 
-  @Test("a manual meeting (no identity) is first-class")
-  func manualMeeting() async throws {
+  @Test("a manual session (no identity) is first-class")
+  func manualSession() async throws {
     let dataRoot = try makeDataRoot()
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
 
-    let meeting = try await registry.start(
-      MeetingStartParams(title: "standup", sources: ["mic"]))
+    let session = try await registry.start(
+      SessionStartParams(title: "standup", sources: ["mic"]))
 
-    #expect(meeting.identity == nil)
-    #expect(meeting.title == "standup")
-    #expect(meeting.trigger == .manual)
-    #expect(!meeting.isBrowserMeeting)
+    #expect(session.identity == nil)
+    #expect(session.title == "standup")
+    #expect(session.trigger == .manual)
+    #expect(!session.isBrowserSession)
   }
 
-  // MARK: - single active meeting invariant (#27)
+  // MARK: - single active session invariant (#27)
 
-  @Test("starting a meeting supersedes any live meeting (reason superseded)")
-  func startSupersedesLiveMeeting() async throws {
+  @Test("starting a session supersedes any live session (reason superseded)")
+  func startSupersedesLiveSession() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
 
-    // A stale meeting left live (the 2026-07-23 chain: one real, one stale).
+    // A stale session left live (the 2026-07-23 chain: one real, one stale).
     let stale = try await registry.start(
-      MeetingStartParams(
+      SessionStartParams(
         platform: "meet", externalID: "stale", sources: ["browser:meet:a"],
         trigger: .browserExtension))
     clock.advance(by: 300)
     let real = try await registry.start(
-      MeetingStartParams(
+      SessionStartParams(
         platform: "meet", externalID: "real", sources: ["browser:meet:b"],
         trigger: .browserExtension))
 
@@ -197,84 +197,84 @@ struct MeetingRegistryTests {
 
     let staleFinal = try await registry.get(id: stale.id)
     #expect(staleFinal.state == .ended)
-    let staleTimeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: stale.id)
+    let staleTimeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: stale.id)
     #expect(staleTimeline.last?.event == "ended")
     #expect(staleTimeline.last?.reason == "superseded")
 
-    // Exactly one live meeting remains — the invariant holds.
+    // Exactly one live session remains — the invariant holds.
     let live = await registry.list().filter { $0.state != .ended }
     #expect(live.map(\.id) == [real.id])
   }
 
-  @Test("a duplicate start for the same identity does not supersede or restart the meeting")
+  @Test("a duplicate start for the same identity does not supersede or restart the session")
   func duplicateStartSameIdentityIsIdempotent() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
 
     let first = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
     clock.advance(by: 5)
     let again = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
 
     #expect(again.id == first.id)
     #expect(again.state == .active)
     // Not restarted: still a single open interval, and never ended.
     #expect(again.intervals.count == 1)
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: first.id)
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: first.id)
     #expect(!timeline.map(\.event).contains("ended"))
   }
 
-  @Test("supersede stops the old meeting's capture before it starts the new meeting's")
+  @Test("supersede stops the old session's capture before it starts the new session's")
   func supersedeReleasesCaptureBeforeStartingNew() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let calls = Mutex<[String]>([])
     let ids = Mutex(0)
-    let registry = MeetingRegistry(
+    let registry = SessionRegistry(
       dataRoot: dataRoot,
       clock: clock,
       makeID: {
         ids.withLock { next in
           next += 1
-          return "meeting-\(next)"
+          return "session-\(next)"
         }
       },
       startCapture: { id, _ in calls.withLock { $0.append("start:\(id)") } },
       stopCapture: { id, _ in calls.withLock { $0.append("stop:\(id)") } })
 
-    let a = try await registry.start(MeetingStartParams(title: "a", sources: ["mic"]))
-    let b = try await registry.start(MeetingStartParams(title: "b", sources: ["mic"]))
+    let a = try await registry.start(SessionStartParams(title: "a", sources: ["mic"]))
+    let b = try await registry.start(SessionStartParams(title: "b", sources: ["mic"]))
 
-    // The superseded meeting releases the shared mic (stop) before the
-    // successor claims it (start) — so the new meeting rebuilds against its own
+    // The superseded session releases the shared mic (stop) before the
+    // successor claims it (start) — so the new session rebuilds against its own
     // directory, never the old one's.
     #expect(calls.withLock { $0 } == ["start:\(a.id)", "stop:\(a.id)", "start:\(b.id)"])
   }
 
-  @Test("boot resumes only the latest-started meeting; older active records are orphaned")
+  @Test("boot resumes only the latest-started session; older active records are orphaned")
   func bootSweepResumesOneOrphansRest() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base.advanced(by: 10_000))
 
-    // Two meetings left `active` on disk by a previous daemon instance.
-    let stale = Meeting(
-      id: "stale", identity: MeetingIdentity(platform: "meet", externalID: "old"),
+    // Two sessions left `active` on disk by a previous daemon instance.
+    let stale = Session(
+      id: "stale", identity: SessionIdentity(platform: "meet", externalID: "old"),
       title: "old", state: .active, started: base,
-      intervals: [MeetingInterval(start: base)], sources: ["browser:meet:a"],
+      intervals: [SessionInterval(start: base)], sources: ["browser:meet:a"],
       trigger: .browserExtension)
-    let recent = Meeting(
-      id: "recent", identity: MeetingIdentity(platform: "meet", externalID: "new"),
+    let recent = Session(
+      id: "recent", identity: SessionIdentity(platform: "meet", externalID: "new"),
       title: "new", state: .active, started: base.advanced(by: 500),
-      intervals: [MeetingInterval(start: base.advanced(by: 500))], sources: ["browser:meet:b"],
+      intervals: [SessionInterval(start: base.advanced(by: 500))], sources: ["browser:meet:b"],
       trigger: .browserExtension)
-    try MeetingStore.write(stale, dataRoot: dataRoot)
-    try MeetingStore.write(recent, dataRoot: dataRoot)
+    try SessionStore.write(stale, dataRoot: dataRoot)
+    try SessionStore.write(recent, dataRoot: dataRoot)
 
     let startCaptures = Mutex<[String]>([])
     let ids = Mutex(0)
-    let registry = MeetingRegistry(
+    let registry = SessionRegistry(
       dataRoot: dataRoot,
       clock: clock,
       makeID: {
@@ -288,7 +288,7 @@ struct MeetingRegistryTests {
 
     #expect(try await registry.get(id: "recent").state == .active)
     #expect(try await registry.get(id: "stale").state == .ended)
-    let staleTimeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: "stale")
+    let staleTimeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: "stale")
     #expect(staleTimeline.last?.reason == "orphaned")
 
     // Only the survivor resumed capture; the orphan ran its on_end pipeline.
@@ -304,20 +304,20 @@ struct MeetingRegistryTests {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
-    let started = try await registry.start(MeetingStartParams(title: "standup"))
+    let started = try await registry.start(SessionStartParams(title: "standup"))
 
     clock.advance(by: 750)
     let paused = try await registry.pause(id: started.id)
     #expect(paused.state == .paused)
-    #expect(paused.intervals == [MeetingInterval(start: base, end: base.advanced(by: 750))])
+    #expect(paused.intervals == [SessionInterval(start: base, end: base.advanced(by: 750))])
 
     clock.advance(by: 455)
     let resumed = try await registry.resume(id: started.id)
     #expect(resumed.state == .active)
     #expect(resumed.intervals.count == 2)
-    #expect(resumed.intervals[1] == MeetingInterval(start: base.advanced(by: 1205)))
+    #expect(resumed.intervals[1] == SessionInterval(start: base.advanced(by: 1205)))
 
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: started.id)
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: started.id)
     #expect(
       timeline.map(\.event)
         == ["started", "interval_opened", "interval_closed", "interval_opened"])
@@ -327,7 +327,7 @@ struct MeetingRegistryTests {
   func pauseResumeIdempotent() async throws {
     let dataRoot = try makeDataRoot()
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
-    let started = try await registry.start(MeetingStartParams(title: "standup"))
+    let started = try await registry.start(SessionStartParams(title: "standup"))
 
     let once = try await registry.resume(id: started.id)  // already active
     #expect(once.intervals.count == 1)
@@ -337,17 +337,17 @@ struct MeetingRegistryTests {
     #expect(twice.intervals.count == 1)
   }
 
-  @Test("lifecycle verbs on an ended meeting fail with the ended error")
-  func endedMeetingRejectsLifecycle() async throws {
+  @Test("lifecycle verbs on an ended session fail with the ended error")
+  func endedSessionRejectsLifecycle() async throws {
     let dataRoot = try makeDataRoot()
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
-    let meeting = try await registry.start(MeetingStartParams(title: "standup"))
-    _ = try await registry.end(id: meeting.id)
+    let session = try await registry.start(SessionStartParams(title: "standup"))
+    _ = try await registry.end(id: session.id)
 
-    await #expect(throws: MeetingRegistryError.ended(meeting.id)) {
-      try await registry.pause(id: meeting.id)
+    await #expect(throws: SessionRegistryError.ended(session.id)) {
+      try await registry.pause(id: session.id)
     }
-    await #expect(throws: MeetingRegistryError.notFound("nope")) {
+    await #expect(throws: SessionRegistryError.notFound("nope")) {
       try await registry.resume(id: "nope")
     }
   }
@@ -355,25 +355,25 @@ struct MeetingRegistryTests {
   // MARK: - end
 
   @Test(
-    "end closes every interval, persists the final state, fires the ended hook with the final meeting, and writes no session.toml"
+    "end closes every interval, persists the final state, and fires the ended hook with the final session"
   )
-  func endFiresHookWithFinalMeeting() async throws {
+  func endFiresHookWithFinalSession() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
-    let endedMeetings = Mutex<[Meeting]>([])
+    let endedSessions = Mutex<[Session]>([])
     let registry = makeRegistry(
       dataRoot: dataRoot, clock: clock,
-      onEnded: { meeting in
-        endedMeetings.withLock { $0.append(meeting) }
+      onEnded: { session in
+        endedSessions.withLock { $0.append(session) }
       })
 
     let started = try await registry.start(
-      MeetingStartParams(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["mic", "browser:meet:jane"],
         trigger: .browserExtension))
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(
-        meeting: started.id, id: "spaces/x/devices/y", displayName: "Jane Doe",
+      SessionAttendeeParams(
+        session: started.id, id: "spaces/x/devices/y", displayName: "Jane Doe",
         source: "browser:meet:jane"))
     clock.advance(by: 600)
     _ = try await registry.pause(id: started.id)
@@ -386,20 +386,23 @@ struct MeetingRegistryTests {
     #expect(ended.ended == base.advanced(by: 1020))
     #expect(ended.intervals.allSatisfy { $0.end != nil })
 
-    // The hook receives only the final meeting — the roster (attendee
-    // `source` → `display_name`) travels on the meeting itself; speaker
+    // The hook receives only the final session — the roster (attendee
+    // `source` → `display_name`) travels on the session itself; speaker
     // names are derived from it at transcribe time.
-    let hooks = endedMeetings.withLock { $0 }
+    let hooks = endedSessions.withLock { $0 }
     #expect(hooks.count == 1)
     #expect(hooks[0].state == .ended)
     #expect(hooks[0].attendees.first?.displayName == "Jane Doe")
     #expect(hooks[0].attendees.first?.source == "browser:meet:jane")
 
-    // No v1 session is materialized: meeting.end writes no sessions/…/session.toml.
-    let sessionsDirectory = dataRoot.appendingPathComponent("sessions")
-    #expect(!FileManager.default.fileExists(atPath: sessionsDirectory.path))
+    // The final state is persisted as sessions/<id>/session.toml (schema 3).
+    let sessionTOML = dataRoot
+      .appendingPathComponent("sessions")
+      .appendingPathComponent(started.id)
+      .appendingPathComponent("session.toml")
+    #expect(FileManager.default.fileExists(atPath: sessionTOML.path))
 
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: started.id)
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: started.id)
     #expect(timeline.last?.event == "ended")
     #expect(timeline.last?.reason == "client")
   }
@@ -411,42 +414,42 @@ struct MeetingRegistryTests {
     let registry = makeRegistry(
       dataRoot: dataRoot, clock: ManualClock(base),
       onEnded: { _ in hookCount.withLock { $0 += 1 } })
-    let meeting = try await registry.start(MeetingStartParams(title: "standup"))
+    let session = try await registry.start(SessionStartParams(title: "standup"))
 
-    _ = try await registry.end(id: meeting.id)
-    let again = try await registry.end(id: meeting.id)
+    _ = try await registry.end(id: session.id)
+    let again = try await registry.end(id: session.id)
 
     #expect(again.state == .ended)
     #expect(hookCount.withLock { $0 } == 1)
   }
 
-  // MARK: - meeting-scoped capture
+  // MARK: - session-scoped capture
 
-  @Test("capture starts on meeting start and stops on meeting end")
-  func meetingScopesCapture() async throws {
+  @Test("capture starts on session start and stops on session end")
+  func sessionScopesCapture() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let startCalls = Mutex<[[SourceID]]>([])
     let stopCalls = Mutex<[[SourceID]]>([])
     let ids = Mutex(0)
-    let registry = MeetingRegistry(
+    let registry = SessionRegistry(
       dataRoot: dataRoot,
       clock: clock,
       makeID: {
         ids.withLock { next in
           next += 1
-          return "meeting-\(next)"
+          return "session-\(next)"
         }
       },
       startCapture: { _, sources in startCalls.withLock { $0.append(sources) } },
       stopCapture: { _, sources in stopCalls.withLock { $0.append(sources) } })
 
-    let meeting = try await registry.start(
-      MeetingStartParams(title: "standup", sources: ["mic"]))
+    let session = try await registry.start(
+      SessionStartParams(title: "standup", sources: ["mic"]))
     #expect(startCalls.withLock { $0 } == [["mic"]])
     #expect(stopCalls.withLock { $0 }.isEmpty)
 
-    _ = try await registry.end(id: meeting.id)
+    _ = try await registry.end(id: session.id)
     #expect(stopCalls.withLock { $0 } == [["mic"]])
   }
 
@@ -455,15 +458,15 @@ struct MeetingRegistryTests {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
-    let meeting = try await registry.start(MeetingStartParams(title: "standup"))
-    _ = try await registry.end(id: meeting.id)
-    #expect(try await registry.get(id: meeting.id).transcriptCompleted == nil)
+    let session = try await registry.start(SessionStartParams(title: "standup"))
+    _ = try await registry.end(id: session.id)
+    #expect(try await registry.get(id: session.id).transcriptCompleted == nil)
 
-    await registry.markTranscriptCompleted(id: meeting.id, at: base.advanced(by: 300))
+    await registry.markTranscriptCompleted(id: session.id, at: base.advanced(by: 300))
 
-    #expect(try await registry.get(id: meeting.id).transcriptCompleted == base.advanced(by: 300))
+    #expect(try await registry.get(id: session.id).transcriptCompleted == base.advanced(by: 300))
     // Durable: read straight back off disk.
-    let reloaded = try MeetingStore.read(meetingID: meeting.id, dataRoot: dataRoot)
+    let reloaded = try SessionStore.read(sessionID: session.id, dataRoot: dataRoot)
     #expect(reloaded.transcriptCompleted == base.advanced(by: 300))
   }
 
@@ -474,30 +477,30 @@ struct MeetingRegistryTests {
     let dataRoot = try makeDataRoot()
     let bus = EventBus()
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base), bus: bus)
-    let meeting = try await registry.start(MeetingStartParams(title: "standup"))
+    let session = try await registry.start(SessionStartParams(title: "standup"))
 
     let renamed = try await registry.rename(
-      id: meeting.id, title: "Weekly sync", ifRev: meeting.rev)
+      id: session.id, title: "Weekly sync", ifRev: session.rev)
     #expect(renamed.title == "Weekly sync")
-    #expect(renamed.rev > meeting.rev)
+    #expect(renamed.rev > session.rev)
 
-    await #expect(throws: MeetingRegistryError.self) {
-      _ = try await registry.rename(id: meeting.id, title: "stale", ifRev: meeting.rev)
+    await #expect(throws: SessionRegistryError.self) {
+      _ = try await registry.rename(id: session.id, title: "stale", ifRev: session.rev)
     }
   }
 
-  @Test("attendee upserts merge fields and join the meeting's source list")
+  @Test("attendee upserts merge fields and join the session's source list")
   func attendeeUpsert() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
-    let meeting = try await registry.start(MeetingStartParams(platform: "meet", externalID: "a"))
+    let session = try await registry.start(SessionStartParams(platform: "meet", externalID: "a"))
 
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "p1", displayName: "Jane Doe"))
+      SessionAttendeeParams(session: session.id, id: "p1", displayName: "Jane Doe"))
     clock.advance(by: 60)
     let linked = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "p1", source: "browser:meet:jane"))
+      SessionAttendeeParams(session: session.id, id: "p1", source: "browser:meet:jane"))
 
     #expect(linked.attendees.count == 1)
     let attendee = linked.attendees[0]
@@ -508,9 +511,9 @@ struct MeetingRegistryTests {
 
     clock.advance(by: 60)
     let left = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "p1", left: clock.now()))
+      SessionAttendeeParams(session: session.id, id: "p1", left: clock.now()))
     #expect(left.attendees[0].left == base.advanced(by: 120))
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: meeting.id)
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
     #expect(timeline.map(\.event).contains("attendee_joined"))
     #expect(timeline.last?.event == "attendee_left")
   }
@@ -522,17 +525,17 @@ struct MeetingRegistryTests {
     let registry = makeRegistry(
       dataRoot: dataRoot, clock: ManualClock(base),
       log: { line in logs.withLock { $0.append(line) } })
-    let meeting = try await registry.start(MeetingStartParams(platform: "meet", externalID: "a"))
+    let session = try await registry.start(SessionStartParams(platform: "meet", externalID: "a"))
 
     // A name-only upsert: "sent" this time.
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(
-        meeting: meeting.id, id: "spaces/s/devices/445", displayName: "Tom Elliot"))
+      SessionAttendeeParams(
+        session: session.id, id: "spaces/s/devices/445", displayName: "Tom Elliot"))
     // A source-only upsert for a different attendee: name "never sent".
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "speaker-1", source: "browser:meet:speaker-1"))
+      SessionAttendeeParams(session: session.id, id: "speaker-1", source: "browser:meet:speaker-1"))
 
-    let upsertLogs = logs.withLock { $0 }.filter { $0.hasPrefix("meeting.attendee upsert:") }
+    let upsertLogs = logs.withLock { $0 }.filter { $0.hasPrefix("session.attendee upsert:") }
     #expect(upsertLogs.count == 2)
     // The name-bearing upsert records the received and stored name.
     #expect(
@@ -551,31 +554,31 @@ struct MeetingRegistryTests {
       })
   }
 
-  @Test("meeting end logs a roster summary naming unresolved attendees (issue #23)")
+  @Test("session end logs a roster summary naming unresolved attendees (issue #23)")
   func endLogsRosterSummary() async throws {
     let dataRoot = try makeDataRoot()
     let logs = Mutex<[String]>([])
     let registry = makeRegistry(
       dataRoot: dataRoot, clock: ManualClock(base),
       log: { line in logs.withLock { $0.append(line) } })
-    let meeting = try await registry.start(MeetingStartParams(platform: "meet", externalID: "a"))
+    let session = try await registry.start(SessionStartParams(platform: "meet", externalID: "a"))
 
     // Fully resolved: name + source.
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(
-        meeting: meeting.id, id: "spaces/s/devices/445", displayName: "Tom Elliot",
+      SessionAttendeeParams(
+        session: session.id, id: "spaces/s/devices/445", displayName: "Tom Elliot",
         source: "browser:meet:spaces-s-devices-445"))
     // Named but never tied to a track (no source).
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "spaces/s/devices/446", displayName: "Tom E"))
+      SessionAttendeeParams(session: session.id, id: "spaces/s/devices/446", displayName: "Tom E"))
     // A captured track that never resolved a name (source but no name).
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "speaker-1", source: "browser:meet:speaker-1"))
+      SessionAttendeeParams(session: session.id, id: "speaker-1", source: "browser:meet:speaker-1"))
 
-    _ = try await registry.end(id: meeting.id)
+    _ = try await registry.end(id: session.id)
 
     let summary = try #require(
-      logs.withLock { $0 }.first { $0.hasPrefix("meeting.end roster summary:") })
+      logs.withLock { $0 }.first { $0.hasPrefix("session.end roster summary:") })
     #expect(summary.contains("attendees=3"))
     #expect(summary.contains("with_name=2"))
     #expect(summary.contains("with_source=2"))
@@ -588,13 +591,13 @@ struct MeetingRegistryTests {
 
   // MARK: - restart recovery
 
-  @Test("an active meeting with an open interval survives a daemon restart")
+  @Test("an active session with an open interval survives a daemon restart")
   func restartRecovery() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let first = makeRegistry(dataRoot: dataRoot, clock: clock)
     let started = try await first.start(
-      MeetingStartParams(platform: "meet", externalID: "abc"))
+      SessionStartParams(platform: "meet", externalID: "abc"))
 
     // A second registry over the same data root — a fresh daemon boot.
     let second = makeRegistry(dataRoot: dataRoot, clock: clock)
@@ -605,13 +608,13 @@ struct MeetingRegistryTests {
     #expect(reloaded.intervals.first?.end == nil)
     // Idempotency index reloads too: re-declaring converges on the same id.
     let redeclared = try await second.start(
-      MeetingStartParams(platform: "meet", externalID: "abc"))
+      SessionStartParams(platform: "meet", externalID: "abc"))
     #expect(redeclared.id == started.id)
   }
 
   // MARK: - orphan grace
 
-  @Test("a browser meeting ends with reason ingest-idle once the grace elapses")
+  @Test("a browser session ends with reason ingest-idle once the grace elapses")
   func orphanGraceExpires() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
@@ -620,24 +623,24 @@ struct MeetingRegistryTests {
       dataRoot: dataRoot, clock: clock, graceSeconds: 120,
       sleep: { seconds in await gate.wait(seconds) })
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["browser:meet:jane"],
         trigger: .browserExtension))
     await registry.ingestStreamOpened(source: "browser:meet:jane")
     await registry.ingestStreamClosed(source: "browser:meet:jane")
 
     await gate.releaseAll()
-    await waitUntil { try await registry.get(id: meeting.id).state == .ended }
+    await waitUntil { try await registry.get(id: session.id).state == .ended }
 
-    let final = try await registry.get(id: meeting.id)
+    let final = try await registry.get(id: session.id)
     #expect(final.state == .ended)
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: meeting.id)
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
     #expect(timeline.last?.event == "ended")
     #expect(timeline.last?.reason == "ingest-idle")
   }
 
-  @Test("a stream re-opened within the grace keeps the meeting active")
+  @Test("a stream re-opened within the grace keeps the session active")
   func orphanGraceCancelled() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
@@ -646,8 +649,8 @@ struct MeetingRegistryTests {
       dataRoot: dataRoot, clock: clock, graceSeconds: 120,
       sleep: { seconds in await gate.wait(seconds) })
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["browser:meet:jane"],
         trigger: .browserExtension))
     await registry.ingestStreamOpened(source: "browser:meet:jane")
@@ -659,10 +662,10 @@ struct MeetingRegistryTests {
     // Give the (now-stale) expiry task a chance to run — it must be a no-op.
     for _ in 0..<50 { await Task.yield() }
 
-    #expect(try await registry.get(id: meeting.id).state == .active)
+    #expect(try await registry.get(id: session.id).state == .active)
   }
 
-  @Test("manual meetings are never auto-ended")
+  @Test("manual sessions are never auto-ended")
   func manualNeverAutoEnds() async throws {
     let dataRoot = try makeDataRoot()
     let gate = SleepGate()
@@ -670,18 +673,18 @@ struct MeetingRegistryTests {
       dataRoot: dataRoot, clock: ManualClock(base), graceSeconds: 0,
       sleep: { seconds in await gate.wait(seconds) })
 
-    let meeting = try await registry.start(MeetingStartParams(title: "standup", sources: ["mic"]))
+    let session = try await registry.start(SessionStartParams(title: "standup", sources: ["mic"]))
     await registry.ingestStreamClosed(source: "mic")
     await gate.releaseAll()
     for _ in 0..<50 { await Task.yield() }
 
-    #expect(try await registry.get(id: meeting.id).state == .active)
+    #expect(try await registry.get(id: session.id).state == .active)
   }
 
-  // MARK: - daemon-side ingest linking (the `meeting` tag on ingest.open)
+  // MARK: - daemon-side ingest linking (the `session` tag on ingest.open)
 
-  @Test("a tagged stream joins the live meeting's sources, so the grace can end it")
-  func taggedStreamLinksIntoLiveMeeting() async throws {
+  @Test("a tagged stream joins the live session's sources, so the grace can end it")
+  func taggedStreamLinksIntoLiveSession() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let gate = SleepGate()
@@ -689,40 +692,40 @@ struct MeetingRegistryTests {
       dataRoot: dataRoot, clock: clock, graceSeconds: 120,
       sleep: { seconds in await gate.wait(seconds) })
 
-    // The incident shape: the meeting declared with no browser sources at all
+    // The incident shape: the session declared with no browser sources at all
     // (the client's attendee source upserts never arrived).
-    let meeting = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
-    #expect(meeting.sources == [])
+    let session = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+    #expect(session.sources == [])
 
-    let identity = MeetingIdentity(platform: "meet", externalID: "abc")
-    await registry.ingestStreamOpened(source: "browser:meet:jane", meeting: identity)
+    let identity = SessionIdentity(platform: "meet", externalID: "abc")
+    await registry.ingestStreamOpened(source: "browser:meet:jane", session: identity)
 
-    let linked = try await registry.get(id: meeting.id)
+    let linked = try await registry.get(id: session.id)
     #expect(linked.sources == ["browser:meet:jane"])
-    let onDisk = try MeetingStore.read(meetingID: meeting.id, dataRoot: dataRoot)
+    let onDisk = try SessionStore.read(sessionID: session.id, dataRoot: dataRoot)
     #expect(onDisk.sources == ["browser:meet:jane"])
 
     // With membership linked daemon-side, the ingest-idle grace now works.
     await registry.ingestStreamClosed(source: "browser:meet:jane")
     await gate.releaseAll()
-    await waitUntil { try await registry.get(id: meeting.id).state == .ended }
-    let timeline = MeetingEventLog.readAll(dataRoot: dataRoot, meetingID: meeting.id)
+    await waitUntil { try await registry.get(id: session.id).state == .ended }
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
     #expect(timeline.last?.reason == "ingest-idle")
   }
 
-  @Test("a tagged stream opened before meeting.start is claimed at start")
+  @Test("a tagged stream opened before session.start is claimed at start")
   func taggedStreamBeforeStartIsClaimed() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
 
-    let identity = MeetingIdentity(platform: "meet", externalID: "abc")
-    await registry.ingestStreamOpened(source: "browser:meet:jane", meeting: identity)
+    let identity = SessionIdentity(platform: "meet", externalID: "abc")
+    await registry.ingestStreamOpened(source: "browser:meet:jane", session: identity)
 
-    let meeting = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
-    #expect(meeting.sources == ["browser:meet:jane"])
+    let session = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+    #expect(session.sources == ["browser:meet:jane"])
   }
 
   @Test("an idempotent re-declare also claims pending tagged streams")
@@ -732,35 +735,35 @@ struct MeetingRegistryTests {
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
 
     let started = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
     // Tagged open under a *different* identity: stashed, not linked here.
     await registry.ingestStreamOpened(
-      source: "browser:meet:other", meeting: MeetingIdentity(platform: "meet", externalID: "xyz"))
+      source: "browser:meet:other", session: SessionIdentity(platform: "meet", externalID: "xyz"))
     #expect(try await registry.get(id: started.id).sources == [])
 
     // A respawned worker re-declares; a stream tagged with this identity that
     // opened while no record existed is claimed by the re-declare.
     await registry.ingestStreamOpened(
-      source: "browser:meet:jane", meeting: MeetingIdentity(platform: "meet", externalID: "abc"))
+      source: "browser:meet:jane", session: SessionIdentity(platform: "meet", externalID: "abc"))
     let redeclared = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
     #expect(redeclared.id == started.id)
     #expect(redeclared.sources == ["browser:meet:jane"])
   }
 
-  @Test("a tagged stream that closes before its meeting.start links nothing")
+  @Test("a tagged stream that closes before its session.start links nothing")
   func pendingLinkDroppedOnClose() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(base)
     let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
 
-    let identity = MeetingIdentity(platform: "meet", externalID: "abc")
-    await registry.ingestStreamOpened(source: "browser:meet:jane", meeting: identity)
+    let identity = SessionIdentity(platform: "meet", externalID: "abc")
+    await registry.ingestStreamOpened(source: "browser:meet:jane", session: identity)
     await registry.ingestStreamClosed(source: "browser:meet:jane")
 
-    let meeting = try await registry.start(
-      MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
-    #expect(meeting.sources == [])
+    let session = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension))
+    #expect(session.sources == [])
   }
 
   // MARK: - browser-audio watchdog
@@ -776,20 +779,20 @@ struct MeetingRegistryTests {
       sleep: { seconds in await gate.wait(seconds) },
       log: { line in logged.withLock { $0.append(line) } })
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["mic"], trigger: .browserExtension))
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "devices/1", displayName: "Host"))
+      SessionAttendeeParams(session: session.id, id: "devices/1", displayName: "Host"))
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "devices/2", displayName: "Guest"))
+      SessionAttendeeParams(session: session.id, id: "devices/2", displayName: "Guest"))
 
     await gate.releaseAll()
     await waitUntil {
-      logged.withLock { $0.contains { $0.contains("meeting.browser_audio_missing") } }
+      logged.withLock { $0.contains { $0.contains("session.browser_audio_missing") } }
     }
 
-    let warnings = logged.withLock { $0.filter { $0.contains("meeting.browser_audio_missing") } }
+    let warnings = logged.withLock { $0.filter { $0.contains("session.browser_audio_missing") } }
     #expect(warnings.count == 1)
     #expect(warnings.first?.contains("named_attendees=2") == true)
   }
@@ -805,17 +808,17 @@ struct MeetingRegistryTests {
 
     // No-op sleep (the helper default): every armed check fires immediately,
     // so absence of the warning after the upserts is a real negative.
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["mic", "browser:meet:speaker-1"],
         trigger: .browserExtension))
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "devices/1", displayName: "Host"))
+      SessionAttendeeParams(session: session.id, id: "devices/1", displayName: "Host"))
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "devices/2", displayName: "Guest"))
+      SessionAttendeeParams(session: session.id, id: "devices/2", displayName: "Guest"))
     for _ in 0..<50 { await Task.yield() }
 
-    #expect(logged.withLock { !$0.contains { $0.contains("meeting.browser_audio_missing") } })
+    #expect(logged.withLock { !$0.contains { $0.contains("session.browser_audio_missing") } })
   }
 
   @Test("stays quiet while the roster has fewer than two named attendees")
@@ -827,14 +830,14 @@ struct MeetingRegistryTests {
       dataRoot: dataRoot, clock: clock,
       log: { line in logged.withLock { $0.append(line) } })
 
-    let meeting = try await registry.start(
-      MeetingStartParams(
+    let session = try await registry.start(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: ["mic"], trigger: .browserExtension))
     _ = try await registry.upsertAttendee(
-      MeetingAttendeeParams(meeting: meeting.id, id: "devices/1", displayName: "Host"))
+      SessionAttendeeParams(session: session.id, id: "devices/1", displayName: "Host"))
     for _ in 0..<50 { await Task.yield() }
 
-    #expect(logged.withLock { !$0.contains { $0.contains("meeting.browser_audio_missing") } })
+    #expect(logged.withLock { !$0.contains { $0.contains("session.browser_audio_missing") } })
   }
 }
 

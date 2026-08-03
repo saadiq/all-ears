@@ -25,7 +25,7 @@ public enum InputDeviceSelection {
   /// Resolve the device to bind, or `nil` to leave the engine on the system
   /// default input.
   ///
-  /// Recording is meeting-scoped and brief, so there is no reason to steer away
+  /// Recording is session-scoped and brief, so there is no reason to steer away
   /// from any particular transport: the daemon simply follows whatever input
   /// the user has selected as the system default (Bluetooth included), unless
   /// they explicitly name a device.

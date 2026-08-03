@@ -1,59 +1,60 @@
-/// The daemon-owned meeting lifecycle entity of control protocol v2
-/// (`docs/specs/control-protocol.md`'s "Meeting"): layered *above*
-/// sessions, owning transcription marks (``intervals``), the attendee roster,
-/// and the title. Persisted as `meetings/<uuid>/meeting.toml` (schema 2, see
-/// `EarsConfig.MeetingDescriptorTOML`) plus an append-only `events.jsonl`
+/// The daemon-owned session lifecycle entity of control protocol v2
+/// (`docs/specs/control-protocol.md`'s "Meeting" — daemon vocabulary says
+/// "session"; the wire keeps the `meeting.*` spelling until #47): owns the
+/// transcription marks (``intervals``), the attendee roster, and the title.
+/// Persisted as `sessions/<uuid>/session.toml` (schema 3, see
+/// `EarsConfig.SessionDescriptorTOML`) plus an append-only `events.jsonl`
 /// timeline; its `Codable` conformance is the v2 *wire* shape (snake_case,
 /// ISO-8601 instants) carried in `meeting.*` results and `meeting` events.
 ///
 /// Intervals are marks over the recording, never capture control: pausing a
-/// meeting closes the open interval, resuming opens a new one, and the
+/// session closes the open interval, resuming opens a new one, and the
 /// capture engines/ingest streams are untouched throughout.
-public struct Meeting: Sendable, Hashable {
-  /// The daemon-assigned meeting UUID — the one internal id used everywhere
+public struct Session: Sendable, Hashable {
+  /// The daemon-assigned session UUID — the one internal id used everywhere
   /// (filenames, CLI output).
   public var id: String
-  /// The platform-specific external identity `meeting.start` is idempotent
-  /// on; `nil` for manual meetings.
-  public var identity: MeetingIdentity?
+  /// The platform-specific external identity `session.start` is idempotent
+  /// on; `nil` for manual sessions.
+  public var identity: SessionIdentity?
   /// Renameable display title; defaults from ``identity`` (or the id) when
   /// the client never named one.
   public var title: String
-  public var state: MeetingState
+  public var state: SessionState
   public var started: Instant
-  /// Set once on `meeting.end`; `nil` while active/paused.
+  /// Set once on `session.end`; `nil` while active/paused.
   public var ended: Instant?
   /// Transcription marks over the recording. A `nil` interval end means
-  /// "currently marked" (the meeting is active).
-  public var intervals: [MeetingInterval]
+  /// "currently marked" (the session is active).
+  public var intervals: [SessionInterval]
   /// The roster, upserted by whoever knows it (the extension's DOM layer
   /// today).
-  public var attendees: [MeetingAttendee]
-  /// Every source involved in this meeting — what transcription reads, and
+  public var attendees: [SessionAttendee]
+  /// Every source involved in this session — what transcription reads, and
   /// (for `browser:*` entries) what the orphan grace timer watches.
   public var sources: [SourceID]
-  /// Provenance: what started this meeting.
+  /// Provenance: what started this session.
   public var trigger: TriggerKind
-  /// When this meeting's transcript last completed **successfully** — the
+  /// When this session's transcript last completed **successfully** — the
   /// durable marker retention keys off (`docs/specs/capture-daemon.md`'s
   /// "Retention"). `nil` until a transcript run succeeds; once set, the
-  /// meeting's audio is evicted `evict_after_transcript_seconds` later. A
-  /// meeting whose transcript never succeeds keeps this `nil` and its audio is
+  /// session's audio is evicted `evict_after_transcript_seconds` later. A
+  /// session whose transcript never succeeds keeps this `nil` and its audio is
   /// instead retained until `max_audio_age_seconds` after it ended.
   public var transcriptCompleted: Instant?
-  /// The last state revision that touched this meeting. Boot-scoped (see
-  /// `hello`'s `boot_id`), so never persisted to `meeting.toml`.
+  /// The last state revision that touched this session. Boot-scoped (see
+  /// `hello`'s `boot_id`), so never persisted to `session.toml`.
   public var rev: Int
 
   public init(
     id: String,
-    identity: MeetingIdentity? = nil,
+    identity: SessionIdentity? = nil,
     title: String,
-    state: MeetingState,
+    state: SessionState,
     started: Instant,
     ended: Instant? = nil,
-    intervals: [MeetingInterval] = [],
-    attendees: [MeetingAttendee] = [],
+    intervals: [SessionInterval] = [],
+    attendees: [SessionAttendee] = [],
     sources: [SourceID] = [],
     trigger: TriggerKind = .manual,
     transcriptCompleted: Instant? = nil,
@@ -73,26 +74,27 @@ public struct Meeting: Sendable, Hashable {
     self.rev = rev
   }
 
-  /// Whether any of this meeting's sources is a `browser:*` source — the
-  /// discriminator for the orphaned-meeting policy (browser meetings
-  /// auto-end after the ingest-close grace; manual meetings never do).
-  public var isBrowserMeeting: Bool {
+  /// Whether any of this session's sources is a `browser:*` source — the
+  /// discriminator for the orphaned-session policy (browser sessions
+  /// auto-end after the ingest-close grace; manual sessions never do).
+  public var isBrowserSession: Bool {
     sources.contains { $0.sourceClass == .browser }
   }
 }
 
-/// A meeting's lifecycle state.
-public enum MeetingState: String, Sendable, Hashable, Codable, CaseIterable {
+/// A session's lifecycle state.
+public enum SessionState: String, Sendable, Hashable, Codable, CaseIterable {
   case active
   case paused
   case ended
 }
 
-/// The platform-specific external identity `meeting.start` is idempotent on.
-public struct MeetingIdentity: Sendable, Hashable, Codable {
+/// The platform-specific external identity `session.start` is idempotent on.
+public struct SessionIdentity: Sendable, Hashable, Codable {
   /// e.g. `meet`.
   public var platform: String
-  /// The platform's own meeting identifier, e.g. Meet's `<space>` segment.
+  /// The platform's own meeting identifier (the platform concept keeps the
+  /// name "meeting"), e.g. Meet's `<space>` segment.
   public var externalID: String
 
   public init(platform: String, externalID: String) {
@@ -108,7 +110,7 @@ public struct MeetingIdentity: Sendable, Hashable, Codable {
 
 /// One transcription mark over the recording; `end == nil` means the span
 /// is currently marked.
-public struct MeetingInterval: Sendable, Hashable {
+public struct SessionInterval: Sendable, Hashable {
   public var start: Instant
   public var end: Instant?
 
@@ -121,7 +123,7 @@ public struct MeetingInterval: Sendable, Hashable {
 /// One roster entry, with join/leave times and an optional mapping to the
 /// attendee's per-participant audio source (which downstream feeds the
 /// transcript's speaker-name map).
-public struct MeetingAttendee: Sendable, Hashable {
+public struct SessionAttendee: Sendable, Hashable {
   /// The platform's participant id, e.g. `spaces/x/devices/y`.
   public var id: String
   public var displayName: String?
@@ -147,7 +149,7 @@ public struct MeetingAttendee: Sendable, Hashable {
 
 // MARK: - Wire coding (v2 JSON: snake_case keys, ISO-8601 instants)
 
-extension Meeting: Codable {
+extension Session: Codable {
   private enum CodingKeys: String, CodingKey {
     case id, identity, title, state, started, ended, intervals, attendees, sources, trigger, rev
     case transcriptCompleted = "transcript_completed"
@@ -156,13 +158,13 @@ extension Meeting: Codable {
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(String.self, forKey: .id)
-    identity = try container.decodeIfPresent(MeetingIdentity.self, forKey: .identity)
+    identity = try container.decodeIfPresent(SessionIdentity.self, forKey: .identity)
     title = try container.decode(String.self, forKey: .title)
-    state = try container.decode(MeetingState.self, forKey: .state)
+    state = try container.decode(SessionState.self, forKey: .state)
     started = try container.decodeISO8601Instant(forKey: .started)
     ended = try container.decodeISO8601InstantIfPresent(forKey: .ended)
-    intervals = try container.decodeIfPresent([MeetingInterval].self, forKey: .intervals) ?? []
-    attendees = try container.decodeIfPresent([MeetingAttendee].self, forKey: .attendees) ?? []
+    intervals = try container.decodeIfPresent([SessionInterval].self, forKey: .intervals) ?? []
+    attendees = try container.decodeIfPresent([SessionAttendee].self, forKey: .attendees) ?? []
     sources = try container.decodeIfPresent([SourceID].self, forKey: .sources) ?? []
     trigger = try container.decode(TriggerKind.self, forKey: .trigger)
     transcriptCompleted = try container.decodeISO8601InstantIfPresent(forKey: .transcriptCompleted)
@@ -186,7 +188,7 @@ extension Meeting: Codable {
   }
 }
 
-extension MeetingInterval: Codable {
+extension SessionInterval: Codable {
   private enum CodingKeys: String, CodingKey {
     case start, end
   }
@@ -209,7 +211,7 @@ extension MeetingInterval: Codable {
   }
 }
 
-extension MeetingAttendee: Codable {
+extension SessionAttendee: Codable {
   private enum CodingKeys: String, CodingKey {
     case id, joined, left, source
     case displayName = "display_name"

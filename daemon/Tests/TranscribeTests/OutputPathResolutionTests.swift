@@ -39,14 +39,14 @@ struct OutputPathResolutionTests {
     #expect(paths.sidecar.path == "/tmp/custom/my-transcript.json")
   }
 
-  @Test("sessionIdentifier combines the start timestamp and source slug")
-  func sessionIdentifierShape() {
-    let identifier = OutputPathResolution.sessionIdentifier(
+  @Test("rangeRunIdentifier combines the start timestamp and source slug")
+  func rangeRunIdentifierShape() {
+    let identifier = OutputPathResolution.rangeRunIdentifier(
       requestedStart: start, sourceIDs: [SourceID("mic")])
     #expect(identifier == "2026-07-17T10-30-00Z_mic")
   }
 
-  @Test("an explicit slug (the meeting id) overrides the joined source ids in the filename")
+  @Test("an explicit slug (the session id) overrides the joined source ids in the filename")
   func slugOverridesSourceSlug() {
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: start,

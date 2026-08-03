@@ -8,11 +8,11 @@ import struct EarsCore.AudioBuffer
 @testable import transcribe
 
 /// End-to-end diarization check against a real, hand-transcribed multi-speaker
-/// meeting: the first 5 minutes of AMI meeting `ES2004a`, using the
+/// session: the first 5 minutes of AMI session `ES2004a`, using the
 /// `Mix-Headset` stream (a monaural sum of every participant's headset mic —
 /// one channel, several speakers, the same shape as the Dipanshu interview).
 ///
-/// The AMI Meeting Corpus is CC BY 4.0. Audio is fetched on demand from the
+/// The AMI Session Corpus is CC BY 4.0. Audio is fetched on demand from the
 /// official Edinburgh mirror and pinned by SHA-256; the reference speaker
 /// segmentation (RTTM) comes from `pyannote/AMI-diarization-setup`. See
 /// ``IntegrationFixture``.
@@ -33,7 +33,7 @@ struct AMIDiarizationLiveTests {
   )!
   static let audioSHA256 = "3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f"
 
-  /// Hand-annotated reference speaker turns (RTTM) for the same meeting, from
+  /// Hand-annotated reference speaker turns (RTTM) for the same session, from
   /// `pyannote/AMI-diarization-setup`. Small and content-, not byte-, dependent,
   /// so it is fetched directly rather than pinned by hash.
   static let rttmURL = URL(
@@ -41,12 +41,12 @@ struct AMIDiarizationLiveTests {
       "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/only_words/rttms/test/ES2004a.rttm"
   )!
 
-  /// The window we transcribe: the meeting runs ~17 min; 5 minutes is enough to
+  /// The window we transcribe: the session runs ~17 min; 5 minutes is enough to
   /// exercise multi-speaker splitting without a multi-minute ANE run.
   static let windowSeconds = 300
 
-  @Test("a real multi-speaker meeting diarizes into several speakers")
-  func diarizesMeetingIntoMultipleSpeakers() async throws {
+  @Test("a real multi-speaker session diarizes into several speakers")
+  func diarizesSessionIntoMultipleSpeakers() async throws {
     let audioURL = try await IntegrationFixture.fetch(
       Self.audioURL, fileName: "ami-ES2004a.Mix-Headset.wav", sha256: Self.audioSHA256)
 
@@ -79,7 +79,7 @@ struct AMIDiarizationLiveTests {
 
   /// A ``FileAudioReader`` that decodes normally, then keeps only the first
   /// `seconds` of samples — so the pipeline transcribes a bounded window of a
-  /// long meeting without a separate clipping step or temp file.
+  /// long session without a separate clipping step or temp file.
   private static func truncatingReader(seconds: Int) -> FileAudioReader {
     FileAudioReader(decode: { url in
       let full = try FileAudioReader.decodeWithAVFoundation(url)

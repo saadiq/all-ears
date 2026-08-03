@@ -6,7 +6,7 @@ import Foundation
 /// extension's route to the v2 control protocol, alongside (not replacing)
 /// the privileged Unix socket. Identical frames on both transports;
 /// **privilege differs by transport**: connections here get only
-/// ``Capability/controlWebSocket`` (`observe` + `meetings`), so even an
+/// ``Capability/controlWebSocket`` (`observe` + `sessions`), so even an
 /// allowed Origin cannot reach source/publish/admin verbs.
 ///
 /// Structured like ``IngestWebSocketServer`` — the same hand-rolled HTTP

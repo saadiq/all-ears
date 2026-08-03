@@ -23,8 +23,8 @@ public struct SpawnOutcome: Sendable, Equatable {
   }
 }
 
-/// Runs the on-end transcribe against an ended meeting — the stage-spawner
-/// behind the meeting-end auto-transcription hook (see ``EarsDaemon``).
+/// Runs the on-end transcribe against an ended session — the stage-spawner
+/// behind the session-end auto-transcription hook (see ``EarsDaemon``).
 ///
 /// On any non-zero exit logs the child's captured stderr so the failure is
 /// diagnosable from the daemon log (issue #21).
@@ -47,35 +47,35 @@ public struct OnClosePipelineRunner: Sendable {
     self.log = log
   }
 
-  /// Runs a meeting-level transcribe against an ended meeting — the v2
-  /// auto-transcription trigger (`transcribe --meeting <id>` unions the
-  /// meeting's intervals into one transcript; see
+  /// Runs a session-level transcribe against an ended session — the v2
+  /// auto-transcription trigger (`transcribe --session <id>` unions the
+  /// session's intervals into one transcript; see
   /// `docs/specs/control-protocol.md`'s "Transcription output").
-  /// Only the transcribe stage runs at meeting level today.
+  /// Only the transcribe stage runs at session level today.
   ///
-  /// - Returns: `true` iff `transcribe --meeting` exited 0 — the signal the
-  ///   caller uses to stamp the meeting's transcript-completion marker (which
+  /// - Returns: `true` iff `transcribe --session` exited 0 — the signal the
+  ///   caller uses to stamp the session's transcript-completion marker (which
   ///   in turn starts the retention clock).
   @discardableResult
-  public func runMeetingTranscribe(meetingID: String, context: String) async -> Bool {
-    let arguments = ["--meeting", meetingID]
-    // Spawn record: the full argv, keyed by meeting id, logged *before* the run
+  public func runSessionTranscribe(sessionID: String, context: String) async -> Bool {
+    let arguments = ["--session", sessionID]
+    // Spawn record: the full argv, keyed by session id, logged *before* the run
     // so the daemon log shows exactly what was spawned even for a child that
     // dies instantly (issue #21).
     log(
       "\(context) on_end: spawning transcribe \(arguments.joined(separator: " ")) "
-        + "for meeting '\(meetingID)'")
+        + "for session '\(sessionID)'")
     let outcome = await runProcess("transcribe", arguments)
     guard outcome.exitCode == 0 else {
       // On a non-zero exit, the exit code and the child's captured stderr both
-      // land in the daemon log, keyed by meeting id — the missing diagnostic
+      // land in the daemon log, keyed by session id — the missing diagnostic
       // that left this failure's root cause unrecoverable (issue #21).
       log(
         "\(context) on_end: transcribe failed (exit \(outcome.exitCode)) for "
-          + "meeting '\(meetingID)'; \(Self.stderrNote(outcome.stderr))")
+          + "session '\(sessionID)'; \(Self.stderrNote(outcome.stderr))")
       return false
     }
-    log("\(context) on_end: transcribe succeeded for meeting '\(meetingID)'")
+    log("\(context) on_end: transcribe succeeded for session '\(sessionID)'")
     return true
   }
 

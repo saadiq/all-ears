@@ -8,8 +8,8 @@ import Foundation
 /// `meta.toml` needs beyond a plain scalar mapping: ``created`` renders with
 /// hyphens instead of colons in its time portion (`2026-07-17T10-30-00Z`),
 /// matching the filename-safe timestamp convention chunk files use, rather
-/// than the standard colon-separated ISO-8601 `meeting.toml`'s timestamps
-/// use (see ``MeetingDescriptorTOML``).
+/// than the standard colon-separated ISO-8601 `session.toml`'s timestamps
+/// use (see ``SessionDescriptorTOML``).
 public enum SourceDescriptorTOML {
   /// Encodes a ``SourceDescriptor`` into the `ConfigValue` table `meta.toml`
   /// serializes to.

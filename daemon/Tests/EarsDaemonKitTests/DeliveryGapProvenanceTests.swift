@@ -77,7 +77,7 @@ struct DeliveryGapProvenanceTests {
 
   @Test("a sender seq restart (pipeline rebuild) is a fresh baseline, not billions of lost frames")
   func senderRestart() {
-    // Meet rebuilt the participant's capture pipeline mid-meeting: seq is
+    // Meet rebuilt the participant's capture pipeline mid-session: seq is
     // per-pipeline-instance, so it starts over at 0 from an arbitrary
     // previous value. The naive wrapping delta would read ~4.29e9 lost.
     let fields = provenance(

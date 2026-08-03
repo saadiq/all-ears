@@ -3,7 +3,7 @@ import EarsDataStore
 import Foundation
 
 /// The daemon's retention enforcer: a single, timer-driven pass that deletes
-/// each **ended meeting's** audio (`meetings/<id>/sources/`) once its
+/// each **ended session's** audio (`sessions/<id>/sources/`) once its
 /// retention deadline passes, per `[earsd.retention]`:
 ///
 /// - transcript completed successfully → deleted at
@@ -13,15 +13,15 @@ import Foundation
 ///
 /// The first deadline always wins arithmetically when both exist
 /// (`completed + evict_after < ended + max_age` for the shipped defaults), so
-/// no explicit whichever-first logic is needed. `meeting.toml` and
-/// `events.jsonl` are never deleted — the meeting's record outlives its
-/// audio. Live (non-ended) meetings are never touched, no matter how old.
+/// no explicit whichever-first logic is needed. `session.toml` and
+/// `events.jsonl` are never deleted — the session's record outlives its
+/// audio. Live (non-ended) sessions are never touched, no matter how old.
 ///
-/// Retention is a per-meeting directory delete because audio is
-/// meeting-scoped: everything a meeting recorded lives under its own
+/// Retention is a per-session directory delete because audio is
+/// session-scoped: everything a session recorded lives under its own
 /// `sources/` tree, so eviction needs no chunk-level bookkeeping, no index
 /// rewrite, and no coordination with a live `CaptureActor` (an ended
-/// meeting's actors are already torn down).
+/// session's actors are already torn down).
 public actor EvictionSweeper {
   private let dataRoot: URL
   private let clock: any NowProviding
@@ -72,26 +72,26 @@ public actor EvictionSweeper {
     runTask = nil
   }
 
-  /// One full sweep over every meeting on disk. Internal so tests can drive a
+  /// One full sweep over every session on disk. Internal so tests can drive a
   /// single deterministic pass without the timer.
   func sweepOnce() async {
     let now = clock.now()
-    for meeting in MeetingStore.readAll(dataRoot: dataRoot) {
-      guard meeting.state == .ended, let ended = meeting.ended else { continue }
+    for session in SessionStore.readAll(dataRoot: dataRoot) {
+      guard session.state == .ended, let ended = session.ended else { continue }
       let deadline =
-        meeting.transcriptCompleted.map { $0.advanced(by: evictAfterTranscriptSeconds) }
+        session.transcriptCompleted.map { $0.advanced(by: evictAfterTranscriptSeconds) }
         ?? ended.advanced(by: maxAudioAgeSeconds)
       guard now >= deadline else { continue }
 
-      let sourcesDirectory = DataStoreLayout.meetingDirectory(
-        dataRoot: dataRoot, meetingID: meeting.id
+      let sourcesDirectory = DataStoreLayout.sessionDirectory(
+        dataRoot: dataRoot, sessionID: session.id
       ).appendingPathComponent("sources")
       guard FileManager.default.fileExists(atPath: sourcesDirectory.path) else { continue }
       do {
         try FileManager.default.removeItem(at: sourcesDirectory)
-        log("retention: evicted meeting \(meeting.id)'s audio (deadline passed)")
+        log("retention: evicted session \(session.id)'s audio (deadline passed)")
       } catch {
-        log("retention: evicting meeting \(meeting.id)'s audio failed: \(error)")
+        log("retention: evicting session \(session.id)'s audio failed: \(error)")
       }
     }
   }

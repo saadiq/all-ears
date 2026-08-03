@@ -89,9 +89,9 @@ public enum CaptureActorError: Error, Sendable, Hashable {
 /// reports capture health from index/disk state alone.
 ///
 /// This actor never deletes audio. Retention is the daemon's
-/// ``EvictionSweeper``'s job, and it operates on whole *meetings*: audio is
-/// meeting-scoped (this actor's `dataRoot` is a meeting's directory), so an
-/// ended meeting's audio is removed as one directory delete, long after this
+/// ``EvictionSweeper``'s job, and it operates on whole *sessions*: audio is
+/// session-scoped (this actor's `dataRoot` is a session's directory), so an
+/// ended session's audio is removed as one directory delete, long after this
 /// actor was torn down.
 public actor CaptureActor {
   /// This actor's source id — `nonisolated` so `ControlServer` can key its
@@ -140,8 +140,8 @@ public actor CaptureActor {
   private var pauseStartInstant: Instant?
   /// Bounds of the chunks this actor has finalized in this run, tracked on
   /// each rollover for ``status()``'s window fields. In-process only: an actor
-  /// is built fresh per meeting, so there are no prior-run chunks to account
-  /// for in the steady state (a restart-resumed meeting under-reports until
+  /// is built fresh per session, so there are no prior-run chunks to account
+  /// for in the steady state (a restart-resumed session under-reports until
   /// its first new rollover — acceptable for a status display).
   private var oldestChunkStart: Instant?
   private var newestChunkEnd: Instant?
@@ -410,7 +410,7 @@ public actor CaptureActor {
         // and the AdaptiveResampler rebuilds its converter on the next
         // normalize(). Previously the transition was written silently into the
         // same chunk, producing an m4a `ExtAudioFileOpenURL` later refused to
-        // open — poisoning a whole meeting's window (all-ears issue #26). The
+        // open — poisoning a whole session's window (all-ears issue #26). The
         // action taken is logged (the old silent behaviour was the bug's hiding
         // place); the very first buffer only establishes the baseline rate and
         // has no prior chunk to finalize.
@@ -522,7 +522,7 @@ public actor CaptureActor {
   /// talks — so without this check every silence is squeezed out of the
   /// timeline and each later chunk is stamped further behind wall clock (a
   /// 30-minute call drifted ~13 minutes; all-ears issue: mis-interleaved
-  /// meeting transcripts). The ingest close/reopen path is covered by the same
+  /// session transcripts). The ingest close/reopen path is covered by the same
   /// check: `start()` resumes the frozen playhead and the first buffer of the
   /// new stream trips the threshold.
   private func reanchorAfterDeliveryGap(before raw: AudioBuffer, stamp: IngestFrameStamp?) async {
@@ -605,7 +605,7 @@ public actor CaptureActor {
 
   /// Frames skipped between two consecutive sender stamps, or `nil` when the
   /// sender restarted. The browser's seq is per-pipeline-instance and begins
-  /// again at 0 when a participant's capture pipeline is rebuilt mid-meeting,
+  /// again at 0 when a participant's capture pipeline is rebuilt mid-session,
   /// so a naive wrapping delta would read a restart as ~2^32 lost frames.
   ///
   /// Wrapping subtraction keeps genuine 2^32 rollover cheap: a seq that

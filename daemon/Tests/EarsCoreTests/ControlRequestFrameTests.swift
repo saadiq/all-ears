@@ -38,7 +38,7 @@ struct ControlRequestFrameTests {
   func requestIDs() throws {
     let intFrame = try roundTrip(.call(id: .int(7), call: .status))
     #expect(intFrame.id == .int(7))
-    let stringFrame = try roundTrip(.call(id: .string("req-77"), call: .meetingList))
+    let stringFrame = try roundTrip(.call(id: .string("req-77"), call: .sessionList))
     #expect(stringFrame.id == .string("req-77"))
   }
 
@@ -46,7 +46,7 @@ struct ControlRequestFrameTests {
     "decodes params-less methods",
     arguments: [
       ("status", ControlCall.status),
-      ("meeting.list", ControlCall.meetingList),
+      ("meeting.list", ControlCall.sessionList),
       ("sources.list", ControlCall.sourcesList),
       ("flush", ControlCall.flush),
     ])
@@ -55,49 +55,49 @@ struct ControlRequestFrameTests {
     #expect(frame == .call(id: .int(1), call: expected))
   }
 
-  @Test("decodes meeting.start with identity, sources, and trigger")
-  func decodesMeetingStart() throws {
+  @Test("decodes session.start with identity, sources, and trigger")
+  func decodesSessionStart() throws {
     let json = """
       {"id":3,"method":"meeting.start","params":{"platform":"meet","external_id":"abc",
        "title":"Weekly sync","sources":["mic"],"trigger":"browser-extension"}}
       """
     let frame = try decode(json)
-    let expected = MeetingStartParams(
+    let expected = SessionStartParams(
       platform: "meet", externalID: "abc", title: "Weekly sync", sources: ["mic"],
       trigger: .browserExtension)
-    #expect(frame == .call(id: .int(3), call: .meetingStart(expected)))
-    #expect(expected.identity == MeetingIdentity(platform: "meet", externalID: "abc"))
+    #expect(frame == .call(id: .int(3), call: .sessionStart(expected)))
+    #expect(expected.identity == SessionIdentity(platform: "meet", externalID: "abc"))
   }
 
-  @Test("meeting.start with no identity params is a manual meeting")
-  func manualMeetingStart() throws {
+  @Test("session.start with no identity params is a manual session")
+  func manualSessionStart() throws {
     let frame = try decode("{\"id\":4,\"method\":\"meeting.start\"}")
-    guard case .call(_, .meetingStart(let params)) = frame else {
-      Issue.record("expected meetingStart")
+    guard case .call(_, .sessionStart(let params)) = frame else {
+      Issue.record("expected sessionStart")
       return
     }
     #expect(params.identity == nil)
     #expect(params.sources.isEmpty)
   }
 
-  @Test("decodes the meeting-ref verbs")
-  func meetingRefVerbs() throws {
+  @Test("decodes the session-ref verbs")
+  func sessionRefVerbs() throws {
     #expect(
       try decode("{\"id\":5,\"method\":\"meeting.pause\",\"params\":{\"meeting\":\"m1\"}}")
-        == .call(id: .int(5), call: .meetingPause(meeting: "m1")))
+        == .call(id: .int(5), call: .sessionPause(session: "m1")))
     #expect(
       try decode("{\"id\":6,\"method\":\"meeting.resume\",\"params\":{\"meeting\":\"m1\"}}")
-        == .call(id: .int(6), call: .meetingResume(meeting: "m1")))
+        == .call(id: .int(6), call: .sessionResume(session: "m1")))
     #expect(
       try decode("{\"id\":7,\"method\":\"meeting.end\",\"params\":{\"meeting\":\"m1\"}}")
-        == .call(id: .int(7), call: .meetingEnd(meeting: "m1")))
+        == .call(id: .int(7), call: .sessionEnd(session: "m1")))
     #expect(
       try decode("{\"id\":8,\"method\":\"meeting.get\",\"params\":{\"meeting\":\"m1\"}}")
-        == .call(id: .int(8), call: .meetingGet(meeting: "m1")))
+        == .call(id: .int(8), call: .sessionGet(session: "m1")))
   }
 
-  @Test("decodes meeting.rename's if_rev compare-and-set")
-  func meetingRename() throws {
+  @Test("decodes session.rename's if_rev compare-and-set")
+  func sessionRename() throws {
     let json = """
       {"id":8,"method":"meeting.rename","params":{"meeting":"m1","title":"New","if_rev":41}}
       """
@@ -105,11 +105,11 @@ struct ControlRequestFrameTests {
       try decode(json)
         == .call(
           id: .int(8),
-          call: .meetingRename(MeetingRenameParams(meeting: "m1", title: "New", ifRev: 41))))
+          call: .sessionRename(SessionRenameParams(session: "m1", title: "New", ifRev: 41))))
   }
 
-  @Test("decodes a meeting.attendee upsert with ISO-8601 join/leave instants")
-  func meetingAttendee() throws {
+  @Test("decodes a session.attendee upsert with ISO-8601 join/leave instants")
+  func sessionAttendee() throws {
     let json = """
       {"id":9,"method":"meeting.attendee","params":{"meeting":"m1","id":"spaces/x/devices/y",
        "display_name":"Jane Doe","joined":"2026-07-17T10:30:00Z","source":"browser:meet:jane"}}
@@ -119,9 +119,9 @@ struct ControlRequestFrameTests {
       frame
         == .call(
           id: .int(9),
-          call: .meetingAttendee(
-            MeetingAttendeeParams(
-              meeting: "m1", id: "spaces/x/devices/y", displayName: "Jane Doe",
+          call: .sessionAttendee(
+            SessionAttendeeParams(
+              session: "m1", id: "spaces/x/devices/y", displayName: "Jane Doe",
               joined: base, source: "browser:meet:jane"))))
   }
 
@@ -146,7 +146,7 @@ struct ControlRequestFrameTests {
         == .call(
           id: .int(12),
           call: .jobPublish(
-            JobPublishParams(job: "j3", kind: "transcribe", meeting: "m1", state: .running))))
+            JobPublishParams(job: "j3", kind: "transcribe", session: "m1", state: .running))))
   }
 
   @Test("an unknown method fails to decode")
@@ -170,12 +170,12 @@ struct ControlRequestFrameTests {
     arguments: [
       ControlCall.status,
       .subscribe(SubscribeParams(events: [.vad], sources: ["mic"])),
-      .meetingStart(
-        MeetingStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension)),
-      .meetingPause(meeting: "m1"),
-      .meetingAttendee(MeetingAttendeeParams(meeting: "m1", id: "a", displayName: "Jane")),
+      .sessionStart(
+        SessionStartParams(platform: "meet", externalID: "abc", trigger: .browserExtension)),
+      .sessionPause(session: "m1"),
+      .sessionAttendee(SessionAttendeeParams(session: "m1", id: "a", displayName: "Jane")),
       .segmentPublish(
-        SegmentPublishParams(meeting: "m1", speaker: "You", start: 1, end: 2, text: "hi")),
+        SegmentPublishParams(session: "m1", speaker: "You", start: 1, end: 2, text: "hi")),
       .jobPublish(JobPublishParams(job: "j1", kind: "transcribe", state: .done)),
       .sourcesRemove(source: "mic"),
       .capturePause(source: nil),

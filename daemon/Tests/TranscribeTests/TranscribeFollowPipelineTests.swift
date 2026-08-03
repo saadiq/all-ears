@@ -35,8 +35,8 @@ struct TranscribeFollowPipelineTests {
   }
 
   /// One growing fixture source, laid out the way live capture writes it:
-  /// an active meeting claiming the source, with `meta.toml` + a real index
-  /// under the *meeting's* source directory, and chunk audio served by a
+  /// an active session claiming the source, with `meta.toml` + a real index
+  /// under the *session's* source directory, and chunk audio served by a
   /// fake reader keyed on filename so decoded frame counts exactly match
   /// the nominal chunk durations.
   private final class Fixture: Sendable {
@@ -45,38 +45,38 @@ struct TranscribeFollowPipelineTests {
     let appender: IndexAppender
     let vadWriter: VADSegmentWriter
     let sourceID: SourceID
-    let meetingID: String
-    /// The meeting's directory — live capture's data root for this source.
-    let meetingRoot: URL
+    let sessionID: String
+    /// The session's directory — live capture's data root for this source.
+    let sessionRoot: URL
     private let chunkFrames = Mutex<[String: Int]>([:])
 
     init(
       label: String, sourceID: SourceID, asrRate: Int, created: Instant,
-      meetingState: MeetingState = .active
+      sessionState: SessionState = .active
     ) throws {
       let base = FileManager.default.temporaryDirectory.appendingPathComponent(
         "FollowPipelineTests-\(label)-\(UUID().uuidString)")
       dataRoot = base.appendingPathComponent("data")
       outputRoot = base.appendingPathComponent("output")
       try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
-      meetingID = UUID().uuidString
-      try MeetingStore.write(
-        Meeting(
-          id: meetingID, title: label, state: meetingState, started: created,
+      sessionID = UUID().uuidString
+      try SessionStore.write(
+        Session(
+          id: sessionID, title: label, state: sessionState, started: created,
           sources: [sourceID]),
         dataRoot: dataRoot)
-      meetingRoot = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID)
+      sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID)
       try SourceMetaStore.write(
         SourceDescriptor(
           schema: 1, id: sourceID, sourceClass: sourceID.sourceClass ?? .mic,
           label: sourceID.rawValue, nativeSampleRate: asrRate, asrSampleRate: asrRate,
           storeNative: false, channels: 1, codec: "aac", bitrate: 64_000,
           created: created),
-        dataRoot: meetingRoot)
+        dataRoot: sessionRoot)
       appender = IndexAppender(
-        fileURL: DataStoreLayout.structuralIndexFile(dataRoot: meetingRoot, sourceID: sourceID))
+        fileURL: DataStoreLayout.structuralIndexFile(dataRoot: sessionRoot, sourceID: sourceID))
       vadWriter = VADSegmentWriter(
-        directory: DataStoreLayout.vadDirectory(dataRoot: meetingRoot, sourceID: sourceID))
+        directory: DataStoreLayout.vadDirectory(dataRoot: sessionRoot, sourceID: sourceID))
       self.sourceID = sourceID
     }
 
@@ -90,7 +90,7 @@ struct TranscribeFollowPipelineTests {
     /// replacement for grepping the old single index file.
     func vadContains(_ needle: String) -> Bool {
       VADSegmentStore.segmentURLs(
-        directory: DataStoreLayout.vadDirectory(dataRoot: meetingRoot, sourceID: sourceID)
+        directory: DataStoreLayout.vadDirectory(dataRoot: sessionRoot, sourceID: sourceID)
       ).contains { segment in
         (try? String(contentsOf: segment.url, encoding: .utf8))?.contains(needle) == true
       }
@@ -234,7 +234,7 @@ struct TranscribeFollowPipelineTests {
     #expect(steps[0].frameCount == Int(1.5 * Double(asrRate)) + Int(0.25 * Double(asrRate)))
     #expect(steps[1].frameCount == Int(2.0 * Double(asrRate)) + Int(0.25 * Double(asrRate)))
 
-    // Live feed: one segment event per commit, keyed by the meeting whose
+    // Live feed: one segment event per commit, keyed by the session whose
     // capture the run attached to, same speaker.
     let events = harness.published.withLock { $0 }
     #expect(events.count == 2)
@@ -243,7 +243,7 @@ struct TranscribeFollowPipelineTests {
       Issue.record("expected a segment event, got \(String(describing: events.first))")
       return
     }
-    #expect(segment.meeting == fixture.meetingID)
+    #expect(segment.session == fixture.sessionID)
     #expect(segment.speaker == "You")
     #expect(segment.start == 0)
     #expect(abs(segment.end - 1.5) < 0.001)
@@ -256,7 +256,7 @@ struct TranscribeFollowPipelineTests {
     let markdown = try String(contentsOf: paths.markdown, encoding: .utf8)
     #expect(markdown.hasPrefix("---\n"))
     #expect(markdown.contains("kind: transcript"))
-    #expect(markdown.contains("meeting: \(fixture.meetingID)"))
+    #expect(markdown.contains("session: \(fixture.sessionID)"))
     #expect(markdown.contains("sources: [mic]"))
     #expect(markdown.contains("hello world"))
     #expect(markdown.contains("second segment"))
@@ -427,7 +427,7 @@ struct TranscribeFollowPipelineTests {
     #expect(segment.text == "structured output")
   }
 
-  @Test("a source no live meeting is capturing is a precise, non-zero error")
+  @Test("a source no live session is capturing is a precise, non-zero error")
   func unknownSourceFailsFast() async throws {
     let fixture = try Fixture(label: "unknown", sourceID: sourceID, asrRate: asrRate, created: now)
     let harness = Harness()
@@ -445,14 +445,14 @@ struct TranscribeFollowPipelineTests {
       harness.stderrLines.withLock { $0 }.contains { $0.contains("app:no.such.app") })
   }
 
-  @Test("legacy global-ring data without a live meeting is an error, never a silent dead tail")
+  @Test("legacy global-ring data without a live session is an error, never a silent dead tail")
   func legacyGlobalRingDataDoesNotSatisfyFollow() async throws {
-    // The bug this guards against: `sources/<id>/` exists from a pre-meetings
-    // daemon, no meeting is live, and follow attaches to the dead index and
+    // The bug this guards against: `sources/<id>/` exists from a pre-sessions
+    // daemon, no session is live, and follow attaches to the dead index and
     // produces nothing forever. It must refuse instead.
     let fixture = try Fixture(
       label: "legacy-ring", sourceID: sourceID, asrRate: asrRate, created: now,
-      meetingState: .ended)
+      sessionState: .ended)
     try SourceMetaStore.write(
       SourceDescriptor(
         schema: 1, id: sourceID, sourceClass: .mic, label: sourceID.rawValue,
@@ -473,11 +473,11 @@ struct TranscribeFollowPipelineTests {
     #expect(harness.stderrLines.withLock { $0 }.contains { $0.contains("is not live") })
   }
 
-  @Test("a live meeting claiming the source without data on disk is an error")
+  @Test("a live session claiming the source without data on disk is an error")
   func claimedSourceWithoutDataFailsFast() async throws {
     let fixture = try Fixture(label: "no-data", sourceID: sourceID, asrRate: asrRate, created: now)
     try FileManager.default.removeItem(
-      at: DataStoreLayout.sourceDirectory(dataRoot: fixture.meetingRoot, sourceID: sourceID))
+      at: DataStoreLayout.sourceDirectory(dataRoot: fixture.sessionRoot, sourceID: sourceID))
     let harness = Harness()
     let dependencies = harness.dependencies(
       clock: ManualClock(now), transcriber: NullTranscriber(),
@@ -492,14 +492,14 @@ struct TranscribeFollowPipelineTests {
     #expect(harness.stderrLines.withLock { $0 }.contains { $0.contains("no data found") })
   }
 
-  @Test("with several live meetings claiming the source, follow attaches to the newest")
-  func multipleLiveMeetingsPickNewest() async throws {
+  @Test("with several live sessions claiming the source, follow attaches to the newest")
+  func multipleLiveSessionsPickNewest() async throws {
     let fixture = try Fixture(label: "newest", sourceID: sourceID, asrRate: asrRate, created: now)
-    // An older still-active meeting also claims the source; the fixture's
-    // meeting started later and must win.
+    // An older still-active session also claims the source; the fixture's
+    // session started later and must win.
     let olderID = UUID().uuidString
-    try MeetingStore.write(
-      Meeting(
+    try SessionStore.write(
+      Session(
         id: olderID, title: "older", state: .active, started: now.advanced(by: -600),
         sources: [sourceID]),
       dataRoot: fixture.dataRoot)
@@ -508,7 +508,7 @@ struct TranscribeFollowPipelineTests {
         schema: 1, id: sourceID, sourceClass: .mic, label: sourceID.rawValue,
         nativeSampleRate: asrRate, asrSampleRate: asrRate, storeNative: false,
         channels: 1, codec: "aac", bitrate: 64_000, created: now),
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: fixture.dataRoot, meetingID: olderID))
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: fixture.dataRoot, sessionID: olderID))
     let harness = Harness()
     let scripted = ScriptedStreamingTranscriber(stepTexts: [])
     let dependencies = harness.dependencies(
@@ -520,9 +520,9 @@ struct TranscribeFollowPipelineTests {
     #expect(await run.value == 0)
 
     let attachLine = harness.logs.withLock { logs in
-      logs.first { $0.hasPrefix("attaching to meeting") }
+      logs.first { $0.hasPrefix("attaching to session") }
     }
-    #expect(attachLine?.contains(fixture.meetingID) == true)
+    #expect(attachLine?.contains(fixture.sessionID) == true)
     #expect(attachLine?.contains(olderID) != true)
   }
 

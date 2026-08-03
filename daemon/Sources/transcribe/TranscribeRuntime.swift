@@ -71,7 +71,7 @@ enum TranscribeRuntime {
       stringValue(root, ["diarize", "compute"], default: "automatic"))
 
     // Same precedence and default as `ears`/`earsd` — for the best-effort
-    // `job.publish` progress feed a `--meeting` run reports through.
+    // `job.publish` progress feed a `--session` run reports through.
     let socketPath =
       configuredSocketPath.isEmpty
       ? DefaultSocketPath.resolve(dataRoot: dataRootPath) : configuredSocketPath

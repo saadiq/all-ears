@@ -89,16 +89,16 @@ extension CaptureActor: SuspendablePauseResume {}
 public actor PowerObserver {
   private var state = SuspensionState()
   /// The set of capture actors to pause/resume, read *live* on each suspension
-  /// transition. Capture is meeting-scoped, so which actors exist changes over
+  /// transition. Capture is session-scoped, so which actors exist changes over
   /// the daemon's lifetime; snapshotting once (as the always-on daemon did)
-  /// would miss every meeting-started source.
+  /// would miss every session-started source.
   private let activeCaptureActors: @Sendable () async -> [any SuspendablePauseResume]
   private var workspaceTokens: [NSObjectProtocol] = []
   private var distributedTokens: [NSObjectProtocol] = []
 
   /// - Parameter activeCaptureActors: A live lookup of every currently-live
   ///   capture actor, queried on each sleep/wake transition so exactly what a
-  ///   meeting is recording right now is paused/resumed.
+  ///   session is recording right now is paused/resumed.
   public init(
     activeCaptureActors: @escaping @Sendable () async -> [any SuspendablePauseResume]
   ) {

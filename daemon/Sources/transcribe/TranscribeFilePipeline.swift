@@ -3,7 +3,7 @@ import EarsDataStore
 import Foundation
 
 /// `transcribe --file`'s pipeline: transcribe one or more standalone audio
-/// files (a `.m4a` voice memo, an exported meeting recording, ...) that never
+/// files (a `.m4a` voice memo, an exported session recording, ...) that never
 /// went through the capture daemon's store.
 ///
 /// The file-input sibling of ``TranscribePipeline``. It shares every leaf that
@@ -11,13 +11,13 @@ import Foundation
 /// (clock + ``Transcriber`` factory + `loadOptions`), ``TranscriptAssembly``,
 /// ``TranscriptRenderer``, and ``AtomicFileIO`` -- and swaps only the audio
 /// source: ``FileAudioReader`` in place of ``SegmentedAudioReader``. It reads
-/// no config `data_root`/`output_root` and resolves no time range or session,
+/// no config `data_root`/`output_root` and resolves no time range or range-run,
 /// so it stays a clean peer of the range-resolving pipeline rather than a
 /// branch tangled through it.
 ///
 /// Each `--file` is transcribed *independently* into its own transcript
 /// (two files two minutes apart are two recordings, not two mics of one
-/// meeting), written next to the input as `<name>.transcript.md` plus the
+/// session), written next to the input as `<name>.transcript.md` plus the
 /// `.transcript.json` sidecar -- or to `--out` when exactly one file is given.
 /// Because `output_root` is never consulted, a `--file` run's `run.start`
 /// record omits that field (see ``Transcribe``) and the structured
@@ -183,7 +183,7 @@ enum TranscribeFilePipeline {
       sourceIDs: [sourceID],
       transcriptions: [SourceTranscription(sourceID: sourceID, segments: segments)],
       requested: requested,
-      session: sourceID.rawValue,
+      rangeRun: sourceID.rawValue,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,
       model: modelInfo,

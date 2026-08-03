@@ -28,7 +28,7 @@ import Foundation
 enum EarsdRuntime {
   /// How often `earsd` samples its own CPU/memory. One record a minute is a
   /// negligible log volume next to the per-chunk stream, and fine enough to
-  /// localize a regression to the meeting that caused it.
+  /// localize a regression to the session that caused it.
   static let procResourceIntervalSeconds: Double = 60
 
   static func run(arguments: EarsCLI.Arguments) async -> Int32 {
@@ -140,7 +140,7 @@ enum EarsdRuntime {
 
     // Registered immediately after construction, *before* `daemon.start()`
     // -- not after it succeeds. The daemon boots idle (capture is
-    // meeting-scoped), but `start()` can still resume recording: a meeting
+    // session-scoped), but `start()` can still resume recording: a session
     // left active on disk reloads and restarts its sources' capture during
     // `start()`'s `loadFromDisk()`. So a `SIGTERM` landing anywhere during
     // `start()` -- including the window after the socket is visible on disk

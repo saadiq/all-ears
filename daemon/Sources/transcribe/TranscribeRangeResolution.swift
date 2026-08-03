@@ -2,8 +2,8 @@ import EarsCore
 
 /// Resolves `transcribe`'s raw range flags (`--last`, `--from`/`--to`, per
 /// `docs/specs/transcribe.md`'s CLI) into a wall-clock ``TimeRange``. The
-/// entity path is `--meeting`, which names its own intervals and never
-/// reaches this resolver (``TranscribePipeline`` reads the meeting record
+/// entity path is `--session`, which names its own intervals and never
+/// reaches this resolver (``TranscribePipeline`` reads the session record
 /// directly).
 ///
 /// Pure and clock-injected -- no wall-clock read here -- per
@@ -28,9 +28,9 @@ enum TranscribeRangeResolution {
     var description: String {
       switch self {
       case .noRangeSpecified:
-        return "no range specified: pass --last <duration>, --from/--to, or --meeting <id>"
+        return "no range specified: pass --last <duration>, --from/--to, or --session <id>"
       case .multipleRangeSourcesSpecified:
-        return "specify only one of --last, --from/--to, or --meeting"
+        return "specify only one of --last, --from/--to, or --session"
       case .incompleteFromTo:
         return "--from and --to must both be given together"
       case .invalidTimestamp(let field, let value):

@@ -12,12 +12,12 @@ public enum ControlProtocolV2 {
 /// What a connection may do, assigned by transport at connect time and
 /// advertised in `hello`'s result (`docs/specs/control-protocol.md`'s
 /// "Transports & privilege"): the Unix socket gets all five; the loopback
-/// control WebSocket gets `observe` + `meetings` only.
+/// control WebSocket gets `observe` + `sessions` only.
 public enum Capability: String, Sendable, Hashable, Codable, CaseIterable {
   /// `status` + `subscribe` (snapshot + live feed).
   case observe
-  /// The `meeting.*` lifecycle verbs.
-  case meetings
+  /// The session lifecycle verbs (still `meeting.*` on the wire until #47).
+  case sessions = "meetings"
   /// The notification-only publishes (`segment.publish`, `job.publish`).
   case publish
   /// `sources.list` / `sources.enable` / `sources.disable`.
@@ -29,8 +29,8 @@ public enum Capability: String, Sendable, Hashable, Codable, CaseIterable {
   /// The full set — the Unix socket's privilege tier.
   public static let all: Set<Capability> = Set(allCases)
   /// The loopback control WebSocket's tier: the extension only ever needed
-  /// meeting verbs plus observation.
-  public static let controlWebSocket: Set<Capability> = [.observe, .meetings]
+  /// session verbs plus observation.
+  public static let controlWebSocket: Set<Capability> = [.observe, .sessions]
 }
 
 /// The stable machine-readable identifiers carried in `error.code` — clients
@@ -41,16 +41,18 @@ public enum ControlErrorCode: String, Sendable, Hashable, Codable, CaseIterable 
   case invalidRequest = "invalid_request"
   case unknownMethod = "unknown_method"
   case notPermitted = "not_permitted"
-  case meetingNotFound = "meeting_not_found"
-  case meetingEnded = "meeting_ended"
+  // The error-code raw strings are wire strings; they keep the "meeting"
+  // spelling until the wire rename (#47).
+  case sessionNotFound = "meeting_not_found"
+  case sessionEnded = "meeting_ended"
   case sourceNotFound = "source_not_found"
-  /// A failed `if_rev` compare-and-set (`meeting.rename`).
+  /// A failed `if_rev` compare-and-set (`session.rename`).
   case conflict
   case internalError = "internal"
 }
 
 /// The `error` object of a failed v2 response:
-/// `{"code":"meeting_not_found","message":"no active meeting 0d5e…"}`.
+/// `{"code":"meeting_not_found","message":"no active session 0d5e…"}`.
 public struct WireError: Error, Sendable, Hashable, Codable {
   public var code: ControlErrorCode
   /// Human prose, never load-bearing.

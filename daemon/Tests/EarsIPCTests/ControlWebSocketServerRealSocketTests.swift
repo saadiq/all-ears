@@ -73,7 +73,7 @@ struct ControlWebSocketServerRealSocketTests {
       func record(_ call: ControlCall) -> ControlReply {
         calls.append(call)
         return ControlReply(
-          result: Meeting(
+          result: Session(
             id: "uuid-1", title: "meet x", state: .active,
             started: Instant(secondsSinceEpoch: 1), rev: 1))
       }
@@ -111,11 +111,11 @@ struct ControlWebSocketServerRealSocketTests {
       return
     }
     let reply = try JSONDecoder().decode(
-      ControlResponseFrame<Meeting>.self, from: Data(frame.payload))
+      ControlResponseFrame<Session>.self, from: Data(frame.payload))
     #expect(try reply.get().id == "uuid-1")
     #expect(
       await recorder.calls == [
-        .meetingStart(MeetingStartParams(platform: "meet", externalID: "x"))
+        .sessionStart(SessionStartParams(platform: "meet", externalID: "x"))
       ])
 
     client.close()

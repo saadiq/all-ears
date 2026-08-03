@@ -7,7 +7,7 @@ import Testing
 
 /// Coverage for all-ears issue #21: the daemon's on-close/on-end pipeline must
 /// capture the spawned child's stderr and surface it — with the exit code and
-/// the full argv, keyed by meeting id — in the daemon log on any non-zero
+/// the full argv, keyed by session id — in the daemon log on any non-zero
 /// exit, so a failing run is diagnosable from the log alone instead of leaving
 /// its "actual error message unrecoverable".
 @Suite("OnClosePipelineRunner")
@@ -49,31 +49,31 @@ struct OnClosePipelineRunnerTests {
     var calls: [(name: String, arguments: [String])] { recorded.withLock { $0 } }
   }
 
-  // MARK: - meeting on_end
+  // MARK: - session on_end
 
-  @Test("a successful meeting transcribe logs the spawn argv and a success line, returns true")
-  func meetingTranscribeSuccess() async throws {
+  @Test("a successful session transcribe logs the spawn argv and a success line, returns true")
+  func sessionTranscribeSuccess() async throws {
     let logs = LogCollector()
     let runner = ScriptedRunner([SpawnOutcome(exitCode: 0)])
     let pipeline = OnClosePipelineRunner(
       runProcess: runner.runner, log: { logs.append($0) })
 
-    let succeeded = await pipeline.runMeetingTranscribe(
-      meetingID: "b7acc61f", context: "meeting-end")
+    let succeeded = await pipeline.runSessionTranscribe(
+      sessionID: "b7acc61f", context: "session-end")
 
     #expect(succeeded)
     #expect(runner.calls.map(\.name) == ["transcribe"])
-    #expect(runner.calls.first?.arguments == ["--meeting", "b7acc61f"])
-    // The spawn record names the full argv, keyed by the meeting id.
+    #expect(runner.calls.first?.arguments == ["--session", "b7acc61f"])
+    // The spawn record names the full argv, keyed by the session id.
     #expect(
       logs.snapshot().contains {
-        $0.contains("spawning transcribe --meeting b7acc61f") && $0.contains("meeting 'b7acc61f'")
+        $0.contains("spawning transcribe --session b7acc61f") && $0.contains("session 'b7acc61f'")
       })
-    #expect(logs.snapshot().contains { $0.contains("transcribe succeeded for meeting 'b7acc61f'") })
+    #expect(logs.snapshot().contains { $0.contains("transcribe succeeded for session 'b7acc61f'") })
   }
 
-  @Test("a failed meeting transcribe logs the exit code and the captured stderr, returns false")
-  func meetingTranscribeFailureLogsStderr() async throws {
+  @Test("a failed session transcribe logs the exit code and the captured stderr, returns false")
+  func sessionTranscribeFailureLogsStderr() async throws {
     let logs = LogCollector()
     let runner = ScriptedRunner([
       SpawnOutcome(exitCode: 1, stderr: "error: unknown source 'mic': no data found")
@@ -81,24 +81,24 @@ struct OnClosePipelineRunnerTests {
     let pipeline = OnClosePipelineRunner(
       runProcess: runner.runner, log: { logs.append($0) })
 
-    let succeeded = await pipeline.runMeetingTranscribe(
-      meetingID: "b7acc61f", context: "meeting-end")
+    let succeeded = await pipeline.runSessionTranscribe(
+      sessionID: "b7acc61f", context: "session-end")
 
     #expect(!succeeded)
     let failure = try #require(logs.snapshot().first { $0.contains("transcribe failed (exit 1)") })
-    // Keyed by meeting id, and carries the child's real error message.
-    #expect(failure.contains("meeting 'b7acc61f'"))
+    // Keyed by session id, and carries the child's real error message.
+    #expect(failure.contains("session 'b7acc61f'"))
     #expect(failure.contains("stderr: error: unknown source 'mic'"))
   }
 
-  @Test("a failed meeting transcribe with no stderr says so rather than logging an empty tail")
-  func meetingTranscribeFailureEmptyStderr() async throws {
+  @Test("a failed session transcribe with no stderr says so rather than logging an empty tail")
+  func sessionTranscribeFailureEmptyStderr() async throws {
     let logs = LogCollector()
     let runner = ScriptedRunner([SpawnOutcome(exitCode: 2, stderr: "   \n")])
     let pipeline = OnClosePipelineRunner(
       runProcess: runner.runner, log: { logs.append($0) })
 
-    _ = await pipeline.runMeetingTranscribe(meetingID: "55815f35", context: "meeting-end")
+    _ = await pipeline.runSessionTranscribe(sessionID: "55815f35", context: "session-end")
 
     #expect(
       logs.snapshot().contains {

@@ -41,7 +41,7 @@ struct EarsEventTests {
 
   @Test("state kinds carry rev; telemetry kinds never do")
   func kindClasses() {
-    #expect(EventKind.meeting.isState)
+    #expect(EventKind.session.isState)
     #expect(EventKind.source.isState)
     #expect(!EventKind.vad.isState)
     #expect(!EventKind.segment.isState)
@@ -59,15 +59,15 @@ struct EarsEventTests {
 
   @Test("round-trips every case through encode/decode")
   func roundTrips() throws {
-    let meeting = Meeting(
+    let session = Session(
       id: "m1",
-      identity: MeetingIdentity(platform: "meet", externalID: "abc"),
+      identity: SessionIdentity(platform: "meet", externalID: "abc"),
       title: "Weekly sync",
       state: .active,
       started: base,
-      intervals: [MeetingInterval(start: base)],
+      intervals: [SessionInterval(start: base)],
       attendees: [
-        MeetingAttendee(
+        SessionAttendee(
           id: "spaces/x/devices/y", displayName: "Jane Doe", joined: base,
           source: "browser:meet:jane")
       ],
@@ -76,16 +76,16 @@ struct EarsEventTests {
       rev: 43)
     let frames: [EventFrame] = [
       EventFrame(event: .vad(source: "mic", state: .speech, t: base.advanced(by: 2.14))),
-      EventFrame(event: .meeting(meeting), rev: 43),
+      EventFrame(event: .session(session), rev: 43),
       EventFrame(event: .source(id: "mic", state: .capturing), rev: 44),
       EventFrame(
         event: .segment(
           SegmentPublishParams(
-            meeting: "m1", speaker: "You", start: 604.1, end: 611.9,
+            session: "m1", speaker: "You", start: 604.1, end: 611.9,
             text: "Nothing from me, the deploy went out last night."))),
       EventFrame(
         event: .job(
-          JobPublishParams(job: "j3", kind: "transcribe", meeting: "m1", state: .running))),
+          JobPublishParams(job: "j3", kind: "transcribe", session: "m1", state: .running))),
     ]
     for frame in frames {
       #expect(try roundTrip(frame) == frame)

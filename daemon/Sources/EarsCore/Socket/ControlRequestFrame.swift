@@ -107,24 +107,24 @@ extension ControlRequestFrame: Codable {
     case .subscribe:
       return .subscribe(
         try container.decodeIfPresent(SubscribeParams.self, forKey: .params) ?? SubscribeParams())
-    case .meetingStart:
-      return .meetingStart(
-        try container.decodeIfPresent(MeetingStartParams.self, forKey: .params)
-          ?? MeetingStartParams())
-    case .meetingEnd:
-      return .meetingEnd(meeting: try container.decode(MeetingRef.self, forKey: .params).meeting)
-    case .meetingPause:
-      return .meetingPause(meeting: try container.decode(MeetingRef.self, forKey: .params).meeting)
-    case .meetingResume:
-      return .meetingResume(meeting: try container.decode(MeetingRef.self, forKey: .params).meeting)
-    case .meetingRename:
-      return .meetingRename(try container.decode(MeetingRenameParams.self, forKey: .params))
-    case .meetingAttendee:
-      return .meetingAttendee(try container.decode(MeetingAttendeeParams.self, forKey: .params))
-    case .meetingList:
-      return .meetingList
-    case .meetingGet:
-      return .meetingGet(meeting: try container.decode(MeetingRef.self, forKey: .params).meeting)
+    case .sessionStart:
+      return .sessionStart(
+        try container.decodeIfPresent(SessionStartParams.self, forKey: .params)
+          ?? SessionStartParams())
+    case .sessionEnd:
+      return .sessionEnd(session: try container.decode(SessionRef.self, forKey: .params).session)
+    case .sessionPause:
+      return .sessionPause(session: try container.decode(SessionRef.self, forKey: .params).session)
+    case .sessionResume:
+      return .sessionResume(session: try container.decode(SessionRef.self, forKey: .params).session)
+    case .sessionRename:
+      return .sessionRename(try container.decode(SessionRenameParams.self, forKey: .params))
+    case .sessionAttendee:
+      return .sessionAttendee(try container.decode(SessionAttendeeParams.self, forKey: .params))
+    case .sessionList:
+      return .sessionList
+    case .sessionGet:
+      return .sessionGet(session: try container.decode(SessionRef.self, forKey: .params).session)
     case .segmentPublish:
       return .segmentPublish(try container.decode(SegmentPublishParams.self, forKey: .params))
     case .jobPublish:
@@ -172,18 +172,18 @@ extension ControlRequestFrame: Codable {
     of call: ControlCall, into container: inout KeyedEncodingContainer<CodingKeys>
   ) throws {
     switch call {
-    case .status, .meetingList, .sourcesList, .flush:
+    case .status, .sessionList, .sourcesList, .flush:
       break  // no params
     case .subscribe(let params):
       try container.encode(params, forKey: .params)
-    case .meetingStart(let params):
+    case .sessionStart(let params):
       try container.encode(params, forKey: .params)
-    case .meetingEnd(let meeting), .meetingPause(let meeting), .meetingResume(let meeting),
-      .meetingGet(let meeting):
-      try container.encode(MeetingRef(meeting: meeting), forKey: .params)
-    case .meetingRename(let params):
+    case .sessionEnd(let session), .sessionPause(let session), .sessionResume(let session),
+      .sessionGet(let session):
+      try container.encode(SessionRef(session: session), forKey: .params)
+    case .sessionRename(let params):
       try container.encode(params, forKey: .params)
-    case .meetingAttendee(let params):
+    case .sessionAttendee(let params):
       try container.encode(params, forKey: .params)
     case .segmentPublish(let params):
       try container.encode(params, forKey: .params)
@@ -203,8 +203,13 @@ extension ControlRequestFrame: Codable {
 
   // MARK: - Small param shapes shared by several methods
 
-  private struct MeetingRef: Codable {
-    var meeting: String
+  private struct SessionRef: Codable {
+    var session: String
+
+    private enum CodingKeys: String, CodingKey {
+      // `session` is the wire's `meeting` key until the wire rename (#47).
+      case session = "meeting"
+    }
   }
   private struct SourceRef: Codable {
     var source: SourceID

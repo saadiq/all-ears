@@ -31,7 +31,7 @@ public enum Phase0ConfigSchema {
     fields: [
       "data_root": ConfigSchema.Field(
         type: .string,
-        description: "Root directory for captured audio, indexes, and meeting state."),
+        description: "Root directory for captured audio, indexes, and session state."),
       "output_root": ConfigSchema.Field(
         type: .string, description: "Directory where transcripts and summaries are written."),
       "socket_path": ConfigSchema.Field(

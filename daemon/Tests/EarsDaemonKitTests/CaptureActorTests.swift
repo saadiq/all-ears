@@ -656,7 +656,7 @@ struct CaptureActorTests {
       return nil
     }
     // Post-stall audio is stamped at wall clock, not at the frozen timeline's
-    // startEpoch + 0.5 — the drift that mis-interleaved meeting transcripts.
+    // startEpoch + 0.5 — the drift that mis-interleaved session transcripts.
     #expect(starts.contains { abs($0.interval(since: gap.1)) < 0.001 })
     #expect(starts.allSatisfy { $0 == Instant(secondsSinceEpoch: startEpoch) || $0 >= gap.1 })
   }

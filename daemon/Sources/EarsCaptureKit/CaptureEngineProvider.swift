@@ -108,7 +108,7 @@ public enum CaptureEngineError: Error, Sendable {
 ///
 /// **Input-device selection.** By default the engine follows the system default
 /// input — whatever device the user has selected, Bluetooth included. Recording
-/// is meeting-scoped and brief, so holding a Bluetooth mic open for a call is
+/// is session-scoped and brief, so holding a Bluetooth mic open for a call is
 /// acceptable; there is no built-in-mic preference. When a `deviceUID` is
 /// explicitly configured, this binds the engine to that specific device via
 /// ``InputDeviceSelection``. Selection is best-effort: if the named device

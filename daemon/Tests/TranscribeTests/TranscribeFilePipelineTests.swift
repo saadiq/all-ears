@@ -49,7 +49,7 @@ struct TranscribeFilePipelineTests {
   func singleFileWritesTranscriptBesideInput() async throws {
     let directory = makeTempDirectory("single")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let fileURL = directory.appendingPathComponent("meeting.m4a")
+    let fileURL = directory.appendingPathComponent("session.m4a")
     FileManager.default.createFile(atPath: fileURL.path, contents: Data())
 
     let scripted = ScriptedTranscriber(results: [[Segment(start: 0, end: 1, text: "hello world")]])
@@ -60,14 +60,14 @@ struct TranscribeFilePipelineTests {
       fileReader: fakeReader())
 
     #expect(exitCode == 0)
-    let markdownURL = directory.appendingPathComponent("meeting.transcript.md")
-    let sidecarURL = directory.appendingPathComponent("meeting.transcript.json")
+    let markdownURL = directory.appendingPathComponent("session.transcript.md")
+    let sidecarURL = directory.appendingPathComponent("session.transcript.json")
     #expect(FileManager.default.fileExists(atPath: markdownURL.path))
     #expect(FileManager.default.fileExists(atPath: sidecarURL.path))
     let markdown = try String(contentsOf: markdownURL, encoding: .utf8)
     #expect(markdown.contains("hello world"))
-    // The source id / session is derived from the file's base name.
-    #expect(markdown.contains("meeting"))
+    // The source id / range-run is derived from the file's base name.
+    #expect(markdown.contains("session"))
   }
 
   @Test("--out overrides the output path for a single file")
@@ -199,7 +199,7 @@ struct TranscribeFilePipelineTests {
   func fileDiarizationRefinesLabels() async throws {
     let directory = makeTempDirectory("diarize")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let fileURL = directory.appendingPathComponent("meeting.m4a")
+    let fileURL = directory.appendingPathComponent("session.m4a")
     FileManager.default.createFile(atPath: fileURL.path, contents: Data())
 
     // One whole-file slice of 1s (fakeReader); the ASR yields one turn over it,
@@ -217,9 +217,9 @@ struct TranscribeFilePipelineTests {
 
     #expect(exitCode == 0)
     let markdown = try String(
-      contentsOf: directory.appendingPathComponent("meeting.transcript.md"), encoding: .utf8)
+      contentsOf: directory.appendingPathComponent("session.transcript.md"), encoding: .utf8)
     // Source attribution stays primary; the diarizer only adds the sub-label.
-    #expect(markdown.contains("meeting · Speaker 1"))
+    #expect(markdown.contains("session · Speaker 1"))
     // The Markdown frontmatter records the diarization backend that ran
     // (`diarization: { enabled: true, backend: stub-diarizer }`).
     #expect(markdown.contains("stub-diarizer"))

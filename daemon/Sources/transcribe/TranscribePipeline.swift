@@ -113,16 +113,16 @@ enum TranscribePipeline {
     var last: String?
     var from: String?
     var to: String?
-    /// `--meeting <id>`: union the meeting's intervals into one transcript
+    /// `--session <id>`: union the session's intervals into one transcript
     /// (paused spans are skipped exactly like silence). Mutually exclusive
     /// with every other range flag — `Transcribe` validates that before the
     /// pipeline runs.
-    var meeting: String? = nil
+    var session: String? = nil
     var sourceIDs: [String]
     var out: String?
   }
 
-  /// Entry point. `socketPath` (when resolvable) lets a `--meeting` run
+  /// Entry point. `socketPath` (when resolvable) lets a `--session` run
   /// report its lifecycle through the daemon's `job.publish` feed —
   /// best-effort, never load-bearing.
   static func run(
@@ -133,7 +133,7 @@ enum TranscribePipeline {
     socketPath: String? = nil,
     dependencies: Dependencies
   ) async -> Int32 {
-    guard let meetingID = inputs.meeting else {
+    guard let sessionID = inputs.session else {
       return await runResolved(
         inputs: inputs, dataRoot: dataRoot, outputRoot: outputRoot, backendName: backendName,
         dependencies: dependencies)
@@ -141,7 +141,7 @@ enum TranscribePipeline {
     let job = JobEventPublisher(
       socketPath: socketPath,
       jobID: "transcribe-\(UUID().uuidString.lowercased().prefix(8))",
-      meetingID: meetingID,
+      sessionID: sessionID,
       log: dependencies.log)
     await job.publish(state: .started)
     let code = await runResolved(
@@ -162,32 +162,32 @@ enum TranscribePipeline {
   ) async -> Int32 {
     let now = dependencies.clock.now()
 
-    // `--meeting` resolves to the meeting's interval union; the raw range
+    // `--session` resolves to the session's interval union; the raw range
     // flags (`--last`, `--from`/`--to`) resolve to exactly one range.
     let requestedRange: TimeRange
     let intervalRanges: [TimeRange]
-    let meetingRecord: Meeting?
-    if let meetingID = inputs.meeting {
-      let meeting: Meeting
+    let sessionRecord: Session?
+    if let sessionID = inputs.session {
+      let session: Session
       do {
-        meeting = try MeetingStore.read(meetingID: meetingID, dataRoot: dataRoot)
+        session = try SessionStore.read(sessionID: sessionID, dataRoot: dataRoot)
       } catch {
-        dependencies.writeStderr("error: unknown meeting '\(meetingID)': \(error)")
+        dependencies.writeStderr("error: unknown session '\(sessionID)': \(error)")
         return 1
       }
-      // A still-open interval (meeting active) reads up to now — "give me
+      // A still-open interval (session active) reads up to now — "give me
       // what's there so far", matching `--last`'s own "ending now" semantics.
-      let ranges = meeting.intervals.compactMap { interval -> TimeRange? in
+      let ranges = session.intervals.compactMap { interval -> TimeRange? in
         let end = interval.end ?? now
         return interval.start < end ? TimeRange(start: interval.start, end: end) : nil
       }
       guard let first = ranges.first, let last = ranges.last else {
-        dependencies.writeStderr("error: meeting '\(meetingID)' has no non-empty intervals")
+        dependencies.writeStderr("error: session '\(sessionID)' has no non-empty intervals")
         return 1
       }
       requestedRange = TimeRange(start: first.start, end: last.end)
       intervalRanges = ranges
-      meetingRecord = meeting
+      sessionRecord = session
     } else {
       switch TranscribeRangeResolution.resolve(
         last: inputs.last, from: inputs.from, to: inputs.to, now: now
@@ -198,36 +198,36 @@ enum TranscribePipeline {
         return 1
       }
       intervalRanges = [requestedRange]
-      meetingRecord = nil
+      sessionRecord = nil
     }
 
-    // A meeting names its own sources; otherwise --source is required,
+    // A session names its own sources; otherwise --source is required,
     // exactly as before.
-    let sourceIDs = meetingRecord?.sources ?? inputs.sourceIDs.map { SourceID($0) }
+    let sourceIDs = sessionRecord?.sources ?? inputs.sourceIDs.map { SourceID($0) }
     guard !sourceIDs.isEmpty else {
-      dependencies.writeStderr("error: at least one --source is required (or --meeting naming one)")
+      dependencies.writeStderr("error: at least one --source is required (or --session naming one)")
       return 1
     }
 
     // Resolve, per source, which store to read from.
     //
-    // A `--meeting` run consults each source's per-meeting copy
-    // (`meetings/<id>/sources/<source>/`) *and* the global ring
-    // (`<data-root>/sources/<source>/`), preferring the per-meeting copy when
+    // A `--session` run consults each source's per-session copy
+    // (`sessions/<id>/sources/<source>/`) *and* the global ring
+    // (`<data-root>/sources/<source>/`), preferring the per-session copy when
     // it holds chunks and falling back to the ring only where it doesn't
     // (issue #20). It logs both consultations and never fails on a source that
     // exists in neither store — that source simply contributes nothing, with a
-    // logged reason, so the meeting's other sources still transcribe. The raw
+    // logged reason, so the session's other sources still transcribe. The raw
     // range path (`--last`/`--from`/`--to`) reads one shared root and keeps
     // the fail-fast "unknown source" guard.
     let plans: [SourceAudioPlan]
-    if let meetingID = inputs.meeting {
-      plans = planMeetingSources(
-        sourceIDs: sourceIDs, meetingID: meetingID, dataRoot: dataRoot,
+    if let sessionID = inputs.session {
+      plans = planSessionSources(
+        sourceIDs: sourceIDs, sessionID: sessionID, dataRoot: dataRoot,
         intervalRanges: intervalRanges, log: dependencies.log)
     } else {
-      // Audio is meeting-scoped: the ad-hoc flags (--last/--from/--to) have
-      // no meeting context and keep the global root; there is no global audio
+      // Audio is session-scoped: the ad-hoc flags (--last/--from/--to) have
+      // no session context and keep the global root; there is no global audio
       // store any more, so they only find audio a caller staged there
       // deliberately.
       let audioRoot = dataRoot
@@ -257,23 +257,23 @@ enum TranscribePipeline {
 
     // The run's correlation identifier is resolved up front so every stage
     // record below can carry it as its correlation key, matching the worked
-    // example in docs/logging.md: the meeting id for a `--meeting` run, a
+    // example in docs/logging.md: the session id for a `--session` run, a
     // synthesized `<start-timestamp>_<slug>` identifier for a raw range run.
     let runIdentifier =
-      meetingRecord?.id
-      ?? OutputPathResolution.sessionIdentifier(
+      sessionRecord?.id
+      ?? OutputPathResolution.rangeRunIdentifier(
         requestedStart: requestedRange.start, sourceIDs: sourceIDs)
 
-    // Optional per-meeting vocabulary, keyed by meeting id by convention:
-    // `<data-root>/vocab/<meeting-id>.txt`. Parsed terms feed the
+    // Optional per-session vocabulary, keyed by session id by convention:
+    // `<data-root>/vocab/<session-id>.txt`. Parsed terms feed the
     // ``TranscribeContext`` handed to each transcribe call; absent file (or a
     // raw range run) means no vocabulary, exactly as before.
     var vocabulary: [String] = []
-    if let meetingID = inputs.meeting {
+    if let sessionID = inputs.session {
       let vocabURL =
         dataRoot
         .appendingPathComponent("vocab")
-        .appendingPathComponent("\(meetingID).txt")
+        .appendingPathComponent("\(sessionID).txt")
       if let content = try? String(contentsOf: vocabURL, encoding: .utf8) {
         vocabulary = VocabFile.parse(content)
         dependencies.log(
@@ -330,7 +330,7 @@ enum TranscribePipeline {
     for plan in plans {
       let sourceID = plan.sourceID
       // One read per interval: a paused span is simply never read, so it is
-      // provably absent from the output, exactly like silence. A meeting
+      // provably absent from the output, exactly like silence. A session
       // source with no resolved store (`reader == nil`) contributes nothing.
       var slices: [AudioSlice] = []
       var chunksInRange = 0
@@ -347,7 +347,7 @@ enum TranscribePipeline {
             // reader and reported here, per-chunk, so it degrades only its own
             // span — the run continues and the surrounding audio still
             // transcribes, instead of one opaque stderr line aborting six
-            // meetings (all-ears issue #26).
+            // sessions (all-ears issue #26).
             for unreadable in report.unreadableChunks {
               dependencies.log(
                 "chunk.unreadable: source=\(sourceID.rawValue) file=\(unreadable.file) "
@@ -445,11 +445,11 @@ enum TranscribePipeline {
     let modelInfo = TranscriptModelInfo(
       name: transcriber.info.name, backend: backendName, version: transcriber.info.version)
 
-    // The meeting roster's name map (attendee source → display name) feeds
+    // The session roster's name map (attendee source → display name) feeds
     // speaker labels, so real names flow into the transcript directly.
     var speakers: [String: String] = [:]
-    if let meetingRecord {
-      for attendee in meetingRecord.attendees {
+    if let sessionRecord {
+      for attendee in sessionRecord.attendees {
         if let source = attendee.source, let name = attendee.displayName {
           speakers[source.rawValue] = name
         }
@@ -457,11 +457,11 @@ enum TranscribePipeline {
     }
 
     // The chosen lookup order, recorded in frontmatter so a wrong-store read is
-    // visible after the fact (issue #20). Only a `--meeting` run resolves a
+    // visible after the fact (issue #20). Only a `--session` run resolves a
     // per-source store; every other path reads one shared root and records
     // nothing here. A source with no store at all is recorded as `none`.
     let audioStores: [TranscriptAudioStore] =
-      inputs.meeting == nil
+      inputs.session == nil
       ? []
       : plans.map { TranscriptAudioStore(source: $0.sourceID, store: $0.store?.label ?? "none") }
 
@@ -469,10 +469,10 @@ enum TranscribePipeline {
       sourceIDs: sourceIDs,
       transcriptions: transcriptions,
       requested: requestedRange,
-      // A meeting transcript is keyed by `meeting:` alone; only a raw range
-      // run still carries the synthesized `session:` identifier.
-      session: meetingRecord == nil ? runIdentifier : nil,
-      meeting: meetingRecord?.id,
+      // A session transcript is keyed by `session:` alone; only a raw range
+      // run still carries the synthesized `range_run:` identifier.
+      rangeRun: sessionRecord == nil ? runIdentifier : nil,
+      session: sessionRecord?.id,
       speakers: speakers,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,
@@ -484,7 +484,7 @@ enum TranscribePipeline {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: requestedRange.start, sourceIDs: sourceIDs,
-      explicitOut: inputs.out, slug: meetingRecord?.id)
+      explicitOut: inputs.out, slug: sessionRecord?.id)
 
     do {
       let markdown = TranscriptRenderer.renderMarkdown(document)
@@ -502,14 +502,14 @@ enum TranscribePipeline {
 
     // A run that produced no segments is only diagnosable if each source says
     // *why* it was silent — no chunks, chunks-but-silence, or store missing
-    // (issue #20). Logged for every path, but it is a meeting spanning several
+    // (issue #20). Logged for every path, but it is a session spanning several
     // sources where a one-line-per-source breakdown matters most.
     if document.segments.count == 0 {
       for outcome in readOutcomes {
         // A source with `nil` reason did produce audio slices — the model just
         // returned no text for them; every other case names the missing input.
         let reason =
-          MeetingAudioResolution.emptyReason(
+          SessionAudioResolution.emptyReason(
             storeExists: outcome.storeExists, chunksInRange: outcome.chunks,
             speechIntervals: outcome.speech, sliceCount: outcome.slices)
           ?? "audio produced no segments"
@@ -517,10 +517,10 @@ enum TranscribePipeline {
       }
     }
 
-    // How many of the meeting's listed sources actually resolved to a store
+    // How many of the session's listed sources actually resolved to a store
     // versus had no data anywhere — so a "successful" empty run is honestly
     // distinguishable from silence (issue #21's "summary honesty":
-    // sources-resolved / sources-missing counts). Every non-`--meeting` path
+    // sources-resolved / sources-missing counts). Every non-`--session` path
     // has already fail-fast-rejected unknown sources above, so all its sources
     // are resolved and `sources_missing` is 0.
     let sourcesResolved = readOutcomes.filter { $0.storeExists }.count
@@ -547,13 +547,13 @@ enum TranscribePipeline {
   }
 
   /// Where one source's audio is read from for this run: the ``reader`` bound
-  /// to the chosen data root (`nil` on a `--meeting` run when no store holds the
-  /// source at all — it then contributes nothing), and, for a `--meeting` run,
-  /// which ``MeetingAudioStore`` was chosen (`nil` for every other path).
+  /// to the chosen data root (`nil` on a `--session` run when no store holds the
+  /// source at all — it then contributes nothing), and, for a `--session` run,
+  /// which ``SessionAudioStore`` was chosen (`nil` for every other path).
   private struct SourceAudioPlan {
     let sourceID: SourceID
     let reader: SegmentedAudioReader?
-    let store: MeetingAudioStore?
+    let store: SessionAudioStore?
   }
 
   /// One source's read result, kept so a `segments=0` run can name why each
@@ -566,49 +566,49 @@ enum TranscribePipeline {
     let slices: Int
   }
 
-  /// Resolves each meeting source to a store, logging every consultation.
+  /// Resolves each session source to a store, logging every consultation.
   ///
-  /// For each source it probes both the per-meeting copy and the global ring
+  /// For each source it probes both the per-session copy and the global ring
   /// (index-only, no decode), logs what each holds with its concrete path, then
-  /// picks the store per ``MeetingAudioResolution/chooseStore(meeting:ring:)``
-  /// — per-meeting chunks preferred, ring fallback. A source found in neither
+  /// picks the store per ``SessionAudioResolution/chooseStore(session:ring:)``
+  /// — per-session chunks preferred, ring fallback. A source found in neither
   /// store gets a `nil` reader (it contributes nothing, with a logged reason at
-  /// the end of the run) rather than failing the whole meeting.
-  private static func planMeetingSources(
-    sourceIDs: [SourceID], meetingID: String, dataRoot: URL, intervalRanges: [TimeRange],
+  /// the end of the run) rather than failing the whole session.
+  private static func planSessionSources(
+    sourceIDs: [SourceID], sessionID: String, dataRoot: URL, intervalRanges: [TimeRange],
     log: @Sendable (String) -> Void
   ) -> [SourceAudioPlan] {
-    let meetingRoot = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID)
-    let meetingReader = SegmentedAudioReader(dataRoot: meetingRoot)
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID)
+    let sessionReader = SegmentedAudioReader(dataRoot: sessionRoot)
     let ringReader = SegmentedAudioReader(dataRoot: dataRoot)
 
     return sourceIDs.map { sourceID in
-      let meetingProbe = summedProbe(meetingReader, source: sourceID, ranges: intervalRanges)
+      let sessionProbe = summedProbe(sessionReader, source: sourceID, ranges: intervalRanges)
       let ringProbe = summedProbe(ringReader, source: sourceID, ranges: intervalRanges)
       logConsultation(
-        meeting: meetingID, source: sourceID, store: .meeting,
-        path: meetingReader.sourceDirectory(for: sourceID).path, probe: meetingProbe, log: log)
+        session: sessionID, source: sourceID, store: .session,
+        path: sessionReader.sourceDirectory(for: sourceID).path, probe: sessionProbe, log: log)
       logConsultation(
-        meeting: meetingID, source: sourceID, store: .ring,
+        session: sessionID, source: sourceID, store: .ring,
         path: ringReader.sourceDirectory(for: sourceID).path, probe: ringProbe, log: log)
 
-      let chosen = MeetingAudioResolution.chooseStore(meeting: meetingProbe, ring: ringProbe)
+      let chosen = SessionAudioResolution.chooseStore(session: sessionProbe, ring: ringProbe)
       switch chosen {
-      case .some(.meeting):
-        log("meeting \(meetingID) source \(sourceID.rawValue): reading from meeting store")
-        return SourceAudioPlan(sourceID: sourceID, reader: meetingReader, store: .meeting)
+      case .some(.session):
+        log("session \(sessionID) source \(sourceID.rawValue): reading from session store")
+        return SourceAudioPlan(sourceID: sourceID, reader: sessionReader, store: .session)
       case .some(.ring):
-        log("meeting \(meetingID) source \(sourceID.rawValue): reading from ring store")
+        log("session \(sessionID) source \(sourceID.rawValue): reading from ring store")
         return SourceAudioPlan(sourceID: sourceID, reader: ringReader, store: .ring)
       case .none:
-        log("meeting \(meetingID) source \(sourceID.rawValue): no audio store found")
+        log("session \(sessionID) source \(sourceID.rawValue): no audio store found")
         return SourceAudioPlan(sourceID: sourceID, reader: nil, store: nil)
       }
     }
   }
 
   /// A source's probe summed over every interval range the run reads (a paused
-  /// meeting has several). `sourceExists` is range-independent, so the first
+  /// session has several). `sourceExists` is range-independent, so the first
   /// probe's flag stands for the whole source.
   private static func summedProbe(
     _ reader: SegmentedAudioReader, source sourceID: SourceID, ranges: [TimeRange]
@@ -627,7 +627,7 @@ enum TranscribePipeline {
   }
 
   private static func logConsultation(
-    meeting meetingID: String, source sourceID: SourceID, store: MeetingAudioStore, path: String,
+    session sessionID: String, source sourceID: SourceID, store: SessionAudioStore, path: String,
     probe: SegmentedAudioReader.RangeProbe, log: @Sendable (String) -> Void
   ) {
     let result =
@@ -635,7 +635,7 @@ enum TranscribePipeline {
       ? "chunks=\(probe.chunksInRange) speech_intervals=\(probe.speechIntervals)"
       : "no data (store missing)"
     log(
-      "meeting \(meetingID) source \(sourceID.rawValue): consulted \(store.label) store at \(path) — \(result)"
+      "session \(sessionID) source \(sourceID.rawValue): consulted \(store.label) store at \(path) — \(result)"
     )
   }
 

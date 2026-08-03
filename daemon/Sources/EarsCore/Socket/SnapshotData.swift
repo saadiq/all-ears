@@ -10,13 +10,19 @@
 /// missed update.
 public struct SnapshotData: Sendable, Hashable, Codable {
   public var rev: Int
-  /// Active/paused (and recently ended) meetings.
-  public var meetings: [Meeting]
+  /// Active/paused (and recently ended) sessions.
+  public var sessions: [Session]
   public var sources: [SourceStatus]
 
-  public init(rev: Int, meetings: [Meeting], sources: [SourceStatus]) {
+  public init(rev: Int, sessions: [Session], sources: [SourceStatus]) {
     self.rev = rev
-    self.meetings = meetings
+    self.sessions = sessions
     self.sources = sources
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    // `sessions` is the wire's `meetings` key until the wire rename (#47).
+    case sessions = "meetings"
+    case rev, sources
   }
 }

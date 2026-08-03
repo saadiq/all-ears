@@ -1,7 +1,7 @@
 import EarsCore
 
 /// Pulls typed scalar fields out of a `ConfigValue.table`, shared by
-/// ``SourceDescriptorTOML`` and ``MeetingDescriptorTOML``'s decoders so
+/// ``SourceDescriptorTOML`` and ``SessionDescriptorTOML``'s decoders so
 /// neither repeats the same "missing or wrong kind" boilerplate.
 struct TOMLFieldReader {
   let table: [String: ConfigValue]

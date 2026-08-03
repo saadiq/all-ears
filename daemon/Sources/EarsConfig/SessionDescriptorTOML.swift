@@ -1,45 +1,49 @@
 import EarsCore
 import Foundation
 
-/// Maps the v2 ``Meeting`` entity to and from the `ConfigValue` tree that
-/// mirrors `meeting.toml` **schema 2**
-/// (`<data-root>/meetings/<uuid>/meeting.toml`) — the daemon-owned lifecycle
-/// record of `docs/specs/control-protocol.md`, superseding schema 1's
-/// identity-only shape. `TOMLBridge` does
-/// the actual TOML text, this file only knows the fields.
+/// Maps the ``Session`` entity to and from the `ConfigValue` tree that
+/// mirrors `session.toml` **schema 3**
+/// (`<data-root>/sessions/<uuid>/session.toml`) — the daemon-owned lifecycle
+/// record of `docs/specs/control-protocol.md`. Schema 1 (the dead v1
+/// identity-only `session.toml`) and schema 2 (the pre-rename
+/// `meetings/<uuid>/meeting.toml`) are dead formats: they are ignored, never
+/// read. `TOMLBridge` does the actual TOML text, this file only knows the
+/// fields.
 ///
 /// Optional scalars use the suite's "empty string ⇒ absent" sentinel
 /// convention; `interval` and `attendee` are arrays of tables. `rev` is
 /// deliberately **not** persisted — revisions are scoped to a daemon boot
 /// (`hello`'s `boot_id`), so a persisted one would be a lie after restart.
-public enum MeetingDescriptorTOML {
-  /// The `meeting.toml` schema version this build reads and writes.
-  public static let schemaVersion = 2
+public enum SessionDescriptorTOML {
+  /// The `session.toml` schema version this build reads and writes.
+  /// Bumped to 3 on the meeting→session rename so any stale schema-1 or
+  /// schema-2 file on disk is unambiguously a dead format.
+  public static let schemaVersion = 3
 
-  /// Encodes a ``Meeting`` into the `ConfigValue` table `meeting.toml`
+  /// Encodes a ``Session`` into the `ConfigValue` table `session.toml`
   /// serializes to.
-  public static func encode(_ meeting: Meeting) -> ConfigValue {
+  public static func encode(_ session: Session) -> ConfigValue {
     .table([
       "schema": .int(schemaVersion),
-      "id": .string(meeting.id),
-      "platform": .string(meeting.identity?.platform ?? ""),
-      "external_id": .string(meeting.identity?.externalID ?? ""),
-      "title": .string(meeting.title),
-      "state": .string(meeting.state.rawValue),
-      "started": .string(formatInstant(meeting.started)),
-      "ended": .string(meeting.ended.map(formatInstant) ?? ""),
-      "transcript_completed": .string(meeting.transcriptCompleted.map(formatInstant) ?? ""),
-      "trigger": .string(meeting.trigger.rawValue),
-      "sources": .array(meeting.sources.map { .string($0.rawValue) }),
+      "id": .string(session.id),
+      "platform": .string(session.identity?.platform ?? ""),
+      "external_id": .string(session.identity?.externalID ?? ""),
+      "title": .string(session.title),
+      "state": .string(session.state.rawValue),
+      "started": .string(formatInstant(session.started)),
+      "ended": .string(session.ended.map(formatInstant) ?? ""),
+      "transcript_completed": .string(session.transcriptCompleted.map(formatInstant) ?? ""),
+      "trigger": .string(session.trigger.rawValue),
+      "sources": .array(session.sources.map { .string($0.rawValue) }),
       "interval": .array(
-        meeting.intervals.map { interval in
+        session.intervals.map { interval in
           .table([
             "start": .string(formatInstant(interval.start)),
             "end": .string(interval.end.map(formatInstant) ?? ""),
           ])
         }),
       "attendee": .array(
-        meeting.attendees.map { attendee in
+        session.attendees.map { attendee in
           .table([
             "id": .string(attendee.id),
             "display_name": .string(attendee.displayName ?? ""),
@@ -51,11 +55,11 @@ public enum MeetingDescriptorTOML {
     ])
   }
 
-  /// Decodes a ``Meeting`` from a `ConfigValue` table parsed from
-  /// `meeting.toml`. Rejects any schema other than ``schemaVersion`` —
+  /// Decodes a ``Session`` from a `ConfigValue` table parsed from
+  /// `session.toml`. Rejects any schema other than ``schemaVersion`` —
   /// tools reject a schema they don't understand rather than guessing
   /// (`docs/data-formats.md`).
-  public static func decode(_ value: ConfigValue) throws(DescriptorTOMLError) -> Meeting {
+  public static func decode(_ value: ConfigValue) throws(DescriptorTOMLError) -> Session {
     guard case .table(let table) = value else {
       throw .notATable
     }
@@ -64,7 +68,7 @@ public enum MeetingDescriptorTOML {
     guard try fields.int("schema") == schemaVersion else {
       throw .invalidField("schema")
     }
-    guard let state = MeetingState(rawValue: try fields.string("state")) else {
+    guard let state = SessionState(rawValue: try fields.string("state")) else {
       throw .invalidField("state")
     }
     guard let trigger = TriggerKind(rawValue: try fields.string("trigger")) else {
@@ -89,11 +93,11 @@ public enum MeetingDescriptorTOML {
       transcriptCompleted = nil
     }
 
-    let identity: MeetingIdentity?
+    let identity: SessionIdentity?
     if let platform = fields.optionalString("platform"),
       let externalID = fields.optionalString("external_id")
     {
-      identity = MeetingIdentity(platform: platform, externalID: externalID)
+      identity = SessionIdentity(platform: platform, externalID: externalID)
     } else {
       identity = nil
     }
@@ -104,7 +108,7 @@ public enum MeetingDescriptorTOML {
       sources.append(SourceID(raw))
     }
 
-    var intervals: [MeetingInterval] = []
+    var intervals: [SessionInterval] = []
     for element in try fields.array("interval") {
       guard case .table(let intervalTable) = element else { throw .invalidField("interval") }
       let intervalFields = TOMLFieldReader(table: intervalTable)
@@ -118,15 +122,15 @@ public enum MeetingDescriptorTOML {
       } else {
         end = nil
       }
-      intervals.append(MeetingInterval(start: start, end: end))
+      intervals.append(SessionInterval(start: start, end: end))
     }
 
-    var attendees: [MeetingAttendee] = []
+    var attendees: [SessionAttendee] = []
     for element in try fields.array("attendee") {
       guard case .table(let attendeeTable) = element else { throw .invalidField("attendee") }
       let attendeeFields = TOMLFieldReader(table: attendeeTable)
       attendees.append(
-        MeetingAttendee(
+        SessionAttendee(
           id: try attendeeFields.string("id"),
           displayName: attendeeFields.optionalString("display_name"),
           joined: attendeeFields.optionalString("joined").flatMap(parseInstant),
@@ -134,7 +138,7 @@ public enum MeetingDescriptorTOML {
           source: attendeeFields.optionalString("source").map { SourceID($0) }))
     }
 
-    return Meeting(
+    return Session(
       id: try fields.string("id"),
       identity: identity,
       title: try fields.string("title"),

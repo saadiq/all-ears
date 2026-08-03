@@ -1,5 +1,5 @@
 /// Cross-actor design notes for `earsd`'s orchestration actors —
-/// ``CaptureActor``, ``MeetingRegistry``, and ``ControlServer``.
+/// ``CaptureActor``, ``SessionRegistry``, and ``ControlServer``.
 /// `docs/architecture.md`'s "Concurrency & runtime model" section and
 /// `docs/specs/capture-daemon.md` are the source of truth; the decisions
 /// recorded here resolve the ambiguities those leave open.
@@ -9,8 +9,8 @@
 /// - One ``CaptureActor`` **per source**: owns that source's capture backend,
 ///   `ChunkEncoder`, `IndexAppender`, and `VAD`. Sources are independent, so a
 ///   per-source actor isolates one source's failure/teardown from another's.
-/// - One ``MeetingRegistry`` owning the meeting lifecycle and `meeting.toml`
-///   persistence (via `EarsDataStore.MeetingStore`).
+/// - One ``SessionRegistry`` owning the session lifecycle and `session.toml`
+///   persistence (via `EarsDataStore.SessionStore`).
 /// - One ``ControlServer`` owning control-socket command dispatch: it plugs
 ///   into `EarsIPC.ControlSocketServer`'s request-handler seam and routes each
 ///   of the `ControlCall` methods to the right actor method. It is

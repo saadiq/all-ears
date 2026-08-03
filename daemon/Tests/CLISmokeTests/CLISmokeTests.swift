@@ -400,9 +400,9 @@ struct CLISmokeTests {
   }
 
   @Test(
-    "the meeting-scoped lifecycle: a fresh daemon writes nothing; a meeting start records real chunk files and a chunk index event to disk, and meeting end stops capture"
+    "the session-scoped lifecycle: a fresh daemon writes nothing; a session start records real chunk files and a chunk index event to disk, and session end stops capture"
   )
-  func meetingScopedLifecycleWritesRealFilesToDisk() throws {
+  func sessionScopedLifecycleWritesRealFilesToDisk() throws {
     // Unlike every other test in this file, this one *does* declare an
     // enabled mic-class source -- safe only because
     // `ALLEARS_CAPTURE_BACKEND=synthetic` (set below, in the spawned
@@ -413,8 +413,8 @@ struct CLISmokeTests {
     // an unknown key), so this still never touches Core Audio or prompts
     // TCC. This is the one test in this file that proves a real, spawned
     // `earsd` binary records to disk -- and, since recording is now
-    // meeting-scoped, that it does so only while a meeting is active: a fresh
-    // daemon writes no source directory, and a `meeting start`/`meeting end`
+    // session-scoped, that it does so only while a session is active: a fresh
+    // daemon writes no source directory, and a `session start`/`session end`
     // round-trip is what produces (and finalizes) the chunk files.
     let temp = TempDirectory()
     let dataRootPath = temp.url.appendingPathComponent("data").path
@@ -430,46 +430,46 @@ struct CLISmokeTests {
       named: "config.toml"
     )
 
-    // Audio is meeting-scoped: the mic's directory lands under
-    // meetings/<id>/sources/mic, where <id> is minted by the daemon at
-    // `meeting start`. The exact id is recovered after the run by
-    // enumerating meetings/ (exactly one meeting exists in this test).
-    let meetingsDirectory = URL(fileURLWithPath: dataRootPath)
-      .appendingPathComponent("meetings")
+    // Audio is session-scoped: the mic's directory lands under
+    // sessions/<id>/sources/mic, where <id> is minted by the daemon at
+    // `session start`. The exact id is recovered after the run by
+    // enumerating sessions/ (exactly one session exists in this test).
+    let sessionsDirectory = URL(fileURLWithPath: dataRootPath)
+      .appendingPathComponent("sessions")
 
     let run = try Self.withRunningDaemon(
       configPath: configPath,
       environment: ["ALLEARS_CAPTURE_BACKEND": "synthetic"]
     ) { socketPath -> Bool in
-      // A fresh, idle daemon has recorded nothing: no meeting directory (and
+      // A fresh, idle daemon has recorded nothing: no session directory (and
       // so no source directory) exists.
-      let wroteNothingIdle = !FileManager.default.fileExists(atPath: meetingsDirectory.path)
+      let wroteNothingIdle = !FileManager.default.fileExists(atPath: sessionsDirectory.path)
 
-      // Drive the meeting lifecycle over the real control socket via `ears`.
-      // A manual meeting naming `mic` starts its capture; ending it stops and
+      // Drive the session lifecycle over the real control socket via `ears`.
+      // A manual session naming `mic` starts its capture; ending it stops and
       // flushes the in-progress chunk to disk.
       let started = try Self.runEars(
-        ["meeting", "start", "--source", "mic", "--json", "--config", configPath],
+        ["session", "start", "--source", "mic", "--json", "--config", configPath],
         environment: ["EARS_SOCKET_PATH": socketPath])
       let object =
         (try? JSONSerialization.jsonObject(
           with: Data(started.stdout.utf8))) as? [String: Any]
-      let meetingID = (object?["id"] as? String) ?? ""
+      let sessionID = (object?["id"] as? String) ?? ""
       _ = try Self.runEars(
-        ["meeting", "end", meetingID, "--config", configPath],
+        ["session", "end", sessionID, "--config", configPath],
         environment: ["EARS_SOCKET_PATH": socketPath])
-      return wroteNothingIdle && started.exitCode == 0 && !meetingID.isEmpty
+      return wroteNothingIdle && started.exitCode == 0 && !sessionID.isEmpty
     }
     #expect(run.socketBecameReady)
     #expect(run.exitCode == 0)
-    #expect(run.result, "expected an idle daemon to write nothing, then a meeting to start cleanly")
+    #expect(run.result, "expected an idle daemon to write nothing, then a session to start cleanly")
 
-    let meetingIDs =
-      (try? FileManager.default.contentsOfDirectory(atPath: meetingsDirectory.path)) ?? []
-    #expect(meetingIDs.count == 1, "expected exactly one meeting directory, got \(meetingIDs)")
+    let sessionIDs =
+      (try? FileManager.default.contentsOfDirectory(atPath: sessionsDirectory.path)) ?? []
+    #expect(sessionIDs.count == 1, "expected exactly one session directory, got \(sessionIDs)")
     let sourceDirectory =
-      meetingsDirectory
-      .appendingPathComponent(meetingIDs.first ?? "missing")
+      sessionsDirectory
+      .appendingPathComponent(sessionIDs.first ?? "missing")
       .appendingPathComponent("sources")
       .appendingPathComponent("mic")
 
@@ -631,8 +631,8 @@ struct CLISmokeTests {
     #expect(run.result.stderr.contains("ears[debug]: received result:"))
   }
 
-  @Test("ears meeting list returns an empty list from a fresh live earsd")
-  func earsMeetingListAgainstLiveDaemon() throws {
+  @Test("ears session list returns an empty list from a fresh live earsd")
+  func earsSessionListAgainstLiveDaemon() throws {
     let temp = TempDirectory()
     let configPath = temp.write(
       """
@@ -646,11 +646,13 @@ struct CLISmokeTests {
 
     let run = try Self.withRunningDaemon(configPath: configPath) { socketPath in
       try Self.runEars(
-        ["meeting", "list", "--config", configPath, "--json"],
+        ["session", "list", "--config", configPath, "--json"],
         environment: ["EARS_SOCKET_PATH": socketPath])
     }
     #expect(run.socketBecameReady)
     #expect(run.result.exitCode == 0)
+    // The JSON payload's key is still the wire's `meetings` until the wire
+    // rename (#47).
     #expect(run.result.stdout.contains("\"meetings\":[]"))
   }
 

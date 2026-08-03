@@ -70,9 +70,9 @@ struct Transcribe: AsyncParsableCommand {
   var to: String?
 
   @Option(
-    name: .customLong("meeting"),
-    help: "Union a meeting's transcription intervals into one transcript (meeting id).")
-  var meeting: String?
+    name: .customLong("session"),
+    help: "Union a session's transcription intervals into one transcript (session id).")
+  var session: String?
 
   @Option(name: .customLong("source"), help: "Source(s) to transcribe; repeatable.")
   var sources: [String] = []
@@ -121,7 +121,7 @@ struct Transcribe: AsyncParsableCommand {
     let last = self.last
     let from = self.from
     let to = self.to
-    let meeting = self.meeting
+    let session = self.session
     let sources = self.sources
     let out = self.out
 
@@ -154,7 +154,7 @@ struct Transcribe: AsyncParsableCommand {
       return await TranscribeRuntime.run(
         arguments: arguments,
         inputs: TranscribePipeline.Inputs(
-          last: last, from: from, to: to, meeting: meeting, sourceIDs: sources,
+          last: last, from: from, to: to, session: session, sourceIDs: sources,
           out: out),
         diagnostics: diagnostics,
         spans: bootstrap.stageSpans(tool: "transcribe"))
@@ -166,16 +166,16 @@ struct Transcribe: AsyncParsableCommand {
   /// per-mode guards the dispatch in ``run()`` relies on having already passed.
   private func validateArgumentCombinations() throws {
     if !files.isEmpty {
-      // `--file` is a standalone-file batch: every range/meeting selector
+      // `--file` is a standalone-file batch: every range/session selector
       // and the live-`--follow` attach make no sense against a file
       // with no index and no wall-clock time, so mixing them is a precise
-      // error rather than a silent ignore (matching `--follow`/`--meeting`).
-      guard follow == nil, last == nil, from == nil, to == nil, meeting == nil,
+      // error rather than a silent ignore (matching `--follow`/`--session`).
+      guard follow == nil, last == nil, from == nil, to == nil, session == nil,
         sources.isEmpty, !json
       else {
         throw ValidationError(
           "--file cannot be combined with "
-            + "--follow/--last/--from/--to/--meeting/--source/--json")
+            + "--follow/--last/--from/--to/--session/--source/--json")
       }
       return
     }
@@ -183,22 +183,22 @@ struct Transcribe: AsyncParsableCommand {
       // Follow is attach-and-tail; batch is resolve-a-range-and-exit. The
       // flags that shape a batch range make no sense here, so mixing them
       // is a precise error rather than a silent ignore.
-      guard last == nil, from == nil, to == nil, meeting == nil, sources.isEmpty
+      guard last == nil, from == nil, to == nil, session == nil, sources.isEmpty
       else {
         throw ValidationError(
-          "--follow cannot be combined with --last/--from/--to/--meeting/--source")
+          "--follow cannot be combined with --last/--from/--to/--session/--source")
       }
       return
     }
     guard !json else {
       throw ValidationError("--json is only meaningful with --follow")
     }
-    if meeting != nil {
-      // A meeting names its own range and sources; mixing selectors is a
+    if session != nil {
+      // A session names its own range and sources; mixing selectors is a
       // precise error rather than a silent ignore.
       guard last == nil, from == nil, to == nil, sources.isEmpty else {
         throw ValidationError(
-          "--meeting cannot be combined with --last/--from/--to/--source")
+          "--session cannot be combined with --last/--from/--to/--source")
       }
     }
   }

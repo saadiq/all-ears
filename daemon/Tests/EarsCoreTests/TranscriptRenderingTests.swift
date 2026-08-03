@@ -21,7 +21,7 @@ struct TranscriptRenderingTests {
     TranscriptFrontmatter(
       schema: 1,
       kind: kind,
-      session: "2026-07-17T10-30-00Z_standup",
+      rangeRun: "2026-07-17T10-30-00Z_standup",
       sources: ["mic", "app:us.zoom.xos"],
       range: TimeRange(
         start: Instant(secondsSinceEpoch: 1_784_284_200),
@@ -68,7 +68,7 @@ struct TranscriptRenderingTests {
       "---",
       "schema: 1",
       "kind: transcript",
-      "session: 2026-07-17T10-30-00Z_standup",
+      "range_run: 2026-07-17T10-30-00Z_standup",
       "sources: [mic, \"app:us.zoom.xos\"]",
       "range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }",
       "model: { name: parakeet, backend: fluidaudio, version: \"0.x\" }",
@@ -94,21 +94,21 @@ struct TranscriptRenderingTests {
     #expect(TranscriptRenderer.renderMarkdown(document) == expected)
   }
 
-  @Test("a meeting transcript renders meeting: with no session: line at all")
-  func meetingFrontmatterOmitsSession() throws {
+  @Test("a session transcript renders session: with no range_run: line at all")
+  func sessionFrontmatterOmitsSession() throws {
     var frontmatter = Self.standupFrontmatter()
-    frontmatter.session = nil
-    frontmatter.meeting = "0d5e1111-aaaa-bbbb-cccc-222233334444"
+    frontmatter.rangeRun = nil
+    frontmatter.session = "0d5e1111-aaaa-bbbb-cccc-222233334444"
     let document = TranscriptDocument(frontmatter: frontmatter, segments: [])
 
     let rendered = TranscriptRenderer.renderMarkdown(document)
-    #expect(!rendered.contains("session:"))
-    #expect(rendered.contains("kind: transcript\nmeeting: 0d5e1111-aaaa-bbbb-cccc-222233334444\n"))
+    #expect(!rendered.contains("range_run:"))
+    #expect(rendered.contains("kind: transcript\nsession: 0d5e1111-aaaa-bbbb-cccc-222233334444\n"))
 
     // And parses back with the same optionality.
     let parsed = try TranscriptParser.parseFrontmatter(rendered)
-    #expect(parsed.session == nil)
-    #expect(parsed.meeting == "0d5e1111-aaaa-bbbb-cccc-222233334444")
+    #expect(parsed.rangeRun == nil)
+    #expect(parsed.session == "0d5e1111-aaaa-bbbb-cccc-222233334444")
   }
 
   @Test("kind: clean renders derived_from after kind")
@@ -125,7 +125,7 @@ struct TranscriptRenderingTests {
     #expect(lines[1] == "schema: 1")
     #expect(lines[2] == "kind: clean")
     #expect(lines[3] == "derived_from: \"2026-07-17/10-30-00_standup.transcript.md\"")
-    #expect(lines[4] == "session: 2026-07-17T10-30-00Z_standup")
+    #expect(lines[4] == "range_run: 2026-07-17T10-30-00Z_standup")
   }
 
   @Test("kind: summary renders derived_from after kind")
@@ -191,7 +191,7 @@ struct TranscriptRenderingTests {
     let frontmatter = TranscriptFrontmatter(
       schema: 1,
       kind: .transcript,
-      session: "2026-07-17T10-30-00Z_solo",
+      rangeRun: "2026-07-17T10-30-00Z_solo",
       sources: ["mic"],
       range: TimeRange(start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 60)),
       model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
