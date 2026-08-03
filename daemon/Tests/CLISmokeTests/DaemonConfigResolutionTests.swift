@@ -223,28 +223,28 @@ struct DaemonConfigResolutionTests {
     #expect(defaulted.allowedOrigins.isEmpty)
   }
 
-  @Test("browser meeting local_sources defaults to [mic], takes an explicit list, and [] disables")
-  func browserMeetingLocalSourcesResolution() {
+  @Test("browser session local_sources defaults to [mic], takes an explicit list, and [] disables")
+  func browserSessionLocalSourcesResolution() {
     let defaulted = DaemonConfigResolution.resolve(config: config(), now: now)
-    #expect(defaulted.configuration.browserMeetingLocalSources == ["mic"])
+    #expect(defaulted.configuration.browserSessionLocalSources == ["mic"])
 
     let custom = DaemonConfigResolution.resolve(
       config: config(
         earsdOverrides: [
-          "meetings": .table(["local_sources": .array([.string("mic"), .string("system")])])
+          "sessions": .table(["local_sources": .array([.string("mic"), .string("system")])])
         ]),
       now: now)
-    #expect(custom.configuration.browserMeetingLocalSources == ["mic", "system"])
+    #expect(custom.configuration.browserSessionLocalSources == ["mic", "system"])
 
     let disabled = DaemonConfigResolution.resolve(
-      config: config(earsdOverrides: ["meetings": .table(["local_sources": .array([])])]),
+      config: config(earsdOverrides: ["sessions": .table(["local_sources": .array([])])]),
       now: now)
-    #expect(disabled.configuration.browserMeetingLocalSources == [])
+    #expect(disabled.configuration.browserSessionLocalSources == [])
   }
 
-  @Test("meeting-end auto-transcribe defaults to enabled in the resolved configuration")
-  func transcribeOnBrowserMeetingEndDefaultsOn() {
+  @Test("session-end auto-transcribe defaults to enabled in the resolved configuration")
+  func transcribeOnBrowserSessionEndDefaultsOn() {
     let result = DaemonConfigResolution.resolve(config: config(), now: now)
-    #expect(result.configuration.transcribeOnBrowserMeetingEnd == true)
+    #expect(result.configuration.transcribeOnBrowserSessionEnd == true)
   }
 }

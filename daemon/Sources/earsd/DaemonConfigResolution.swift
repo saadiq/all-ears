@@ -75,14 +75,14 @@ enum DaemonConfigResolution {
 
     let outputRootPath = string(root, "output_root", default: "")
 
-    // `[earsd.meetings].local_sources`: absent defaults to `["mic"]`; an
+    // `[earsd.sessions].local_sources`: absent defaults to `["mic"]`; an
     // explicit (possibly empty) list is taken verbatim, so `local_sources = []`
     // disables host-audio injection rather than re-defaulting to mic.
-    let meetingsTable = nestedTable(earsd, "meetings")
-    let browserMeetingLocalSources: [SourceID] =
-      meetingsTable["local_sources"] == nil
+    let sessionsTable = nestedTable(earsd, "sessions")
+    let browserSessionLocalSources: [SourceID] =
+      sessionsTable["local_sources"] == nil
       ? ["mic"]
-      : stringArray(meetingsTable, "local_sources").map { SourceID($0) }
+      : stringArray(sessionsTable, "local_sources").map { SourceID($0) }
 
     let retentionTable = nestedTable(earsd, "retention")
 
@@ -102,9 +102,9 @@ enum DaemonConfigResolution {
         int(retentionTable, "max_audio_age_seconds", default: 604_800)),
       ingestWebSocket: resolveIngestWebSocket(earsd),
       controlWebSocket: resolveControlWebSocket(earsd),
-      meetingIngestCloseGraceSeconds: Double(
-        int(meetingsTable, "ingest_close_grace_s", default: 120)),
-      browserMeetingLocalSources: browserMeetingLocalSources,
+      sessionIngestCloseGraceSeconds: Double(
+        int(sessionsTable, "ingest_close_grace_s", default: 120)),
+      browserSessionLocalSources: browserSessionLocalSources,
       outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath)
     )
     return Result(configuration: configuration, skipped: skipped)

@@ -242,7 +242,7 @@ struct SegmentedAudioReaderTests {
     #expect(present.speechIntervals == 1)
 
     // A source with no directory under this root reports absent with zero
-    // counts rather than throwing — the fallback signal the meeting path keys
+    // counts rather than throwing — the fallback signal the session path keys
     // off.
     let absent = reader.probe(source: "system", range: range(0, 3))
     #expect(!absent.sourceExists)

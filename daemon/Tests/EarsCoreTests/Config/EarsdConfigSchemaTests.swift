@@ -44,7 +44,7 @@ struct EarsdConfigSchemaTests {
       "store_native": .bool(true),
       "channels": .int(1),
       "vad": vad,
-      "meetings": .table([
+      "sessions": .table([
         "ingest_close_grace_s": .int(120),
         "local_sources": .array([.string("mic")]),
       ]),

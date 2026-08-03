@@ -1,7 +1,7 @@
 import EarsCore
 
 /// The signature event-producing actors (``CaptureActor``,
-/// ``MeetingRegistry``) publish live-feed ``EarsEvent``s through — a closure
+/// ``SessionRegistry``) publish live-feed ``EarsEvent``s through — a closure
 /// seam rather than a protocol, so producers never learn what fan-out sits
 /// behind it and tests can record published events with a plain closure.
 public typealias EventSink = @Sendable (EarsEvent) async -> Void
@@ -13,7 +13,7 @@ public typealias EventSink = @Sendable (EarsEvent) async -> Void
 ///
 /// ## Revisions
 ///
-/// State events (`meeting`, `source` — ``EventKind/isState``) each
+/// State events (`session`, `source` — ``EventKind/isState``) each
 /// increment ``currentRev()`` by exactly one and are delivered tagged with
 /// their revision; telemetry events (`vad`, `segment`, `job`) are delivered
 /// untagged and never touch the counter. Because assignment and enqueue
@@ -89,7 +89,7 @@ public actor EventBus {
   }
 
   /// Publish a state event whose payload needs to *embed* its own revision
-  /// (a `Meeting`'s `rev` field): `make` receives the assigned revision and
+  /// (a `Session`'s `rev` field): `make` receives the assigned revision and
   /// returns the event to deliver. Assignment and enqueue are atomic within
   /// this actor, so revisions reach subscribers in order and gap-free.
   /// `@Sendable` because callers invoke this across actor isolation.

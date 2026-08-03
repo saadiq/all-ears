@@ -14,7 +14,7 @@ struct TranscriptSidecarJSONTests {
       frontmatter: TranscriptFrontmatter(
         schema: 1,
         kind: .transcript,
-        session: "2026-07-17T10-30-00Z_standup",
+        rangeRun: "2026-07-17T10-30-00Z_standup",
         sources: ["mic", "app:us.zoom.xos"],
         range: TimeRange(
           start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 1920)),
@@ -90,7 +90,7 @@ struct TranscriptSidecarJSONTests {
       frontmatter: TranscriptFrontmatter(
         schema: 1,
         kind: .transcript,
-        session: "s",
+        rangeRun: "s",
         sources: ["mic"],
         range: TimeRange(
           start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 1)),

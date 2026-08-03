@@ -7,14 +7,14 @@ public enum ControlCall: Sendable, Hashable {
   case status
   case subscribe(SubscribeParams)
 
-  case meetingStart(MeetingStartParams)
-  case meetingEnd(meeting: String)
-  case meetingPause(meeting: String)
-  case meetingResume(meeting: String)
-  case meetingRename(MeetingRenameParams)
-  case meetingAttendee(MeetingAttendeeParams)
-  case meetingList
-  case meetingGet(meeting: String)
+  case sessionStart(SessionStartParams)
+  case sessionEnd(session: String)
+  case sessionPause(session: String)
+  case sessionResume(session: String)
+  case sessionRename(SessionRenameParams)
+  case sessionAttendee(SessionAttendeeParams)
+  case sessionList
+  case sessionGet(session: String)
 
   case segmentPublish(SegmentPublishParams)
   case jobPublish(JobPublishParams)
@@ -32,14 +32,14 @@ public enum ControlCall: Sendable, Hashable {
     switch self {
     case .status: .status
     case .subscribe: .subscribe
-    case .meetingStart: .meetingStart
-    case .meetingEnd: .meetingEnd
-    case .meetingPause: .meetingPause
-    case .meetingResume: .meetingResume
-    case .meetingRename: .meetingRename
-    case .meetingAttendee: .meetingAttendee
-    case .meetingList: .meetingList
-    case .meetingGet: .meetingGet
+    case .sessionStart: .sessionStart
+    case .sessionEnd: .sessionEnd
+    case .sessionPause: .sessionPause
+    case .sessionResume: .sessionResume
+    case .sessionRename: .sessionRename
+    case .sessionAttendee: .sessionAttendee
+    case .sessionList: .sessionList
+    case .sessionGet: .sessionGet
     case .segmentPublish: .segmentPublish
     case .jobPublish: .jobPublish
     case .sourcesList: .sourcesList
@@ -57,7 +57,7 @@ public enum ControlCall: Sendable, Hashable {
 // MARK: - Params types
 
 /// `subscribe` params: which *telemetry* kinds (`vad`, `segment`, `job`) and
-/// which sources to receive. State kinds (`meeting`, `source`) are always
+/// which sources to receive. State kinds (`session`, `source`) are always
 /// delivered — unconditional delivery is what keeps `rev` contiguous — so
 /// they are not filterable. Both lists empty/omitted means "everything".
 public struct SubscribeParams: Sendable, Hashable, Codable {
@@ -90,12 +90,12 @@ public struct SubscribeParams: Sendable, Hashable, Codable {
   }
 }
 
-/// `meeting.start` params. With `platform`+`externalID` the call is
-/// idempotent on that identity; without them it creates a manual meeting.
-/// `sources` seeds the meeting's source list (`ears meeting start --source
+/// `session.start` params. With `platform`+`externalID` the call is
+/// idempotent on that identity; without them it creates a manual session.
+/// `sources` seeds the session's source list (`ears session start --source
 /// mic`); the roster's `source` links add more later. `trigger` records
 /// provenance; defaults to `.manual`.
-public struct MeetingStartParams: Sendable, Hashable, Codable {
+public struct SessionStartParams: Sendable, Hashable, Codable {
   public var platform: String?
   public var externalID: String?
   public var title: String?
@@ -138,35 +138,37 @@ public struct MeetingStartParams: Sendable, Hashable, Codable {
   }
 
   /// The identity to be idempotent on, when both halves were given.
-  public var identity: MeetingIdentity? {
+  public var identity: SessionIdentity? {
     guard let platform, let externalID, !platform.isEmpty, !externalID.isEmpty else { return nil }
-    return MeetingIdentity(platform: platform, externalID: externalID)
+    return SessionIdentity(platform: platform, externalID: externalID)
   }
 }
 
-/// `meeting.rename` params; `ifRev` makes the rename a compare-and-set
+/// `session.rename` params; `ifRev` makes the rename a compare-and-set
 /// (`conflict` on mismatch) instead of silent last-write-wins.
-public struct MeetingRenameParams: Sendable, Hashable, Codable {
-  public var meeting: String
+public struct SessionRenameParams: Sendable, Hashable, Codable {
+  public var session: String
   public var title: String
   public var ifRev: Int?
 
-  public init(meeting: String, title: String, ifRev: Int? = nil) {
-    self.meeting = meeting
+  public init(session: String, title: String, ifRev: Int? = nil) {
+    self.session = session
     self.title = title
     self.ifRev = ifRev
   }
 
   private enum CodingKeys: String, CodingKey {
-    case meeting, title
+    // `session` is the wire's `meeting` key until the wire rename (#47).
+    case session = "meeting"
+    case title
     case ifRev = "if_rev"
   }
 }
 
-/// `meeting.attendee` params — an upsert keyed by `id` within the meeting.
+/// `session.attendee` params — an upsert keyed by `id` within the session.
 /// Omitted fields leave the existing roster entry's values untouched.
-public struct MeetingAttendeeParams: Sendable, Hashable {
-  public var meeting: String
+public struct SessionAttendeeParams: Sendable, Hashable {
+  public var session: String
   public var id: String
   public var displayName: String?
   public var joined: Instant?
@@ -174,10 +176,10 @@ public struct MeetingAttendeeParams: Sendable, Hashable {
   public var source: SourceID?
 
   public init(
-    meeting: String, id: String, displayName: String? = nil,
+    session: String, id: String, displayName: String? = nil,
     joined: Instant? = nil, left: Instant? = nil, source: SourceID? = nil
   ) {
-    self.meeting = meeting
+    self.session = session
     self.id = id
     self.displayName = displayName
     self.joined = joined
@@ -186,15 +188,17 @@ public struct MeetingAttendeeParams: Sendable, Hashable {
   }
 }
 
-extension MeetingAttendeeParams: Codable {
+extension SessionAttendeeParams: Codable {
   private enum CodingKeys: String, CodingKey {
-    case meeting, id, joined, left, source
+    // `session` is the wire's `meeting` key until the wire rename (#47).
+    case session = "meeting"
+    case id, joined, left, source
     case displayName = "display_name"
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    meeting = try container.decode(String.self, forKey: .meeting)
+    session = try container.decode(String.self, forKey: .session)
     id = try container.decode(String.self, forKey: .id)
     displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
     joined = try container.decodeISO8601InstantIfPresent(forKey: .joined)
@@ -204,7 +208,7 @@ extension MeetingAttendeeParams: Codable {
 
   public func encode(to encoder: any Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(meeting, forKey: .meeting)
+    try container.encode(session, forKey: .session)
     try container.encode(id, forKey: .id)
     try container.encodeIfPresent(displayName, forKey: .displayName)
     try container.encodeISO8601InstantIfPresent(joined, forKey: .joined)
@@ -214,21 +218,27 @@ extension MeetingAttendeeParams: Codable {
 }
 
 /// `segment.publish` params — the notification-only republish a
-/// `transcribe --follow` process sends. Keyed by the meeting whose capture
+/// `transcribe --follow` process sends. Keyed by the session whose capture
 /// the follow run attached to.
 public struct SegmentPublishParams: Sendable, Hashable, Codable {
-  public var meeting: String
+  public var session: String
   public var speaker: String
   public var start: Double
   public var end: Double
   public var text: String
 
-  public init(meeting: String, speaker: String, start: Double, end: Double, text: String) {
-    self.meeting = meeting
+  public init(session: String, speaker: String, start: Double, end: Double, text: String) {
+    self.session = session
     self.speaker = speaker
     self.start = start
     self.end = end
     self.text = text
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    // `session` is the wire's `meeting` key until the wire rename (#47).
+    case session = "meeting"
+    case speaker, start, end, text
   }
 }
 
@@ -248,18 +258,24 @@ public struct JobPublishParams: Sendable, Hashable, Codable {
   public var job: String
   /// Today always `transcribe`.
   public var kind: String
-  public var meeting: String?
+  public var session: String?
   public var state: JobState
   public var detail: String?
 
   public init(
-    job: String, kind: String, meeting: String? = nil,
+    job: String, kind: String, session: String? = nil,
     state: JobState, detail: String? = nil
   ) {
     self.job = job
     self.kind = kind
-    self.meeting = meeting
+    self.session = session
     self.state = state
     self.detail = detail
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    // `session` is the wire's `meeting` key until the wire rename (#47).
+    case session = "meeting"
+    case job, kind, state, detail
   }
 }

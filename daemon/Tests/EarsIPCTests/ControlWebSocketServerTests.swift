@@ -7,7 +7,7 @@ import Testing
 /// Protocol-level tests for `ControlWebSocketServer`, modeled directly on
 /// `IngestWebSocketServerTests` (same `TestWebSocketClient` byte-level driver
 /// over a `FakeSocketConnection`): Origin allowlist, the v2 hello handshake,
-/// this transport's restricted capability tier (`observe` + `meetings`),
+/// this transport's restricted capability tier (`observe` + `sessions`),
 /// dispatch through the injected handler, subscribe → live event delivery,
 /// and the bounded-queue backpressure shared with `ControlSocketServer` via
 /// `ControlConnectionTable`.
@@ -28,16 +28,16 @@ struct ControlWebSocketServerTests {
       switch call {
       case .subscribe:
         return ControlReply(
-          result: SnapshotData(rev: 41, meetings: [], sources: []))
-      case .meetingStart:
+          result: SnapshotData(rev: 41, sessions: [], sources: []))
+      case .sessionStart:
         return ControlReply(
-          result: Meeting(
+          result: Session(
             id: "11111111-2222-3333-4444-555555555555",
-            identity: MeetingIdentity(platform: "meet", externalID: "AbC"),
+            identity: SessionIdentity(platform: "meet", externalID: "AbC"),
             title: "meet AbC",
             state: .active,
             started: Instant(secondsSinceEpoch: 1),
-            intervals: [MeetingInterval(start: Instant(secondsSinceEpoch: 1))],
+            intervals: [SessionInterval(start: Instant(secondsSinceEpoch: 1))],
             trigger: .browserExtension,
             rev: 1))
       default:
@@ -83,7 +83,7 @@ struct ControlWebSocketServerTests {
     ).get()
   }
 
-  @Test("hello advertises the restricted observe+meetings capability tier")
+  @Test("hello advertises the restricted observe+sessions capability tier")
   func helloCapabilityTier() async throws {
     let handler = RecordingHandler()
     let (server, listener) = makeServer(
@@ -101,7 +101,7 @@ struct ControlWebSocketServerTests {
     _ = await runner.value
   }
 
-  @Test("full round trip: meeting.start dispatches to the handler and replies over WS")
+  @Test("full round trip: session.start dispatches to the handler and replies over WS")
   func fullRoundTrip() async throws {
     let handler = RecordingHandler()
     let (server, listener) = makeServer(
@@ -119,17 +119,17 @@ struct ControlWebSocketServerTests {
     guard let replyBytes = await firstChunk(connection),
       let frame = decodeServerFrame(replyBytes)
     else {
-      Issue.record("no meeting.start reply")
+      Issue.record("no session.start reply")
       return
     }
     let reply = try JSONDecoder().decode(
-      ControlResponseFrame<Meeting>.self, from: Data(frame.payload))
+      ControlResponseFrame<Session>.self, from: Data(frame.payload))
     #expect(reply.id == .int(3))
     #expect(try reply.get().id == "11111111-2222-3333-4444-555555555555")
     #expect(
       await handler.calls == [
-        .meetingStart(
-          MeetingStartParams(platform: "meet", externalID: "AbC", trigger: .browserExtension))
+        .sessionStart(
+          SessionStartParams(platform: "meet", externalID: "AbC", trigger: .browserExtension))
       ])
 
     await server.shutdown()

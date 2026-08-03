@@ -30,22 +30,22 @@ public struct EarsDaemonConfiguration: Sendable {
   /// `[earsd].codec`/`.bitrate` — the same operator-configured storage
   /// defaults every config-declared source uses, reused for a
   /// dynamically-created `browser:<label>` source's on-disk encoding (see
-  /// ``EarsDaemon/openIngestSource(label:format:meeting:)``). Every
+  /// ``EarsDaemon/openIngestSource(label:format:session:)``). Every
   /// config-declared ``SourceDescriptor`` already has these baked in at
   /// resolution time; a browser source has no config entry to resolve one
   /// from, so ``EarsDaemon`` needs them directly.
   public var codec: String
   public var bitrate: Int
   /// How often the daemon's ``EvictionSweeper`` runs its retention pass across
-  /// every meeting, in seconds. This bounds how far past a meeting's eviction
+  /// every session, in seconds. This bounds how far past a session's eviction
   /// deadline its audio can linger before being deleted (worst case ≈ deadline
   /// + this interval). Default 60 s.
   public var evictionSweepIntervalSeconds: Double
   /// `[earsd.retention].evict_after_transcript_seconds`: how long after a
-  /// meeting's transcript completes successfully its audio is kept before the
+  /// session's transcript completes successfully its audio is kept before the
   /// sweeper deletes it. Default 7200 s (2 h).
   public var evictAfterTranscriptSeconds: Double
-  /// `[earsd.retention].max_audio_age_seconds`: the hard cap — a meeting whose
+  /// `[earsd.retention].max_audio_age_seconds`: the hard cap — a session whose
   /// transcript never completed keeps its audio only this long after it ended,
   /// then it is deleted regardless so a failed transcription can still be
   /// retried up to this point. Default 604800 s (7 days).
@@ -58,26 +58,26 @@ public struct EarsDaemonConfiguration: Sendable {
   /// whether ``EarsDaemon/start()`` also binds the loopback control-plane
   /// WebSocket (`EarsIPC.ControlWebSocketServer`).
   public var controlWebSocket: ControlWebSocketConfiguration?
-  /// `[earsd.meetings].ingest_close_grace_s`: how long a browser meeting's
-  /// last ingest stream may stay closed before the daemon ends the meeting
-  /// (`reason = "ingest-idle"`). See `MeetingRegistry`'s orphan policy.
-  public var meetingIngestCloseGraceSeconds: Double
-  /// `[earsd.meetings].local_sources`: locally-captured source ids (your own
-  /// mic, system audio) the daemon folds into every browser-triggered meeting
-  /// at `meeting.start`, so your side is transcribed alongside the extension's
+  /// `[earsd.sessions].ingest_close_grace_s`: how long a browser session's
+  /// last ingest stream may stay closed before the daemon ends the session
+  /// (`reason = "ingest-idle"`). See `SessionRegistry`'s orphan policy.
+  public var sessionIngestCloseGraceSeconds: Double
+  /// `[earsd.sessions].local_sources`: locally-captured source ids (your own
+  /// mic, system audio) the daemon folds into every browser-triggered session
+  /// at `session.start`, so your side is transcribed alongside the extension's
   /// per-participant streams. Filtered to sources that actually exist, so an
   /// id here that the daemon isn't capturing is silently skipped rather than
-  /// breaking `transcribe --meeting`. Default `["mic"]`; `[]` disables.
-  public var browserMeetingLocalSources: [SourceID]
-  /// Whether a browser-triggered meeting auto-runs the transcribe stage
-  /// (`transcribe --meeting <id>`) via the shared ``OnClosePipelineRunner``
+  /// breaking `transcribe --session`. Default `["mic"]`; `[]` disables.
+  public var browserSessionLocalSources: [SourceID]
+  /// Whether a browser-triggered session auto-runs the transcribe stage
+  /// (`transcribe --session <id>`) via the shared ``OnClosePipelineRunner``
   /// when it ends.
-  /// Default `true`; no config key — tests inject `false` so a meeting end
+  /// Default `true`; no config key — tests inject `false` so a session end
   /// never spawns a real transcribe subprocess.
-  public var transcribeOnBrowserMeetingEnd: Bool
+  public var transcribeOnBrowserSessionEnd: Bool
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; retained on the
-  /// configuration so a future meeting-level `cleanup`/`summarize` chain can
+  /// configuration so a future session-level `cleanup`/`summarize` chain can
   /// construct file-path arguments from it.
   public var outputRoot: URL
 
@@ -94,9 +94,9 @@ public struct EarsDaemonConfiguration: Sendable {
     maxAudioAgeSeconds: Double = 604_800,
     ingestWebSocket: IngestWebSocketConfiguration? = nil,
     controlWebSocket: ControlWebSocketConfiguration? = nil,
-    meetingIngestCloseGraceSeconds: Double = 120,
-    browserMeetingLocalSources: [SourceID] = ["mic"],
-    transcribeOnBrowserMeetingEnd: Bool = true,
+    sessionIngestCloseGraceSeconds: Double = 120,
+    browserSessionLocalSources: [SourceID] = ["mic"],
+    transcribeOnBrowserSessionEnd: Bool = true,
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
     self.sources = sources
@@ -112,9 +112,9 @@ public struct EarsDaemonConfiguration: Sendable {
     self.maxAudioAgeSeconds = maxAudioAgeSeconds
     self.ingestWebSocket = ingestWebSocket
     self.controlWebSocket = controlWebSocket
-    self.meetingIngestCloseGraceSeconds = meetingIngestCloseGraceSeconds
-    self.browserMeetingLocalSources = browserMeetingLocalSources
-    self.transcribeOnBrowserMeetingEnd = transcribeOnBrowserMeetingEnd
+    self.sessionIngestCloseGraceSeconds = sessionIngestCloseGraceSeconds
+    self.browserSessionLocalSources = browserSessionLocalSources
+    self.transcribeOnBrowserSessionEnd = transcribeOnBrowserSessionEnd
   }
 }
 
@@ -148,7 +148,7 @@ public struct ControlWebSocketConfiguration: Sendable {
 }
 
 /// The top-level composition: wires one ``CaptureActor`` per configured
-/// source, a ``MeetingRegistry``, a ``ControlServer`` serving the real control
+/// source, a ``SessionRegistry``, a ``ControlServer`` serving the real control
 /// socket, an ``EventBus`` bridging both event producers to the socket's
 /// pub/sub fan-out, a ``PowerObserver``, and a ``ShutdownCoordinator`` into one
 /// runnable daemon — the object `earsd`'s `main` constructs and runs.
@@ -170,43 +170,43 @@ public actor EarsDaemon {
   private var ingestStats: [SourceID: IngestStats] = [:]
   private var ingestStatsFlushedAt: Instant?
   /// The daemon's free-text lifecycle/component logger, threaded into
-  /// `ControlServer`, `MeetingRegistry`, `OnClosePipelineRunner`, etc. Now a
+  /// `ControlServer`, `SessionRegistry`, `OnClosePipelineRunner`, etc. Now a
   /// thin wrapper over ``logSink`` (built in `init`) so those messages land in
   /// the same stream as everything else, rather than a separate path.
   private let log: @Sendable (String) -> Void
 
   /// Every source's live ``CaptureActor``. Empty at boot: the daemon builds and
-  /// starts a source's actor only when a meeting that names it starts (config
-  /// sources, via ``startMeetingCapture(meetingID:sources:)``) or on its first
-  /// `ingest.open` (browser sources), and tears it down when the last meeting
+  /// starts a source's actor only when a session that names it starts (config
+  /// sources, via ``startSessionCapture(sessionID:sources:)``) or on its first
+  /// `ingest.open` (browser sources), and tears it down when the last session
   /// referencing it ends (or its ingest stream closes).
   private var captureActors: [SourceID: CaptureActor]
   /// The config-declared sources' descriptors, kept for on-demand capture. A
-  /// meeting names a source id; this is where its capture parameters (rates,
+  /// session names a source id; this is where its capture parameters (rates,
   /// codec, device uid) are resolved from when the actor is built. Browser
   /// sources have no entry here — they're built by ``openIngestSource`` from
   /// the ingest format instead.
   private let configuredDescriptors: [SourceID: SourceDescriptor]
   /// Builds a config source's real capture backend on demand — stored so a
-  /// meeting can construct actors after the daemon has already started.
+  /// session can construct actors after the daemon has already started.
   private let backendFactory: CaptureBackendFactory
-  /// Which live meetings currently reference each config source's capture. A
+  /// Which live sessions currently reference each config source's capture. A
   /// source records while this set is non-empty and is stopped and torn down
-  /// once it empties, so two concurrent meetings sharing the mic keep it alive
+  /// once it empties, so two concurrent sessions sharing the mic keep it alive
   /// until both end.
-  private var captureMeetingRefs: [SourceID: Set<String>] = [:]
-  /// The meeting each live ``CaptureActor`` was built against — i.e. whose
+  private var captureSessionRefs: [SourceID: Set<String>] = [:]
+  /// The session each live ``CaptureActor`` was built against — i.e. whose
   /// directory its `ChunkEncoder`/`IndexAppender`/VAD writer point at. A
-  /// capture actor's true identity is `(SourceID, meetingID)`, not the label
+  /// capture actor's true identity is `(SourceID, sessionID)`, not the label
   /// alone (#19): the same label (`mic` always, `browser:meet:speaker-N` by
-  /// construction) recurs across meetings, so an actor built for meeting X must
-  /// never be reused to write meeting Y's audio into X's tree. Under the
-  /// single-active invariant (#27) there is only ever one legal meeting for any
+  /// construction) recurs across sessions, so an actor built for session X must
+  /// never be reused to write session Y's audio into X's tree. Under the
+  /// single-active invariant (#27) there is only ever one legal session for any
   /// actor; this map is what lets a reuse verify that and rebuild (browser) or
   /// loudly assert (config) on a mismatch.
-  private var actorMeetings: [SourceID: String] = [:]
+  private var actorSessions: [SourceID: String] = [:]
   /// The producer→subscriber bridge for live-feed events: every
-  /// ``CaptureActor`` and the ``MeetingRegistry`` publish into it from
+  /// ``CaptureActor`` and the ``SessionRegistry`` publish into it from
   /// construction on, and ``start()`` attaches the socket server's fan-out
   /// once the listener is bound (see ``EventBus``'s lifetime rationale).
   private let eventBus: EventBus
@@ -215,13 +215,13 @@ public actor EarsDaemon {
   private var controlServer: ControlServer?
   private var controlWebSocketServer: ControlWebSocketServer?
   private var controlWebSocketRunTask: Task<Void, Never>?
-  private var meetingRegistry: MeetingRegistry?
+  private var sessionRegistry: SessionRegistry?
   /// Fresh per daemon start, advertised in every `hello` result — what tells
   /// a reconnecting client the revision counters reset.
   private let bootID = UUID().uuidString.lowercased()
   private var powerObserver: PowerObserver?
   /// The daemon-owned, timer-driven retention enforcer — deletes each ended
-  /// meeting's audio once its transcript-driven deadline passes. Started in
+  /// session's audio once its transcript-driven deadline passes. Started in
   /// ``start()`` after the control socket is bound, stopped in ``stop()``.
   private var evictionSweeper: EvictionSweeper?
 
@@ -251,26 +251,26 @@ public actor EarsDaemon {
   private var ingestWebSocketServer: IngestWebSocketServer?
   private var ingestServerRunTask: Task<Void, Never>?
 
-  /// Thrown by ``openIngestSource(label:format:meeting:)``.
+  /// Thrown by ``openIngestSource(label:format:session:)``.
   public enum IngestError: Error, Sendable {
     /// The `source` isn't a `browser:*` id — guards against a WebSocket
     /// client naming an existing config-declared source (e.g. `mic`) and
     /// hijacking its `CaptureActor`.
     case notABrowserSource(SourceID)
-    /// The open carried no meeting tag, or its identity resolves to no live
-    /// meeting (the `ingest.open` raced ahead of `meeting.start`). Audio is
-    /// meeting-scoped, so with no meeting there is nowhere to put it; the
-    /// extension sends `meeting.start` before `ingest.open`, so a live client
+    /// The open carried no session tag, or its identity resolves to no live
+    /// session (the `ingest.open` raced ahead of `session.start`). Audio is
+    /// session-scoped, so with no session there is nowhere to put it; the
+    /// extension sends `session.start` before `ingest.open`, so a live client
     /// simply retries.
-    case noMeetingForIngest(SourceID)
+    case noSessionForIngest(SourceID)
   }
 
   /// Records `configuration` and boots **idle**: no `CaptureActor` is built,
   /// no source directory or `meta.toml` is written, and no backend or socket
   /// is started until ``start()`` — and even then capture stays off until a
-  /// meeting starts. Recording is meeting-scoped, so a source's actor is built
-  /// and started only when a meeting names it (see
-  /// ``startMeetingCapture(meetingID:sources:)``) or on its first `ingest.open`.
+  /// session starts. Recording is session-scoped, so a source's actor is built
+  /// and started only when a session names it (see
+  /// ``startSessionCapture(sessionID:sources:)``) or on its first `ingest.open`.
   ///
   /// - Parameter logSink: The single structured sink the whole daemon logs
   ///   through — capture events, lifecycle, and every component's free-text
@@ -310,7 +310,7 @@ public actor EarsDaemon {
     self.eventBus = eventBus
 
     // Idle boot: no capture actor is built, and nothing is written to disk,
-    // until a meeting starts (see `startMeetingCapture`) or an `ingest.open`
+    // until a session starts (see `startSessionCapture`) or an `ingest.open`
     // creates a browser source. A fresh daemon start therefore writes no audio
     // and creates no source directories.
     self.captureActors = [:]
@@ -319,14 +319,14 @@ public actor EarsDaemon {
   /// Builds one source's `CaptureActor` — and its `ChunkEncoder`/
   /// `IndexAppender`/on-disk directory/`meta.toml` — from `descriptor`. The
   /// construction logic every config-declared source goes through when a
-  /// meeting starts it, and the same logic
-  /// ``openIngestSource(label:format:meeting:)`` uses to build a
+  /// session starts it, and the same logic
+  /// ``openIngestSource(label:format:session:)`` uses to build a
   /// `browser:<label>` source the first time it's ever seen.
   ///
-  /// `dataRoot` is the *meeting's* directory
-  /// (`DataStoreLayout.meetingDirectory`), not the global data root: audio is
-  /// meeting-scoped, so every path this method derives lands under
-  /// `meetings/<id>/sources/<source>/`. `configuration` supplies only the
+  /// `dataRoot` is the *session's* directory
+  /// (`DataStoreLayout.sessionDirectory`), not the global data root: audio is
+  /// session-scoped, so every path this method derives lands under
+  /// `sessions/<id>/sources/<source>/`. `configuration` supplies only the
   /// non-path capture parameters (chunk seconds, VAD).
   private static func buildCaptureActor(
     for descriptor: SourceDescriptor,
@@ -417,51 +417,51 @@ public actor EarsDaemon {
   /// daemon-fatal condition, unlike one source's permission denial.
   public func start() async throws {
 
-    // The daemon-owned meeting lifecycle registry, serving the `meeting.*`
-    // verbs on both control transports. Meeting end fires the meeting-level
-    // auto-transcribe (`transcribe --meeting <id>`).
-    let onMeetingEnded: MeetingRegistry.EndedHook?
-    if configuration.transcribeOnBrowserMeetingEnd {
+    // The daemon-owned session lifecycle registry, serving the `session.*`
+    // verbs on both control transports. Session end fires the session-level
+    // auto-transcribe (`transcribe --session <id>`).
+    let onSessionEnded: SessionRegistry.EndedHook?
+    if configuration.transcribeOnBrowserSessionEnd {
       let pipeline = OnClosePipelineRunner(log: log)
-      onMeetingEnded = { [weak self] meeting in
-        guard meeting.trigger == .browserExtension else { return }
-        // Spawned in its own task so `meeting.end` never blocks behind a full
+      onSessionEnded = { [weak self] session in
+        guard session.trigger == .browserExtension else { return }
+        // Spawned in its own task so `session.end` never blocks behind a full
         // transcription run. On success, stamp the transcript-completion marker
-        // — which starts this meeting's retention clock.
+        // — which starts this session's retention clock.
         Task { [weak self] in
-          let succeeded = await pipeline.runMeetingTranscribe(
-            meetingID: meeting.id, context: "meeting-end")
+          let succeeded = await pipeline.runSessionTranscribe(
+            sessionID: session.id, context: "session-end")
           if succeeded {
-            await self?.markMeetingTranscriptCompleted(meeting.id)
+            await self?.markSessionTranscriptCompleted(session.id)
           }
         }
       }
     } else {
-      onMeetingEnded = nil
+      onSessionEnded = nil
     }
-    let meetings = MeetingRegistry(
+    let sessions = SessionRegistry(
       dataRoot: configuration.dataRoot,
       clock: clock,
       bus: eventBus,
-      graceSeconds: configuration.meetingIngestCloseGraceSeconds,
-      onEnded: onMeetingEnded,
-      localBrowserSources: configuration.browserMeetingLocalSources,
+      graceSeconds: configuration.sessionIngestCloseGraceSeconds,
+      onEnded: onSessionEnded,
+      localBrowserSources: configuration.browserSessionLocalSources,
       knownSourceIDs: { [weak self] in
         guard let self else { return [] }
         return await self.currentSourceIDs()
       },
-      startCapture: { [weak self] meetingID, sources in
-        await self?.startMeetingCapture(meetingID: meetingID, sources: sources)
+      startCapture: { [weak self] sessionID, sources in
+        await self?.startSessionCapture(sessionID: sessionID, sources: sources)
       },
-      stopCapture: { [weak self] meetingID, sources in
-        await self?.stopMeetingCapture(meetingID: meetingID, sources: sources)
+      stopCapture: { [weak self] sessionID, sources in
+        await self?.stopSessionCapture(sessionID: sessionID, sources: sources)
       },
       log: log)
     // `loadFromDisk()` is deferred to after `self.controlServer` is assigned
-    // below: a meeting still active on disk resumes capture through
-    // `startMeetingCapture`, which registers the rebuilt source into the
+    // below: a session still active on disk resumes capture through
+    // `startSessionCapture`, which registers the rebuilt source into the
     // control server so `status`/`sources.list` see it.
-    meetingRegistry = meetings
+    sessionRegistry = sessions
 
     let controlServer = ControlServer(
       captureActors: captureActors,
@@ -471,7 +471,7 @@ public actor EarsDaemon {
       // `segment.publish`/`job.publish` → the live feed, and `subscribe`
       // snapshots read the bus's revision.
       bus: eventBus,
-      meetings: meetings)
+      sessions: sessions)
 
     let socketDirectory = URL(fileURLWithPath: configuration.socketPath).deletingLastPathComponent()
     try FileManager.default.createDirectory(
@@ -483,16 +483,16 @@ public actor EarsDaemon {
       listener: listener, identity: identity, log: log, handler: controlServer.makeHandler())
     controlSocketServer = socketServer
     controlServerRunTask = Task { await socketServer.run() }
-    // Kept so `openIngestSource`/`startMeetingCapture` can register a
+    // Kept so `openIngestSource`/`startSessionCapture` can register a
     // dynamically-built source into this SAME actor's `captureActors` —
     // otherwise it's a value-type copy neither sees the other's later changes
     // to. No capture is started here: the daemon boots idle and starts
-    // recording only when a meeting begins.
+    // recording only when a session begins.
     self.controlServer = controlServer
 
-    // Now that the control server is wired, recover any meeting still active
-    // on disk — resuming capture of its sources through `startMeetingCapture`.
-    await meetings.loadFromDisk()
+    // Now that the control server is wired, recover any session still active
+    // on disk — resuming capture of its sources through `startSessionCapture`.
+    await sessions.loadFromDisk()
 
     // The loopback control-plane WebSocket serves the SAME handler as the
     // Unix socket — zero duplicated command dispatch between transports.
@@ -505,7 +505,7 @@ public actor EarsDaemon {
     let controlWebSocketServer = self.controlWebSocketServer
 
     // Only now does a pub/sub consumer exist: route every event published by
-    // the capture actors / meeting registry into the socket's fan-out.
+    // the capture actors / session registry into the socket's fan-out.
     // Events published before this line (during source startup) were dropped
     // by design — no subscriber could have been connected yet anyway.
     await eventBus.attach { frame in
@@ -513,20 +513,20 @@ public actor EarsDaemon {
       await controlWebSocketServer?.publish(frame)
     }
 
-    // Capture is meeting-scoped, so the set of live actors changes over the
+    // Capture is session-scoped, so the set of live actors changes over the
     // daemon's lifetime — the observer reads it live rather than snapshotting
     // an (empty at boot) map, so sleep/wake pauses whatever is recording for
-    // the active meeting.
+    // the active session.
     let observer = PowerObserver(activeCaptureActors: { [weak self] in
       await self?.currentPausables() ?? []
     })
     await observer.startObserving()
     powerObserver = observer
 
-    // The daemon owns retention: a periodic sweep over every meeting on disk,
-    // deleting an ended meeting's audio once its transcript-driven deadline
-    // passes. Decoupled from capture entirely — an ended meeting has no live
-    // actors, so the sweep is a plain per-meeting directory delete.
+    // The daemon owns retention: a periodic sweep over every session on disk,
+    // deleting an ended session's audio once its transcript-driven deadline
+    // passes. Decoupled from capture entirely — an ended session has no live
+    // actors, so the sweep is a plain per-session directory delete.
     let sweeper = EvictionSweeper(
       dataRoot: configuration.dataRoot,
       clock: clock,
@@ -559,9 +559,9 @@ public actor EarsDaemon {
       listener: ingestListener,
       allowedOrigins: ingestWebSocket.allowedOrigins,
       log: log,
-      onOpen: { [weak self] label, format, meeting in
+      onOpen: { [weak self] label, format, session in
         guard let self else { throw IngestError.notABrowserSource(label) }
-        return try await self.openIngestSource(label: label, format: format, meeting: meeting)
+        return try await self.openIngestSource(label: label, format: format, session: session)
       },
       onPush: { [weak self] streamID, samples, sampleRate, stamp in
         await self?.pushIngestAudio(
@@ -625,7 +625,7 @@ public actor EarsDaemon {
     controlWebSocketRunTask?.cancel()
     controlWebSocketRunTask = nil
     controlWebSocketServer = nil
-    meetingRegistry = nil
+    sessionRegistry = nil
 
     if let ingestWebSocketServer {
       await ingestWebSocketServer.shutdown()
@@ -674,50 +674,50 @@ public actor EarsDaemon {
   ///
   /// Visibility of a dynamically-created source elsewhere in the daemon:
   /// `ControlServer`'s map is kept in sync via `registerDynamicSource`
-  /// (`status`/`sources.list`), and `MeetingRegistry.knownSourceIDs` is a
-  /// live lookup back into this actor (see `start()`), so a meeting can
+  /// (`status`/`sources.list`), and `SessionRegistry.knownSourceIDs` is a
+  /// live lookup back into this actor (see `start()`), so a session can
   /// name a browser source created by a later `ingest.open`. Known remaining gap: `PowerObserver` still holds the
   /// `captureActors` *snapshot* it was built with at `start()`, so a
   /// dynamic source created afterwards is not paused/resumed on sleep/wake
   /// — a documented follow-up (Phase 6 scoped it out as separable), not
   /// silently assumed fixed.
   public func openIngestSource(
-    label: SourceID, format: AudioFormatSpec, meeting: MeetingIdentity? = nil
+    label: SourceID, format: AudioFormatSpec, session: SessionIdentity? = nil
   ) async throws -> String {
     guard label.sourceClass == .browser else {
       throw IngestError.notABrowserSource(label)
     }
 
-    // Audio is meeting-scoped: the open's identity tag names which meeting
+    // Audio is session-scoped: the open's identity tag names which session
     // directory this source's audio lands in. No tag, or a tag whose
-    // meeting.start hasn't arrived yet, is rejected — the extension opens
-    // ingest only after meeting.start, so a live client retries.
-    guard let identity = meeting,
-      let meetingID = await meetingRegistry?.meetingID(for: identity)
+    // session.start hasn't arrived yet, is rejected — the extension opens
+    // ingest only after session.start, so a live client retries.
+    guard let identity = session,
+      let sessionID = await sessionRegistry?.sessionID(for: identity)
     else {
-      log("ingest.open '\(label.rawValue)' rejected: no live meeting for its identity tag")
-      throw IngestError.noMeetingForIngest(label)
+      log("ingest.open '\(label.rawValue)' rejected: no live session for its identity tag")
+      throw IngestError.noSessionForIngest(label)
     }
 
     let actor: CaptureActor
-    if let existing = captureActors[label], actorMeetings[label] == meetingID {
-      // Same-meeting rejoin: resume the SAME on-disk source (the behaviour the
+    if let existing = captureActors[label], actorSessions[label] == sessionID {
+      // Same-session rejoin: resume the SAME on-disk source (the behaviour the
       // label-only reuse was protecting — a participant leaving and rejoining
       // the same call).
-      log("ingest.open reuse: label=\(label.rawValue) meeting=\(meetingID) (same-meeting rejoin)")
+      log("ingest.open reuse: label=\(label.rawValue) session=\(sessionID) (same-session rejoin)")
       actor = existing
     } else {
       if captureActors[label] != nil {
         // #19 manifestation B: the existing actor's writers point at a
-        // *different* meeting's tree (a superseded/older meeting that reused the
-        // same slot label). Reusing it would write this meeting's audio into the
-        // old meeting's directory — the exact wrong-directory bug. Tear it down
-        // and rebuild against the resolved meeting's own directory instead. This
+        // *different* session's tree (a superseded/older session that reused the
+        // same slot label). Reusing it would write this session's audio into the
+        // old session's directory — the exact wrong-directory bug. Tear it down
+        // and rebuild against the resolved session's own directory instead. This
         // line IS the bug when it fires unexpectedly.
         log(
           "ingest.open reuse-mismatch [error]: label=\(label.rawValue) "
-            + "resolved_meeting=\(meetingID) actor_meeting=\(actorMeetings[label] ?? "nil") "
-            + "— rebuilding against the resolved meeting")
+            + "resolved_session=\(sessionID) actor_session=\(actorSessions[label] ?? "nil") "
+            + "— rebuilding against the resolved session")
         await teardownIngestActor(label)
       }
       let descriptor = SourceDescriptor(
@@ -734,22 +734,22 @@ public actor EarsDaemon {
         bitrate: configuration.bitrate,
         created: clock.now())
       let backend = PushCaptureBackend(source: label)
-      let meetingRoot = DataStoreLayout.meetingDirectory(
-        dataRoot: configuration.dataRoot, meetingID: meetingID)
+      let sessionRoot = DataStoreLayout.sessionDirectory(
+        dataRoot: configuration.dataRoot, sessionID: sessionID)
       let built = try Self.buildCaptureActor(
         for: descriptor,
         configuration: configuration,
-        dataRoot: meetingRoot,
+        dataRoot: sessionRoot,
         backend: backend,
         clock: clock,
         eventSink: { [eventBus] event in await eventBus.publish(event) },
         logSink: logSink)
       captureActors[label] = built
-      actorMeetings[label] = meetingID
+      actorSessions[label] = sessionID
       pushBackends[label] = backend
       log(
-        "capture actor built: source=\(label.rawValue) meeting=\(meetingID) "
-          + "data_root=\(meetingRoot.path)")
+        "capture actor built: source=\(label.rawValue) session=\(sessionID) "
+          + "data_root=\(sessionRoot.path)")
       await controlServer?.registerDynamicSource(built, id: label)
       actor = built
     }
@@ -763,12 +763,12 @@ public actor EarsDaemon {
     nextIngestStreamID += 1
     let streamID = "s\(nextIngestStreamID)"
     ingestStreams[streamID] = label
-    // Feed the meeting registry's orphan-grace tracking: a live stream on a
-    // meeting's source cancels its pending grace expiry. The membership tag
-    // (when the extension sent one) links the source into its meeting
+    // Feed the session registry's orphan-grace tracking: a live stream on a
+    // session's source cancels its pending grace expiry. The membership tag
+    // (when the extension sent one) links the source into its session
     // daemon-side, so the grace policy holds even if the client's attendee
     // upserts never arrive.
-    await meetingRegistry?.ingestStreamOpened(source: label, meeting: meeting)
+    await sessionRegistry?.ingestStreamOpened(source: label, session: session)
     return streamID
   }
 
@@ -916,15 +916,15 @@ public actor EarsDaemon {
     if let actor = captureActors[label] {
       await actor.stop()
     }
-    // When this was a browser meeting's last live stream, its ingest-close
+    // When this was a browser session's last live stream, its ingest-close
     // grace clock starts now.
-    await meetingRegistry?.ingestStreamClosed(source: label)
+    await sessionRegistry?.ingestStreamClosed(source: label)
   }
 
   /// Stops and forgets the `CaptureActor` + `PushCaptureBackend` behind a
-  /// browser `label`, so a rebuild against a *different* meeting's directory
+  /// browser `label`, so a rebuild against a *different* session's directory
   /// starts clean (the #19 reuse-mismatch path). The stopped actor's on-disk
-  /// audio under its original meeting stays put — retention owns its lifetime,
+  /// audio under its original session stays put — retention owns its lifetime,
   /// not this teardown.
   private func teardownIngestActor(_ label: SourceID) async {
     await flushIngestStats(source: label)
@@ -933,14 +933,14 @@ public actor EarsDaemon {
     }
     captureActors[label] = nil
     pushBackends[label] = nil
-    actorMeetings[label] = nil
+    actorSessions[label] = nil
     await controlServer?.unregisterDynamicSource(id: label)
   }
 
   /// The ids of every source this daemon currently knows — the config-declared
   /// sources (whether or not they're capturing right now) plus any live
   /// `browser:<label>` sources built by `ingest.open` — read live for
-  /// ``MeetingRegistry``'s `knownSourceIDs` validation seam. Config sources stay "known" while idle so a meeting can still fold
+  /// ``SessionRegistry``'s `knownSourceIDs` validation seam. Config sources stay "known" while idle so a session can still fold
   /// in `local_sources` (the mic) before any actor exists.
   private func currentSourceIDs() -> Set<SourceID> {
     Set(configuredDescriptors.keys).union(captureActors.keys)
@@ -948,42 +948,42 @@ public actor EarsDaemon {
 
   /// Every currently-live capture actor as a ``SuspendablePauseResume``, for
   /// the ``PowerObserver``'s live view — read on each sleep/wake transition so
-  /// it pauses/resumes exactly what a meeting is recording right now.
+  /// it pauses/resumes exactly what a session is recording right now.
   private func currentPausables() -> [any SuspendablePauseResume] {
     captureActors.values.map { $0 as any SuspendablePauseResume }
   }
 
-  // MARK: - Meeting-scoped capture
+  // MARK: - Session-scoped capture
 
-  /// Starts capture for the config-declared sources a meeting names,
-  /// ref-counted by meeting id so a source shared by concurrent meetings keeps
+  /// Starts capture for the config-declared sources a session names,
+  /// ref-counted by session id so a source shared by concurrent sessions keeps
   /// recording until the last one ends. Browser (`browser:*`) and unknown ids
   /// have no ``configuredDescriptors`` entry and are skipped — browser sources
-  /// are driven by their ingest streams, not the meeting controller.
-  /// Idempotent per meeting: re-declaring a meeting only starts sources it
+  /// are driven by their ingest streams, not the session controller.
+  /// Idempotent per session: re-declaring a session only starts sources it
   /// hasn't already claimed.
-  func startMeetingCapture(meetingID: String, sources: [SourceID]) async {
+  func startSessionCapture(sessionID: String, sources: [SourceID]) async {
     for id in sources {
       guard let descriptor = configuredDescriptors[id] else { continue }
-      let wasIdle = (captureMeetingRefs[id]?.isEmpty ?? true)
-      captureMeetingRefs[id, default: []].insert(meetingID)
+      let wasIdle = (captureSessionRefs[id]?.isEmpty ?? true)
+      captureSessionRefs[id, default: []].insert(sessionID)
       log(
-        "meeting capture claim: source=\(id.rawValue) meeting=\(meetingID) "
-          + "refs=[\(captureMeetingRefs[id]!.sorted().joined(separator: ","))] was_idle=\(wasIdle)")
+        "session capture claim: source=\(id.rawValue) session=\(sessionID) "
+          + "refs=[\(captureSessionRefs[id]!.sorted().joined(separator: ","))] was_idle=\(wasIdle)")
       guard wasIdle else { continue }
-      await ensureCaptureStarted(descriptor, meetingID: meetingID)
+      await ensureCaptureStarted(descriptor, sessionID: sessionID)
     }
   }
 
-  /// Releases a meeting's hold on its config sources; a source with no
-  /// remaining meeting is stopped (flushing its in-progress chunk) and torn
-  /// down. Browser/unknown ids are skipped, as in ``startMeetingCapture``.
-  func stopMeetingCapture(meetingID: String, sources: [SourceID]) async {
+  /// Releases a session's hold on its config sources; a source with no
+  /// remaining session is stopped (flushing its in-progress chunk) and torn
+  /// down. Browser/unknown ids are skipped, as in ``startSessionCapture``.
+  func stopSessionCapture(sessionID: String, sources: [SourceID]) async {
     for id in sources {
       guard configuredDescriptors[id] != nil else { continue }
-      guard captureMeetingRefs[id]?.remove(meetingID) != nil else { continue }
-      if captureMeetingRefs[id]?.isEmpty ?? true {
-        captureMeetingRefs[id] = nil
+      guard captureSessionRefs[id]?.remove(sessionID) != nil else { continue }
+      if captureSessionRefs[id]?.isEmpty ?? true {
+        captureSessionRefs[id] = nil
         await teardownCaptureActor(id)
       }
     }
@@ -991,63 +991,63 @@ public actor EarsDaemon {
 
   /// Builds (if needed) and starts a config source's `CaptureActor`, registering
   /// a freshly-built one into the control server so `status`/`sources.list` see
-  /// it. The actor is built against `meetingID`'s directory, so its audio lands
-  /// under `meetings/<id>/sources/`. A build failure disables just that source
+  /// it. The actor is built against `sessionID`'s directory, so its audio lands
+  /// under `sessions/<id>/sources/`. A build failure disables just that source
   /// (logged), and a backend `start()` failure leaves it in `.error` — never
-  /// taking down the meeting or the daemon, mirroring the old per-source
+  /// taking down the session or the daemon, mirroring the old per-source
   /// startup isolation.
   ///
-  /// Accepted limitation: two *concurrent* meetings sharing a config source
-  /// reuse the first meeting's actor (actors are keyed by source id), so the
-  /// second meeting's audio lands in the first's directory. Sequential
-  /// meetings are unaffected — each builds a fresh actor against its own
-  /// directory, because the prior meeting's teardown removed the shared one.
-  private func ensureCaptureStarted(_ descriptor: SourceDescriptor, meetingID: String) async {
+  /// Accepted limitation: two *concurrent* sessions sharing a config source
+  /// reuse the first session's actor (actors are keyed by source id), so the
+  /// second session's audio lands in the first's directory. Sequential
+  /// sessions are unaffected — each builds a fresh actor against its own
+  /// directory, because the prior session's teardown removed the shared one.
+  private func ensureCaptureStarted(_ descriptor: SourceDescriptor, sessionID: String) async {
     let actor: CaptureActor
     if let existing = captureActors[descriptor.id] {
       // Identity assertion (option C's cheap guard, #27): a config source's live
-      // actor must belong to the meeting now claiming it. Under the single-active
-      // invariant the prior meeting's teardown removed it before this meeting
-      // started, so a surviving actor bound to a *different* meeting is a bug
+      // actor must belong to the session now claiming it. Under the single-active
+      // invariant the prior session's teardown removed it before this session
+      // started, so a surviving actor bound to a *different* session is a bug
       // worth a loud error, not a supported configuration.
-      if let boundTo = actorMeetings[descriptor.id], boundTo != meetingID {
+      if let boundTo = actorSessions[descriptor.id], boundTo != sessionID {
         log(
           "capture actor identity mismatch [error]: source=\(descriptor.id.rawValue) "
-            + "actor_meeting=\(boundTo) claiming_meeting=\(meetingID) — reusing existing actor "
+            + "actor_session=\(boundTo) claiming_session=\(sessionID) — reusing existing actor "
             + "(its audio still lands under \(boundTo))")
       }
       actor = existing
     } else {
-      let meetingRoot = DataStoreLayout.meetingDirectory(
-        dataRoot: configuration.dataRoot, meetingID: meetingID)
+      let sessionRoot = DataStoreLayout.sessionDirectory(
+        dataRoot: configuration.dataRoot, sessionID: sessionID)
       do {
         actor = try Self.buildCaptureActor(
           for: descriptor,
           configuration: configuration,
-          dataRoot: meetingRoot,
+          dataRoot: sessionRoot,
           backend: backendFactory(descriptor),
           clock: clock,
           eventSink: { [eventBus] event in await eventBus.publish(event) },
           logSink: logSink)
       } catch {
         log(
-          "meeting capture: source '\(descriptor.id.rawValue)' failed to build and is disabled: \(error)"
+          "session capture: source '\(descriptor.id.rawValue)' failed to build and is disabled: \(error)"
         )
         return
       }
       captureActors[descriptor.id] = actor
-      actorMeetings[descriptor.id] = meetingID
+      actorSessions[descriptor.id] = sessionID
       log(
-        "capture actor built: source=\(descriptor.id.rawValue) meeting=\(meetingID) "
-          + "data_root=\(meetingRoot.path)")
+        "capture actor built: source=\(descriptor.id.rawValue) session=\(sessionID) "
+          + "data_root=\(sessionRoot.path)")
       await controlServer?.registerDynamicSource(actor, id: descriptor.id)
     }
     do {
       try await actor.start()
     } catch CaptureActorError.alreadyCapturing {
-      // Already running for another meeting — nothing to do.
+      // Already running for another session — nothing to do.
     } catch {
-      log("meeting capture: source '\(descriptor.id.rawValue)' failed to start: \(error)")
+      log("session capture: source '\(descriptor.id.rawValue)' failed to start: \(error)")
     }
   }
 
@@ -1059,15 +1059,15 @@ public actor EarsDaemon {
     guard let actor = captureActors[id] else { return }
     await actor.stop()
     captureActors[id] = nil
-    actorMeetings[id] = nil
+    actorSessions[id] = nil
     await controlServer?.unregisterDynamicSource(id: id)
   }
 
-  /// Stamps a meeting's transcript-completion marker through the registry —
-  /// invoked by the meeting-end auto-transcribe hook after a successful run, so
-  /// the retention sweeper can start that meeting's eviction clock.
-  private func markMeetingTranscriptCompleted(_ id: String) async {
-    await meetingRegistry?.markTranscriptCompleted(id: id, at: clock.now())
+  /// Stamps a session's transcript-completion marker through the registry —
+  /// invoked by the session-end auto-transcribe hook after a successful run, so
+  /// the retention sweeper can start that session's eviction clock.
+  private func markSessionTranscriptCompleted(_ id: String) async {
+    await sessionRegistry?.markTranscriptCompleted(id: id, at: clock.now())
   }
 
   /// Every source's current status, keyed by id — a test-only seam so an
@@ -1082,30 +1082,30 @@ public actor EarsDaemon {
     return statuses
   }
 
-  /// Test-only: drive the meeting lifecycle through the daemon's real
-  /// ``MeetingRegistry``, so an end-to-end test can assert capture starts and
-  /// stops on meeting boundaries without a socket round-trip (a separate
+  /// Test-only: drive the session lifecycle through the daemon's real
+  /// ``SessionRegistry``, so an end-to-end test can assert capture starts and
+  /// stops on session boundaries without a socket round-trip (a separate
   /// real-socket path already proves the control plane). Both call the exact
-  /// registry entry points `meeting.start`/`meeting.end` route to.
-  func startMeetingForTesting(_ params: MeetingStartParams) async throws -> Meeting {
-    guard let meetingRegistry else {
-      fatalError("startMeetingForTesting called before start()")
+  /// registry entry points `session.start`/`session.end` route to.
+  func startSessionForTesting(_ params: SessionStartParams) async throws -> Session {
+    guard let sessionRegistry else {
+      fatalError("startSessionForTesting called before start()")
     }
-    return try await meetingRegistry.start(params)
+    return try await sessionRegistry.start(params)
   }
 
   @discardableResult
-  func endMeetingForTesting(id: String) async throws -> Meeting? {
-    guard let meetingRegistry else { return nil }
-    return try await meetingRegistry.end(id: id)
+  func endSessionForTesting(id: String) async throws -> Session? {
+    guard let sessionRegistry else { return nil }
+    return try await sessionRegistry.end(id: id)
   }
 
-  /// Test-only: stamp a meeting's transcript-completion marker through the
+  /// Test-only: stamp a session's transcript-completion marker through the
   /// same registry entry point the auto-transcribe hook uses, so a lifecycle
   /// test can start the retention clock without spawning a real `transcribe`
   /// process.
   func markTranscriptCompletedForTesting(id: String) async {
-    await markMeetingTranscriptCompleted(id)
+    await markSessionTranscriptCompleted(id)
   }
 
   /// Test-only: drive one deterministic retention pass of the daemon's own

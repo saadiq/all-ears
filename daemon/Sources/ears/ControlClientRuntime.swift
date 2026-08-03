@@ -96,7 +96,7 @@ enum ControlClientRuntime {
   }
 
   /// Resolves `data_root` from the same layered config, for the daemon-free
-  /// disk reads (`ears meeting list --all`).
+  /// disk reads (`ears session list --all`).
   static func resolveDataRoot(configFlag: String?) -> Result<String, ConfigResolutionError> {
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path

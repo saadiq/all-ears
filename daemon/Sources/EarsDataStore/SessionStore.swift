@@ -2,70 +2,70 @@ import EarsConfig
 import EarsCore
 import Foundation
 
-/// Reads and writes a meeting's `meeting.toml` (schema 2), per the
-/// `meetings/<meeting-id>/meeting.toml` layout — thin file I/O only: the
-/// field mapping is `MeetingDescriptorTOML` (`EarsConfig`), the serialization
+/// Reads and writes a session's `session.toml` (schema 3), per the
+/// `sessions/<session-id>/session.toml` layout — thin file I/O only: the
+/// field mapping is `SessionDescriptorTOML` (`EarsConfig`), the serialization
 /// is `printableConfig(_:)`/`readConfigFileLayer(at:)`. Written atomically on
 /// every mutation so a crash never leaves a torn descriptor.
-public enum MeetingStore {
-  /// Writes `meeting` to `<data-root>/meetings/<meeting-id>/meeting.toml`,
-  /// creating the meeting directory if it doesn't exist yet.
-  public static func write(_ meeting: Meeting, dataRoot: URL) throws {
-    let url = DataStoreLayout.meetingTomlFile(dataRoot: dataRoot, meetingID: meeting.id)
+public enum SessionStore {
+  /// Writes `session` to `<data-root>/sessions/<session-id>/session.toml`,
+  /// creating the session directory if it doesn't exist yet.
+  public static func write(_ session: Session, dataRoot: URL) throws {
+    let url = DataStoreLayout.sessionTomlFile(dataRoot: dataRoot, sessionID: session.id)
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let text = printableConfig(MeetingDescriptorTOML.encode(meeting))
+    let text = printableConfig(SessionDescriptorTOML.encode(session))
     try text.write(to: url, atomically: true, encoding: .utf8)
   }
 
-  /// Reads `<data-root>/meetings/<meeting-id>/meeting.toml`.
+  /// Reads `<data-root>/sessions/<session-id>/session.toml`.
   ///
-  /// - Throws: ``DataStoreError/meetingNotFound(_:)`` if the file doesn't
+  /// - Throws: ``DataStoreError/sessionNotFound(_:)`` if the file doesn't
   ///   exist; ``DescriptorTOMLError`` if it exists but doesn't parse into a
-  ///   valid ``Meeting`` (an unknown schema included).
-  public static func read(meetingID: String, dataRoot: URL) throws -> Meeting {
-    let url = DataStoreLayout.meetingTomlFile(dataRoot: dataRoot, meetingID: meetingID)
+  ///   valid ``Session`` (an unknown schema included).
+  public static func read(sessionID: String, dataRoot: URL) throws -> Session {
+    let url = DataStoreLayout.sessionTomlFile(dataRoot: dataRoot, sessionID: sessionID)
     guard FileManager.default.fileExists(atPath: url.path) else {
-      throw DataStoreError.meetingNotFound(meetingID)
+      throw DataStoreError.sessionNotFound(sessionID)
     }
     let value = try readConfigFileLayer(at: url.path)
-    return try MeetingDescriptorTOML.decode(value)
+    return try SessionDescriptorTOML.decode(value)
   }
 
-  /// Reads every parseable `meetings/*/meeting.toml` under `dataRoot` — the
-  /// startup scan `MeetingRegistry` rebuilds its state from, and what
-  /// `ears meeting list --all` reads daemon-free. A missing `meetings/`
+  /// Reads every parseable `sessions/*/session.toml` under `dataRoot` — the
+  /// startup scan `SessionRegistry` rebuilds its state from, and what
+  /// `ears session list --all` reads daemon-free. A missing `sessions/`
   /// directory is an empty list, and an unparseable descriptor is skipped
   /// and reported via `onSkip` rather than failing the whole scan.
   public static func readAll(
     dataRoot: URL, onSkip: (String, Error) -> Void = { _, _ in }
-  ) -> [Meeting] {
-    let directory = DataStoreLayout.meetingsDirectory(dataRoot: dataRoot)
+  ) -> [Session] {
+    let directory = DataStoreLayout.sessionsDirectory(dataRoot: dataRoot)
     guard
       let entries = try? FileManager.default.contentsOfDirectory(
         at: directory, includingPropertiesForKeys: nil)
     else { return [] }
-    var meetings: [Meeting] = []
+    var sessions: [Session] = []
     for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-      let meetingID = entry.lastPathComponent
+      let sessionID = entry.lastPathComponent
       do {
-        meetings.append(try read(meetingID: meetingID, dataRoot: dataRoot))
-      } catch DataStoreError.meetingNotFound {
-        continue  // a stray non-meeting entry under meetings/ — not an error
+        sessions.append(try read(sessionID: sessionID, dataRoot: dataRoot))
+      } catch DataStoreError.sessionNotFound {
+        continue  // a stray non-session entry under sessions/ — not an error
       } catch {
-        onSkip(meetingID, error)
+        onSkip(sessionID, error)
       }
     }
-    return meetings
+    return sessions
   }
 }
 
-/// Appends domain events to a meeting's `meetings/<uuid>/events.jsonl` — the
-/// durable per-meeting timeline (who was present during minutes 10–20, when
-/// pauses happened, what the meeting used to be called). Written for disk
+/// Appends domain events to a session's `sessions/<uuid>/events.jsonl` — the
+/// durable per-session timeline (who was present during minutes 10–20, when
+/// pauses happened, what the session used to be called). Written for disk
 /// consumers (`summarize`, humans, `jq`), **not** used for protocol sync;
 /// mirrors the `index.jsonl` append-only idiom.
-public enum MeetingEventLog {
+public enum SessionEventLog {
   /// One `events.jsonl` line. `event` is one of `started`,
   /// `interval_opened`, `interval_closed`, `attendee_joined`,
   /// `attendee_left`, `renamed`, `ended`; the optional fields carry the
@@ -77,7 +77,7 @@ public enum MeetingEventLog {
     public var attendee: String?
     /// `renamed`: the new title.
     public var title: String?
-    /// `ended`: `"client"` for an explicit `meeting.end`, `"ingest-idle"`
+    /// `ended`: `"client"` for an explicit `session.end`, `"ingest-idle"`
     /// for the orphan grace timer.
     public var reason: String?
 
@@ -93,18 +93,18 @@ public enum MeetingEventLog {
     }
   }
 
-  /// `<data-root>/meetings/<meeting-id>/events.jsonl`.
-  public static func fileURL(dataRoot: URL, meetingID: String) -> URL {
-    DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID)
+  /// `<data-root>/sessions/<session-id>/events.jsonl`.
+  public static func fileURL(dataRoot: URL, sessionID: String) -> URL {
+    DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID)
       .appendingPathComponent("events.jsonl")
   }
 
   /// Appends one entry (creating the file and directory as needed). Failures
   /// throw — callers decide whether the timeline is best-effort.
   public static func append(
-    _ entry: Entry, dataRoot: URL, meetingID: String
+    _ entry: Entry, dataRoot: URL, sessionID: String
   ) throws {
-    let url = fileURL(dataRoot: dataRoot, meetingID: meetingID)
+    let url = fileURL(dataRoot: dataRoot, sessionID: sessionID)
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let encoder = JSONEncoder()
@@ -122,8 +122,8 @@ public enum MeetingEventLog {
 
   /// Reads every parseable entry, in file order — for tests and disk
   /// consumers; unparseable lines are skipped.
-  public static func readAll(dataRoot: URL, meetingID: String) -> [Entry] {
-    let url = fileURL(dataRoot: dataRoot, meetingID: meetingID)
+  public static func readAll(dataRoot: URL, sessionID: String) -> [Entry] {
+    let url = fileURL(dataRoot: dataRoot, sessionID: sessionID)
     guard let data = try? Data(contentsOf: url),
       let text = String(data: data, encoding: .utf8)
     else { return [] }

@@ -1,5 +1,5 @@
 /// Everything that can go wrong decoding a `ConfigValue` tree into
-/// ``SourceDescriptor`` (`meta.toml`) or a meeting's `meeting.toml`, per
+/// ``SourceDescriptor`` (`meta.toml`) or a session's `session.toml`, per
 /// `docs/data-formats.md`'s exact schemas. Shared by the mappers so a
 /// caller handles one error type regardless of which descriptor it's decoding.
 public enum DescriptorTOMLError: Error, Sendable, Hashable {

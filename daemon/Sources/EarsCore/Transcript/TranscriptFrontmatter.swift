@@ -5,7 +5,7 @@
 /// ```yaml
 /// schema: 1
 /// kind: transcript
-/// session: 2026-07-17T10-30-00Z_standup
+/// range_run: 2026-07-17T10-30-00Z_standup
 /// sources: [mic, "app:us.zoom.xos"]
 /// range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }
 /// model: { name: parakeet, backend: fluidaudio, version: "0.x" }
@@ -25,14 +25,14 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
   public var kind: TranscriptKind
   /// A synthesized run identifier for a plain range run
   /// (`--last`/`--from`/`--to`), in the `<start-timestamp>_<slug>` shape —
-  /// see `OutputPathResolution.sessionIdentifier`. `nil` for meeting
-  /// transcripts, which carry ``meeting`` instead; rendered as a `session:`
+  /// see `OutputPathResolution.rangeRunIdentifier`. `nil` for session
+  /// transcripts, which carry ``session`` instead; rendered as a `range_run:`
   /// line only when present.
+  public var rangeRun: String?
+  /// The session UUID this transcript unions the intervals of
+  /// (`transcribe --session`); `nil` for plain range transcripts.
+  /// Rendered as a `session:` line.
   public var session: String?
-  /// The meeting UUID this transcript unions the intervals of
-  /// (`transcribe --meeting`); `nil` for plain range transcripts.
-  /// Rendered as a `meeting:` line.
-  public var meeting: String?
   public var sources: [SourceID]
   public var range: TimeRange
   public var model: TranscriptModelInfo
@@ -54,17 +54,17 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
   /// preset, and derived_from".
   public var preset: String?
   /// Per-source record of which audio store each source was read from on a
-  /// `transcribe --meeting` run (`meeting` = per-meeting copy, `ring` = global
+  /// `transcribe --session` run (`session` = per-session copy, `ring` = global
   /// rolling buffer), so a wrong-store read is visible after the fact
-  /// (all-ears issue #20). Empty for non-meeting transcripts; rendered as an
+  /// (all-ears issue #20). Empty for non-session transcripts; rendered as an
   /// `audio_stores:` line only when non-empty.
   public var audioStores: [TranscriptAudioStore]
 
   public init(
     schema: Int,
     kind: TranscriptKind,
+    rangeRun: String? = nil,
     session: String? = nil,
-    meeting: String? = nil,
     sources: [SourceID],
     range: TimeRange,
     model: TranscriptModelInfo,
@@ -80,8 +80,8 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
   ) {
     self.schema = schema
     self.kind = kind
+    self.rangeRun = rangeRun
     self.session = session
-    self.meeting = meeting
     self.sources = sources
     self.range = range
     self.model = model
@@ -98,10 +98,10 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
 }
 
 /// One `audio_stores` entry: which store a single source's audio was read from
-/// on a `transcribe --meeting` run. See ``TranscriptFrontmatter/audioStores``.
+/// on a `transcribe --session` run. See ``TranscriptFrontmatter/audioStores``.
 public struct TranscriptAudioStore: Sendable, Hashable {
   public var source: SourceID
-  /// `"meeting"` (per-meeting copy) or `"ring"` (global rolling buffer).
+  /// `"session"` (per-session copy) or `"ring"` (global rolling buffer).
   public var store: String
 
   public init(source: SourceID, store: String) {

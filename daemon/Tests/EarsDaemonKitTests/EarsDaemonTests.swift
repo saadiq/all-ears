@@ -10,7 +10,7 @@ import Testing
 @testable import EarsDaemonKit
 
 /// Integration tests for ``EarsDaemon``, the top-level composition that wires
-/// ``CaptureActor``/``MeetingRegistry``/``ControlServer``/``PowerObserver``/
+/// ``CaptureActor``/``SessionRegistry``/``ControlServer``/``PowerObserver``/
 /// ``ShutdownCoordinator`` into one runnable daemon. Every source is backed by
 /// a ``SyntheticCaptureBackend`` (or a scripted failure) via the
 /// ``CaptureBackendFactory`` seam, so nothing here touches Core Audio or TCC.
@@ -56,11 +56,11 @@ struct EarsDaemonTests {
   }
 
   /// Every on-disk chunk file (native `chunks/` + ASR `asr/`) for a source under
-  /// a specific meeting's directory — the assertion that a source's audio landed
-  /// in the meeting it belongs to, not another's tree (#19).
-  private func chunkFiles(dataRoot: URL, meetingID: String, source: SourceID) -> [String] {
+  /// a specific session's directory — the assertion that a source's audio landed
+  /// in the session it belongs to, not another's tree (#19).
+  private func chunkFiles(dataRoot: URL, sessionID: String, source: SourceID) -> [String] {
     let sourceDir = DataStoreLayout.sourceDirectory(
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       sourceID: source)
     let chunks =
       (try? FileManager.default.contentsOfDirectory(
@@ -113,13 +113,13 @@ struct EarsDaemonTests {
     // Must not throw: a single source's permission-style failure never takes
     // down the whole daemon (docs/specs/capture-daemon.md).
     try await daemon.start()
-    // Idle boot: nothing captures until a meeting starts.
+    // Idle boot: nothing captures until a session starts.
     #expect(await daemon.statusForTesting().isEmpty)
 
-    // A manual meeting naming both sources starts capture of each
+    // A manual session naming both sources starts capture of each
     // independently; the failing one lands in .error, the other keeps going.
-    _ = try await daemon.startMeetingForTesting(
-      MeetingStartParams(title: "call", sources: ["mic", "system"]))
+    _ = try await daemon.startSessionForTesting(
+      SessionStartParams(title: "call", sources: ["mic", "system"]))
 
     let statuses = await daemon.statusForTesting()
     #expect(statuses["system"]?.state == .error)
@@ -142,8 +142,8 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
-  @Test("boots idle: no source directory or meta.toml until a meeting starts the source")
-  func idleBootWritesNothingUntilMeeting() async throws {
+  @Test("boots idle: no source directory or meta.toml until a session starts the source")
+  func idleBootWritesNothingUntilSession() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(Instant(secondsSinceEpoch: 5_000))
 
@@ -170,19 +170,19 @@ struct EarsDaemonTests {
         atPath: DataStoreLayout.sourceDirectory(dataRoot: dataRoot, sourceID: "mic").path))
 
     try await daemon.start()
-    let meeting = try await daemon.startMeetingForTesting(
-      MeetingStartParams(title: "call", sources: ["mic"]))
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(title: "call", sources: ["mic"]))
 
-    // The meeting started the source, so its meta.toml now exists — under the
-    // meeting's own directory, not a global sources/ tree.
-    let meetingRoot = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meeting.id)
-    let written = try SourceMetaStore.read(sourceID: "mic", dataRoot: meetingRoot)
+    // The session started the source, so its meta.toml now exists — under the
+    // session's own directory, not a global sources/ tree.
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id)
+    let written = try SourceMetaStore.read(sourceID: "mic", dataRoot: sessionRoot)
     #expect(written.id == "mic")
     #expect(written.sourceClass == .mic)
     #expect(written.nativeSampleRate == nativeRate)
     #expect(written.created == Instant(secondsSinceEpoch: 1_000))
 
-    // No global sources/ tree exists any more — audio is meeting-scoped.
+    // No global sources/ tree exists any more — audio is session-scoped.
     #expect(
       !FileManager.default.fileExists(
         atPath: DataStoreLayout.sourceDirectory(dataRoot: dataRoot, sourceID: "mic").path))
@@ -197,23 +197,23 @@ struct EarsDaemonTests {
     let dataRoot = try makeDataRoot()
     let originalCreated = Instant(secondsSinceEpoch: 500)
 
-    // A meeting still active on disk from a prior daemon run — the daemon
-    // resumes its capture at start() (MeetingRegistry.loadFromDisk), which is
+    // A session still active on disk from a prior daemon run — the daemon
+    // resumes its capture at start() (SessionRegistry.loadFromDisk), which is
     // the restart path that re-writes the source's meta.toml.
-    let meeting = Meeting(
-      id: "restart-meeting",
+    let session = Session(
+      id: "restart-session",
       title: "call",
       state: .active,
       started: Instant(secondsSinceEpoch: 8_000),
-      intervals: [MeetingInterval(start: Instant(secondsSinceEpoch: 8_000))],
+      intervals: [SessionInterval(start: Instant(secondsSinceEpoch: 8_000))],
       sources: ["mic"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
-    let meetingRoot = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meeting.id)
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id)
     var preExisting = makeDescriptor(id: "mic", sourceClass: .mic)
     preExisting.created = originalCreated
     preExisting.bitrate = 32_000
-    try SourceMetaStore.write(preExisting, dataRoot: meetingRoot)
+    try SourceMetaStore.write(preExisting, dataRoot: sessionRoot)
 
     let configuration = EarsDaemonConfiguration(
       // A fresh config-resolution pass stamps `created` with "now" and may
@@ -232,15 +232,15 @@ struct EarsDaemonTests {
     )
     try await daemon.start()
 
-    let written = try SourceMetaStore.read(sourceID: "mic", dataRoot: meetingRoot)
+    let written = try SourceMetaStore.read(sourceID: "mic", dataRoot: sessionRoot)
     #expect(written.created == originalCreated)
     #expect(written.bitrate == 64_000)
 
     await daemon.stop()
   }
 
-  @Test("boots idle, records only while a meeting is active, over a real control socket")
-  func meetingScopedCaptureOverSocket() async throws {
+  @Test("boots idle, records only while a session is active, over a real control socket")
+  func sessionScopedCaptureOverSocket() async throws {
     let dataRoot = try makeDataRoot()
     let socketPath = tempSocketPath()
     let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
@@ -264,22 +264,22 @@ struct EarsDaemonTests {
     let client = try await ControlSocketClient.connect(toPath: socketPath)
     _ = try await client.hello(client: "test/0")
 
-    // Idle: status reports no sources until a meeting starts.
+    // Idle: status reports no sources until a session starts.
     let idle = try await client.send(.status, expecting: StatusData.self)
     #expect(idle.sources.isEmpty)
 
-    let meeting = try await client.send(
-      .meetingStart(MeetingStartParams(title: "call", sources: ["mic"])),
-      expecting: Meeting.self)
+    let session = try await client.send(
+      .sessionStart(SessionStartParams(title: "call", sources: ["mic"])),
+      expecting: Session.self)
 
     let active = try await client.send(.status, expecting: StatusData.self)
     #expect(active.sources.count == 1)
     #expect(active.sources.first?.id == "mic")
     #expect(active.sources.first?.state == .capturing)
 
-    _ = try await client.send(.meetingEnd(meeting: meeting.id), expecting: Meeting.self)
+    _ = try await client.send(.sessionEnd(session: session.id), expecting: Session.self)
 
-    // Meeting ended: the source's actor is stopped and torn down, so status
+    // Session ended: the source's actor is stopped and torn down, so status
     // reports no live sources again.
     let afterEnd = try await client.send(.status, expecting: StatusData.self)
     #expect(afterEnd.sources.isEmpty)
@@ -294,8 +294,8 @@ struct EarsDaemonTests {
     }
   }
 
-  @Test("meeting start writes audio to disk; meeting end stops and flushes capture")
-  func meetingWritesAudioThenStops() async throws {
+  @Test("session start writes audio to disk; session end stops and flushes capture")
+  func sessionWritesAudioThenStops() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
 
@@ -314,18 +314,18 @@ struct EarsDaemonTests {
     try await daemon.start()
 
     // Fresh start: nothing on disk under a global sources/ tree — and there
-    // never will be; audio is meeting-scoped.
+    // never will be; audio is session-scoped.
     let globalSourceDir = DataStoreLayout.sourceDirectory(dataRoot: dataRoot, sourceID: "mic")
     #expect(!FileManager.default.fileExists(atPath: globalSourceDir.path))
 
-    let meeting = try await daemon.startMeetingForTesting(
-      MeetingStartParams(title: "call", sources: ["mic"]))
-    // meeting.end stops capture, flushing the in-progress chunk to disk.
-    try await daemon.endMeetingForTesting(id: meeting.id)
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(title: "call", sources: ["mic"]))
+    // session.end stops capture, flushing the in-progress chunk to disk.
+    try await daemon.endSessionForTesting(id: session.id)
 
-    // The audio landed under the meeting's own directory.
+    // The audio landed under the session's own directory.
     let sourceDir = DataStoreLayout.sourceDirectory(
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meeting.id),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id),
       sourceID: "mic")
     #expect(!FileManager.default.fileExists(atPath: globalSourceDir.path))
 
@@ -334,9 +334,9 @@ struct EarsDaemonTests {
         atPath: sourceDir.appendingPathComponent("chunks").path)) ?? [])
       + ((try? FileManager.default.contentsOfDirectory(
         atPath: sourceDir.appendingPathComponent("asr").path)) ?? [])
-    #expect(!chunkFiles.isEmpty, "expected a chunk file under chunks/ or asr/ after the meeting")
+    #expect(!chunkFiles.isEmpty, "expected a chunk file under chunks/ or asr/ after the session")
 
-    // The source is no longer live once the meeting ended.
+    // The source is no longer live once the session ended.
     #expect(await daemon.statusForTesting().isEmpty)
 
     await daemon.stop()
@@ -360,16 +360,16 @@ struct EarsDaemonTests {
       clock: clock)
     try await daemon.start()
 
-    // A browser meeting must exist before ingest opens — its identity tag is
-    // how the daemon resolves which meeting directory the audio lands in.
-    let meeting = try await daemon.startMeetingForTesting(
-      MeetingStartParams(
+    // A browser session must exist before ingest opens — its identity tag is
+    // how the daemon resolves which session directory the audio lands in.
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
 
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let streamID = try await daemon.openIngestSource(
       label: "browser:meet:jane-a1b2", format: format,
-      meeting: MeetingIdentity(platform: "meet", externalID: "abc"))
+      session: SessionIdentity(platform: "meet", externalID: "abc"))
 
     let samples = [Float](repeating: 0.25, count: 1600)  // 100 ms @ 16 kHz
     await daemon.pushIngestAudio(streamID: streamID, samples: samples, sampleRate: 16000)
@@ -384,9 +384,9 @@ struct EarsDaemonTests {
     #expect(status.bytesUsed > 0)
     #expect(status.state == .disabled)  // stopped by ingest.close, not left capturing
 
-    let meetingRoot = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meeting.id)
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id)
     let written = try SourceMetaStore.read(
-      sourceID: "browser:meet:jane-a1b2", dataRoot: meetingRoot)
+      sourceID: "browser:meet:jane-a1b2", dataRoot: sessionRoot)
     #expect(written.sourceClass == .browser)
     #expect(written.nativeSampleRate == 16000)
     #expect(written.asrSampleRate == 16000)
@@ -413,10 +413,10 @@ struct EarsDaemonTests {
       clock: clock)
     try await daemon.start()
 
-    _ = try await daemon.startMeetingForTesting(
-      MeetingStartParams(
+    _ = try await daemon.startSessionForTesting(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
-    let identity = MeetingIdentity(platform: "meet", externalID: "abc")
+    let identity = SessionIdentity(platform: "meet", externalID: "abc")
 
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let label: SourceID = "browser:meet:speaker-1"
@@ -431,7 +431,7 @@ struct EarsDaemonTests {
     let samples = [Float](repeating: 0.25, count: 16000)
 
     let firstStreamID = try await daemon.openIngestSource(
-      label: label, format: format, meeting: identity)
+      label: label, format: format, session: identity)
     await daemon.pushIngestAudio(streamID: firstStreamID, samples: samples, sampleRate: 16000)
     await daemon.closeIngestSource(streamID: firstStreamID)
     let bytesAfterFirstStream = try #require(await daemon.statusForTesting()[label]?.bytesUsed)
@@ -439,7 +439,7 @@ struct EarsDaemonTests {
     // Same label, a later "join": must reuse the existing CaptureActor, not
     // build a second one — a fresh stream_id each time, same source.
     let secondStreamID = try await daemon.openIngestSource(
-      label: label, format: format, meeting: identity)
+      label: label, format: format, session: identity)
     #expect(secondStreamID != firstStreamID)
     await daemon.pushIngestAudio(streamID: secondStreamID, samples: samples, sampleRate: 16000)
     await daemon.closeIngestSource(streamID: secondStreamID)
@@ -471,10 +471,10 @@ struct EarsDaemonTests {
       logSink: logRecorder)
     try await daemon.start()
 
-    _ = try await daemon.startMeetingForTesting(
-      MeetingStartParams(
+    _ = try await daemon.startSessionForTesting(
+      SessionStartParams(
         platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
-    let identity = MeetingIdentity(platform: "meet", externalID: "abc")
+    let identity = SessionIdentity(platform: "meet", externalID: "abc")
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let label: SourceID = "browser:meet:speaker-1"
     // Whole seconds per buffer, per reopenSameLabelResumesSameSource's
@@ -496,7 +496,7 @@ struct EarsDaemonTests {
     // First pipeline instance: 3 frames, all well inside one 30s interval —
     // without the close-time flush this interval would never be emitted.
     let firstStreamID = try await daemon.openIngestSource(
-      label: label, format: format, meeting: identity)
+      label: label, format: format, session: identity)
     for seq: UInt32 in [5, 6, 7] { await push(firstStreamID, seq: seq) }
     clock.advance(by: 2)
     await daemon.closeIngestSource(streamID: firstStreamID)
@@ -511,7 +511,7 @@ struct EarsDaemonTests {
     // cleared the baseline) nor a mid-stream restart (0 after 101) may be
     // misread as lost frames.
     let secondStreamID = try await daemon.openIngestSource(
-      label: label, format: format, meeting: identity)
+      label: label, format: format, session: identity)
     await push(secondStreamID, seq: 100)
     await push(secondStreamID, seq: 101)
     await push(secondStreamID, seq: 0)
@@ -556,7 +556,7 @@ struct EarsDaemonTests {
     let publisher = try await ControlSocketClient.connect(toPath: socketPath)
     _ = try await publisher.hello(client: "test/0")
     let segment = SegmentPublishParams(
-      meeting: "s_call", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
+      session: "s_call", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
     _ = try await publisher.send(.segmentPublish(segment), expecting: EmptyData.self)
     await publisher.close()
 
@@ -596,7 +596,7 @@ struct EarsDaemonTests {
   }
 
   @Test(
-    "full retention lifecycle: idle boot, meeting records under its directory, transcript completion starts the clock, and the sweeper deletes the audio at the deadline"
+    "full retention lifecycle: idle boot, session records under its directory, transcript completion starts the clock, and the sweeper deletes the audio at the deadline"
   )
   func retentionLifecycleEndToEnd() async throws {
     let dataRoot = try makeDataRoot()
@@ -621,42 +621,42 @@ struct EarsDaemonTests {
     // Idle boot: nothing on disk.
     #expect(
       !FileManager.default.fileExists(
-        atPath: DataStoreLayout.meetingsDirectory(dataRoot: dataRoot).path))
+        atPath: DataStoreLayout.sessionsDirectory(dataRoot: dataRoot).path))
 
-    // A meeting records real audio under its own directory, then ends.
-    let meeting = try await daemon.startMeetingForTesting(
-      MeetingStartParams(title: "call", sources: ["mic"]))
+    // A session records real audio under its own directory, then ends.
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(title: "call", sources: ["mic"]))
     clock.advance(by: 600)
-    try await daemon.endMeetingForTesting(id: meeting.id)
+    try await daemon.endSessionForTesting(id: session.id)
 
-    let sourcesDir = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meeting.id)
+    let sourcesDir = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id)
       .appendingPathComponent("sources")
     #expect(FileManager.default.fileExists(atPath: sourcesDir.path))
 
     // The transcript completes, starting the retention clock.
-    await daemon.markTranscriptCompletedForTesting(id: meeting.id)
+    await daemon.markTranscriptCompletedForTesting(id: session.id)
 
     // One second before completion + evict_after_transcript_seconds: retained.
     clock.advance(by: 99)
     await daemon.sweepRetentionForTesting()
     #expect(FileManager.default.fileExists(atPath: sourcesDir.path))
 
-    // At the deadline: the audio is gone; the meeting's record survives.
+    // At the deadline: the audio is gone; the session's record survives.
     clock.advance(by: 1)
     await daemon.sweepRetentionForTesting()
     #expect(!FileManager.default.fileExists(atPath: sourcesDir.path))
     #expect(
       FileManager.default.fileExists(
-        atPath: DataStoreLayout.meetingTomlFile(dataRoot: dataRoot, meetingID: meeting.id).path))
+        atPath: DataStoreLayout.sessionTomlFile(dataRoot: dataRoot, sessionID: session.id).path))
 
-    // A second meeting whose transcript never completes: its audio survives
+    // A second session whose transcript never completes: its audio survives
     // past the transcript deadline and is deleted only at the hard cap.
-    let failed = try await daemon.startMeetingForTesting(
-      MeetingStartParams(title: "no-transcript", sources: ["mic"]))
+    let failed = try await daemon.startSessionForTesting(
+      SessionStartParams(title: "no-transcript", sources: ["mic"]))
     clock.advance(by: 600)
-    try await daemon.endMeetingForTesting(id: failed.id)
-    let failedSourcesDir = DataStoreLayout.meetingDirectory(
-      dataRoot: dataRoot, meetingID: failed.id
+    try await daemon.endSessionForTesting(id: failed.id)
+    let failedSourcesDir = DataStoreLayout.sessionDirectory(
+      dataRoot: dataRoot, sessionID: failed.id
     ).appendingPathComponent("sources")
     #expect(FileManager.default.fileExists(atPath: failedSourcesDir.path))
 
@@ -669,13 +669,13 @@ struct EarsDaemonTests {
     #expect(!FileManager.default.fileExists(atPath: failedSourcesDir.path))
     #expect(
       FileManager.default.fileExists(
-        atPath: DataStoreLayout.meetingTomlFile(dataRoot: dataRoot, meetingID: failed.id).path))
+        atPath: DataStoreLayout.sessionTomlFile(dataRoot: dataRoot, sessionID: failed.id).path))
 
     await daemon.stop()
   }
 
-  @Test("openIngestSource rejects an open whose meeting identity can't be resolved")
-  func rejectsIngestOpenWithoutResolvableMeeting() async throws {
+  @Test("openIngestSource rejects an open whose session identity can't be resolved")
+  func rejectsIngestOpenWithoutResolvableSession() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
 
@@ -691,28 +691,28 @@ struct EarsDaemonTests {
     try await daemon.start()
 
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
-    // No meeting tag at all: nowhere to put the audio.
+    // No session tag at all: nowhere to put the audio.
     await #expect(throws: EarsDaemon.IngestError.self) {
       _ = try await daemon.openIngestSource(label: "browser:meet:jane-a1b2", format: format)
     }
-    // A tag naming an identity no live meeting declared (ingest.open raced
-    // ahead of meeting.start): rejected too — the client retries after its
-    // meeting.start lands.
+    // A tag naming an identity no live session declared (ingest.open raced
+    // ahead of session.start): rejected too — the client retries after its
+    // session.start lands.
     await #expect(throws: EarsDaemon.IngestError.self) {
       _ = try await daemon.openIngestSource(
         label: "browser:meet:jane-a1b2", format: format,
-        meeting: MeetingIdentity(platform: "meet", externalID: "never-started"))
+        session: SessionIdentity(platform: "meet", externalID: "never-started"))
     }
 
     await daemon.stop()
   }
 
-  // MARK: - single active meeting invariant (#19 / #27)
+  // MARK: - single active session invariant (#19 / #27)
 
   @Test(
-    "a browser slot label reused under a superseding meeting rebuilds against the new meeting's directory"
+    "a browser slot label reused under a superseding session rebuilds against the new session's directory"
   )
-  func ingestRebuildsAgainstNewMeetingOnMismatch() async throws {
+  func ingestRebuildsAgainstNewSessionOnMismatch() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
     let logRecorder = RecordingLogRecordSink()
@@ -721,9 +721,9 @@ struct EarsDaemonTests {
       sources: [],
       dataRoot: dataRoot,
       socketPath: tempSocketPath(),
-      // Keep meeting-end from spawning a real transcribe subprocess when the
-      // first meeting is superseded — this test is about capture directories.
-      transcribeOnBrowserMeetingEnd: false)
+      // Keep session-end from spawning a real transcribe subprocess when the
+      // first session is superseded — this test is about capture directories.
+      transcribeOnBrowserSessionEnd: false)
 
     let daemon = try EarsDaemon(
       configuration: configuration,
@@ -736,38 +736,38 @@ struct EarsDaemonTests {
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let samples = [Float](repeating: 0.25, count: 16000)  // 1 s @ 16 kHz
 
-    // Meeting A: opens the slot label, streams, then the tab drops (ingest close)
-    // WITHOUT a meeting.end — the exact shape that left a browser actor pointing
+    // Session A: opens the slot label, streams, then the tab drops (ingest close)
+    // WITHOUT a session.end — the exact shape that left a browser actor pointing
     // at A's tree in the incident.
-    let a = try await daemon.startMeetingForTesting(
-      MeetingStartParams(
+    let a = try await daemon.startSessionForTesting(
+      SessionStartParams(
         platform: "meet", externalID: "aaa", sources: [], trigger: .browserExtension))
     let streamA = try await daemon.openIngestSource(
-      label: label, format: format, meeting: MeetingIdentity(platform: "meet", externalID: "aaa"))
+      label: label, format: format, session: SessionIdentity(platform: "meet", externalID: "aaa"))
     await daemon.pushIngestAudio(streamID: streamA, samples: samples, sampleRate: 16000)
     await daemon.closeIngestSource(streamID: streamA)
 
-    // Meeting B starts — superseding A under the single-active invariant — and
+    // Session B starts — superseding A under the single-active invariant — and
     // rejoins the SAME slot label. The label-only reuse would have written B's
-    // audio into A's directory (#19 manifestation B); the (SourceID, meetingID)
+    // audio into A's directory (#19 manifestation B); the (SourceID, sessionID)
     // identity check rebuilds against B's directory instead.
-    let b = try await daemon.startMeetingForTesting(
-      MeetingStartParams(
+    let b = try await daemon.startSessionForTesting(
+      SessionStartParams(
         platform: "meet", externalID: "bbb", sources: [], trigger: .browserExtension))
     #expect(b.id != a.id)
     let streamB = try await daemon.openIngestSource(
-      label: label, format: format, meeting: MeetingIdentity(platform: "meet", externalID: "bbb"))
+      label: label, format: format, session: SessionIdentity(platform: "meet", externalID: "bbb"))
     await daemon.pushIngestAudio(streamID: streamB, samples: samples, sampleRate: 16000)
     await daemon.closeIngestSource(streamID: streamB)
 
     // B's audio landed under B's own directory.
     #expect(
-      !chunkFiles(dataRoot: dataRoot, meetingID: b.id, source: label).isEmpty,
+      !chunkFiles(dataRoot: dataRoot, sessionID: b.id, source: label).isEmpty,
       "expected B's audio under B's own directory after the rebuild")
 
     // A's audio is still under A's directory — not stranded, not overwritten.
     #expect(
-      !chunkFiles(dataRoot: dataRoot, meetingID: a.id, source: label).isEmpty,
+      !chunkFiles(dataRoot: dataRoot, sessionID: a.id, source: label).isEmpty,
       "expected A's audio to remain under A's directory")
 
     // The reuse-mismatch error line fired (the daemon's string log is
@@ -785,8 +785,8 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
-  @Test("ears status can never show two active meetings: a second start supersedes the first")
-  func statusShowsSingleActiveMeetingAfterSupersede() async throws {
+  @Test("ears status can never show two active sessions: a second start supersedes the first")
+  func statusShowsSingleActiveSessionAfterSupersede() async throws {
     let dataRoot = try makeDataRoot()
     let socketPath = tempSocketPath()
     let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
@@ -795,7 +795,7 @@ struct EarsDaemonTests {
       sources: [],
       dataRoot: dataRoot,
       socketPath: socketPath,
-      transcribeOnBrowserMeetingEnd: false)
+      transcribeOnBrowserSessionEnd: false)
 
     let daemon = try EarsDaemon(
       configuration: configuration,
@@ -807,16 +807,16 @@ struct EarsDaemonTests {
     _ = try await client.hello(client: "test/0")
 
     _ = try await client.send(
-      .meetingStart(MeetingStartParams(platform: "meet", externalID: "first")),
-      expecting: Meeting.self)
+      .sessionStart(SessionStartParams(platform: "meet", externalID: "first")),
+      expecting: Session.self)
     let second = try await client.send(
-      .meetingStart(MeetingStartParams(platform: "meet", externalID: "second")),
-      expecting: Meeting.self)
+      .sessionStart(SessionStartParams(platform: "meet", externalID: "second")),
+      expecting: Session.self)
 
     let status = try await client.send(.status, expecting: StatusData.self)
-    #expect(status.meetings.count == 1)
-    #expect(status.meetings.first?.id == second.id)
-    #expect(status.meetings.allSatisfy { $0.state == .active })
+    #expect(status.sessions.count == 1)
+    #expect(status.sessions.first?.id == second.id)
+    #expect(status.sessions.allSatisfy { $0.state == .active })
 
     await client.close()
     await daemon.stop()

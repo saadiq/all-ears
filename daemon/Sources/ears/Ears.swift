@@ -5,7 +5,7 @@ import EarsDataStore
 import EarsIPC
 import Foundation
 
-/// Control client for `earsd`: source status, meeting lifecycle, and the
+/// Control client for `earsd`: source status, session lifecycle, and the
 /// live event feed, over the v2 control socket. See
 /// `docs/specs/control-protocol.md`.
 ///
@@ -22,7 +22,7 @@ struct Ears: AsyncParsableCommand {
     abstract: "Control client for the earsd capture daemon.",
     subcommands: [
       ConfigCommand.self, StatusCommand.self, SourcesCommand.self, CaptureCommand.self,
-      MeetingCommand.self, WatchCommand.self,
+      SessionCommand.self, WatchCommand.self,
       FlushCommand.self,
     ]
   )
@@ -156,7 +156,7 @@ struct ConfigPathCommand: AsyncParsableCommand {
 struct StatusCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "status",
-    abstract: "Daemon + per-source state, buffer occupancy, active meetings.")
+    abstract: "Daemon + per-source state, buffer occupancy, active sessions.")
 
   @OptionGroup var options: ClientOptions
 
@@ -322,121 +322,121 @@ struct CaptureResumeCommand: AsyncParsableCommand {
   }
 }
 
-// MARK: - meeting start / end / pause / resume / rename / list
+// MARK: - session start / end / pause / resume / rename / list
 
-/// The daemon-owned meeting lifecycle, from any frontend — manual meetings
+/// The daemon-owned session lifecycle, from any frontend — manual sessions
 /// give CLI recordings the same naming, pause-as-marks, and roster powers as
-/// browser calls (`docs/specs/control-protocol.md`'s "Meeting").
-struct MeetingCommand: AsyncParsableCommand {
+/// browser calls (`docs/specs/control-protocol.md`'s "Session").
+struct SessionCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "meeting",
-    abstract: "Daemon-owned meeting lifecycle: start, end, pause/resume marks, rename, list.",
+    commandName: "session",
+    abstract: "Daemon-owned session lifecycle: start, end, pause/resume marks, rename, list.",
     subcommands: [
-      MeetingStartCommand.self, MeetingEndCommand.self, MeetingPauseCommand.self,
-      MeetingResumeCommand.self, MeetingRenameCommand.self, MeetingListCommand.self,
+      SessionStartCommand.self, SessionEndCommand.self, SessionPauseCommand.self,
+      SessionResumeCommand.self, SessionRenameCommand.self, SessionListCommand.self,
     ]
   )
 }
 
-struct MeetingStartCommand: AsyncParsableCommand {
+struct SessionStartCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "start",
-    abstract: "Start a meeting (manual unless --platform/--external-id name an identity).")
+    abstract: "Start a session (manual unless --platform/--external-id name an identity).")
 
   @OptionGroup var options: ClientOptions
-  @Option(name: .customLong("title"), help: "Meeting title.") var title: String?
+  @Option(name: .customLong("title"), help: "Session title.") var title: String?
   @Option(name: .customLong("source"), help: "Source id; repeatable.") var sources: [String] = []
   @Option(name: .customLong("platform"), help: "Platform of an external identity, e.g. meet.")
   var platform: String?
   @Option(
     name: .customLong("external-id"),
-    help: "The platform's own meeting id (idempotent with --platform).")
+    help: "The platform's own session id (idempotent with --platform).")
   var externalID: String?
 
   func run() async throws {
-    let params = MeetingStartParams(
+    let params = SessionStartParams(
       platform: platform, externalID: externalID, title: title,
       sources: sources.map { SourceID($0) })
     try await runSimpleCommand(
-      .meetingStart(params), expecting: Meeting.self, options: options,
-      humanSuccess: OutputFormatting.humanMeeting)
+      .sessionStart(params), expecting: Session.self, options: options,
+      humanSuccess: OutputFormatting.humanSession)
   }
 }
 
-struct MeetingEndCommand: AsyncParsableCommand {
+struct SessionEndCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "end",
-    abstract: "End a meeting: closes the open mark and finalizes the meeting.")
+    abstract: "End a session: closes the open mark and finalizes the session.")
 
   @OptionGroup var options: ClientOptions
-  @Argument(help: "Meeting id.") var meeting: String
+  @Argument(help: "Session id.") var session: String
 
   func run() async throws {
     try await runSimpleCommand(
-      .meetingEnd(meeting: meeting), expecting: Meeting.self, options: options,
-      humanSuccess: OutputFormatting.humanMeeting)
+      .sessionEnd(session: session), expecting: Session.self, options: options,
+      humanSuccess: OutputFormatting.humanSession)
   }
 }
 
-struct MeetingPauseCommand: AsyncParsableCommand {
+struct SessionPauseCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "pause",
-    abstract: "Pause a meeting's transcription mark (capture is untouched).")
+    abstract: "Pause a session's transcription mark (capture is untouched).")
 
   @OptionGroup var options: ClientOptions
-  @Argument(help: "Meeting id.") var meeting: String
+  @Argument(help: "Session id.") var session: String
 
   func run() async throws {
     try await runSimpleCommand(
-      .meetingPause(meeting: meeting), expecting: Meeting.self, options: options,
-      humanSuccess: OutputFormatting.humanMeeting)
+      .sessionPause(session: session), expecting: Session.self, options: options,
+      humanSuccess: OutputFormatting.humanSession)
   }
 }
 
-struct MeetingResumeCommand: AsyncParsableCommand {
+struct SessionResumeCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "resume", abstract: "Resume a paused meeting (opens a new mark).")
+    commandName: "resume", abstract: "Resume a paused session (opens a new mark).")
 
   @OptionGroup var options: ClientOptions
-  @Argument(help: "Meeting id.") var meeting: String
+  @Argument(help: "Session id.") var session: String
 
   func run() async throws {
     try await runSimpleCommand(
-      .meetingResume(meeting: meeting), expecting: Meeting.self, options: options,
-      humanSuccess: OutputFormatting.humanMeeting)
+      .sessionResume(session: session), expecting: Session.self, options: options,
+      humanSuccess: OutputFormatting.humanSession)
   }
 }
 
-struct MeetingRenameCommand: AsyncParsableCommand {
+struct SessionRenameCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "rename", abstract: "Rename a meeting.")
+    commandName: "rename", abstract: "Rename a session.")
 
   @OptionGroup var options: ClientOptions
-  @Argument(help: "Meeting id.") var meeting: String
+  @Argument(help: "Session id.") var session: String
   @Option(name: .customLong("title"), help: "The new title.") var title: String
   @Option(
     name: .customLong("if-rev"),
-    help: "Compare-and-set: fail with 'conflict' unless the meeting is at this revision.")
+    help: "Compare-and-set: fail with 'conflict' unless the session is at this revision.")
   var ifRev: Int?
 
   func run() async throws {
     try await runSimpleCommand(
-      .meetingRename(MeetingRenameParams(meeting: meeting, title: title, ifRev: ifRev)),
-      expecting: Meeting.self, options: options,
-      humanSuccess: OutputFormatting.humanMeeting)
+      .sessionRename(SessionRenameParams(session: session, title: title, ifRev: ifRev)),
+      expecting: Session.self, options: options,
+      humanSuccess: OutputFormatting.humanSession)
   }
 }
 
-struct MeetingListCommand: AsyncParsableCommand {
+struct SessionListCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "list",
-    abstract: "Live + recent meetings from the daemon; --all reads full history from disk.")
+    abstract: "Live + recent sessions from the daemon; --all reads full history from disk.")
 
   @OptionGroup var options: ClientOptions
 
   @Flag(
     name: .customLong("all"),
-    help: "Read every meetings/*/meeting.toml from the data root, daemon-free.")
+    help: "Read every sessions/*/session.toml from the data root, daemon-free.")
   var all = false
 
   func run() async throws {
@@ -451,17 +451,17 @@ struct MeetingListCommand: AsyncParsableCommand {
       case .success(let root):
         dataRoot = root
       }
-      let meetings = MeetingStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
+      let sessions = SessionStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
         .sorted { $0.started < $1.started }
       let code = OutputFormatting.emit(
-        MeetingListData(meetings: meetings), json: options.json,
-        humanSuccess: OutputFormatting.humanMeetingList)
+        SessionListData(sessions: sessions), json: options.json,
+        humanSuccess: OutputFormatting.humanSessionList)
       if code != 0 { throw ExitCode(code) }
       return
     }
     try await runSimpleCommand(
-      .meetingList, expecting: MeetingListData.self, options: options,
-      humanSuccess: OutputFormatting.humanMeetingList)
+      .sessionList, expecting: SessionListData.self, options: options,
+      humanSuccess: OutputFormatting.humanSessionList)
   }
 }
 
@@ -515,7 +515,7 @@ struct WatchCommand: AsyncParsableCommand {
       }
     } else {
       print("snapshot rev=\(snapshot.rev)")
-      print(OutputFormatting.humanMeetings(snapshot.meetings))
+      print(OutputFormatting.humanSessions(snapshot.sessions))
       print(OutputFormatting.humanSourcesList(SourcesListData(sources: snapshot.sources)))
     }
 

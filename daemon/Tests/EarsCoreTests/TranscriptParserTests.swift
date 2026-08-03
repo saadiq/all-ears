@@ -18,7 +18,7 @@ struct TranscriptParserTests {
     TranscriptFrontmatter(
       schema: 1,
       kind: kind,
-      session: "2026-07-17T10-30-00Z_standup",
+      rangeRun: "2026-07-17T10-30-00Z_standup",
       sources: ["mic", "app:us.zoom.xos"],
       range: TimeRange(
         start: Instant(secondsSinceEpoch: 1_784_284_200),
@@ -153,13 +153,13 @@ struct TranscriptParserTests {
     #expect(parsed.diarization == TranscriptDiarizationInfo(enabled: false))
   }
 
-  @Test("round-trips the per-source audio_stores record for a --meeting transcript")
+  @Test("round-trips the per-source audio_stores record for a --session transcript")
   func roundTripsAudioStores() throws {
     var frontmatter = Self.standupFrontmatter()
-    frontmatter.meeting = "0d5e-meeting"
+    frontmatter.session = "0d5e-session"
     frontmatter.audioStores = [
       TranscriptAudioStore(source: "mic", store: "ring"),
-      TranscriptAudioStore(source: "browser:meet:speaker-1", store: "meeting"),
+      TranscriptAudioStore(source: "browser:meet:speaker-1", store: "session"),
       TranscriptAudioStore(source: "system", store: "none"),
     ]
     let document = TranscriptDocument(frontmatter: frontmatter, segments: [])
@@ -167,7 +167,7 @@ struct TranscriptParserTests {
 
     #expect(
       markdown.contains(
-        "audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=meeting\", \"system=none\"]"))
+        "audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=session\", \"system=none\"]"))
     let parsed = try TranscriptParser.parseFrontmatter(markdown)
     #expect(parsed.audioStores == frontmatter.audioStores)
   }
@@ -197,7 +197,7 @@ struct TranscriptParserTests {
     let frontmatter = TranscriptFrontmatter(
       schema: 1,
       kind: .transcript,
-      session: "2026-07-17T10-30-00Z_solo",
+      rangeRun: "2026-07-17T10-30-00Z_solo",
       sources: ["mic"],
       range: TimeRange(start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 60)),
       model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),

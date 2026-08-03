@@ -191,8 +191,8 @@ enum SummarizePipeline {
     return TranscriptFrontmatter(
       schema: first.schema,
       kind: .summary,
+      rangeRun: first.rangeRun,
       session: first.session,
-      meeting: first.meeting,
       sources: sources,
       range: TimeRange(start: start, end: end),
       model: first.model,

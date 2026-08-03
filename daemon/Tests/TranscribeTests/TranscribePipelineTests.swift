@@ -311,37 +311,37 @@ struct TranscribePipelineTests {
       })
   }
 
-  @Test("--meeting reads the meeting's audio from its own directory and writes a transcript")
-  func meetingEndToEnd() async throws {
-    let dataRoot = makeTempDirectory("meeting")
-    let outputRoot = makeTempDirectory("meeting-output")
-    let meetingID = "fixture-meeting"
+  @Test("--session reads the session's audio from its own directory and writes a transcript")
+  func sessionEndToEnd() async throws {
+    let dataRoot = makeTempDirectory("session")
+    let outputRoot = makeTempDirectory("session-output")
+    let sessionID = "fixture-session"
 
-    // meeting.toml lives under the global data root; the audio lives under
-    // the meeting's own directory — the pipeline must read each from its
+    // session.toml lives under the global data root; the audio lives under
+    // the session's own directory — the pipeline must read each from its
     // respective root.
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       sources: ["mic"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
     try await writeFixtureSource(
       sourceID: "mic",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
 
     let scripted = ScriptedTranscriber(results: [
-      [Segment(start: 0, end: 2, text: "meeting hello")]
+      [Segment(start: 0, end: 2, text: "session hello")]
     ])
 
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -359,43 +359,43 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, slug: meetingID)
+      explicitOut: nil, slug: sessionID)
     let markdown = try outputText(at: paths.markdown)
-    #expect(markdown.contains("meeting hello"))
-    #expect(markdown.contains("meeting: \(meetingID)"))
-    // A meeting transcript is keyed by `meeting:` alone — no v1 `session:`
+    #expect(markdown.contains("session hello"))
+    #expect(markdown.contains("session: \(sessionID)"))
+    // A session transcript is keyed by `session:` alone — no `range_run:`
     // line remains in its frontmatter.
-    #expect(!markdown.contains("session:"))
+    #expect(!markdown.contains("range_run:"))
   }
 
   @Test(
-    "--meeting resolves speaker names from the roster (attendee source → display_name) at transcribe time"
+    "--session resolves speaker names from the roster (attendee source → display_name) at transcribe time"
   )
-  func meetingRosterDrivesSpeakerNames() async throws {
-    let dataRoot = makeTempDirectory("meeting-roster")
-    let outputRoot = makeTempDirectory("meeting-roster-output")
-    let meetingID = "roster-meeting"
+  func sessionRosterDrivesSpeakerNames() async throws {
+    let dataRoot = makeTempDirectory("session-roster")
+    let outputRoot = makeTempDirectory("session-roster-output")
+    let sessionID = "roster-session"
 
     // The roster links the browser source to a display name; the pipeline
-    // derives the speaker-name map from meeting.toml at transcribe time —
+    // derives the speaker-name map from session.toml at transcribe time —
     // there is no materialized [speakers] map anywhere on disk.
-    var attendee = MeetingAttendee(id: "a1", joined: now.advanced(by: -20))
+    var attendee = SessionAttendee(id: "a1", joined: now.advanced(by: -20))
     attendee.displayName = "Jane Doe"
     attendee.source = "browser:meet:speaker-1"
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       attendees: [attendee],
       sources: ["browser:meet:speaker-1"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
     try await writeFixtureSource(
       sourceID: "browser:meet:speaker-1",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
 
@@ -404,7 +404,7 @@ struct TranscribePipelineTests {
     ])
 
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -420,40 +420,40 @@ struct TranscribePipelineTests {
     #expect(exitCode == 0)
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["browser:meet:speaker-1"], explicitOut: nil, slug: meetingID)
+      sourceIDs: ["browser:meet:speaker-1"], explicitOut: nil, slug: sessionID)
     let markdown = try outputText(at: paths.markdown)
     // The turn renders under the roster name, not the raw source id.
     #expect(markdown.contains("Jane Doe"))
     #expect(markdown.contains("hello from jane"))
   }
 
-  @Test("--meeting merges an optional vocab/<meeting-id>.txt into the transcribe context")
-  func meetingVocabKeyedByMeetingID() async throws {
-    let dataRoot = makeTempDirectory("meeting-vocab")
-    let outputRoot = makeTempDirectory("meeting-vocab-output")
-    let meetingID = "vocab-meeting"
+  @Test("--session merges an optional vocab/<session-id>.txt into the transcribe context")
+  func sessionVocabKeyedBySessionID() async throws {
+    let dataRoot = makeTempDirectory("session-vocab")
+    let outputRoot = makeTempDirectory("session-vocab-output")
+    let sessionID = "vocab-session"
 
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       sources: ["mic"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
     try await writeFixtureSource(
       sourceID: "mic",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
 
-    // The optional per-meeting vocab file is keyed by meeting id.
+    // The optional per-session vocab file is keyed by session id.
     let vocabDirectory = dataRoot.appendingPathComponent("vocab")
     try FileManager.default.createDirectory(at: vocabDirectory, withIntermediateDirectories: true)
     try "Sortformer\n# a comment\nParakeet\n".write(
-      to: vocabDirectory.appendingPathComponent("\(meetingID).txt"),
+      to: vocabDirectory.appendingPathComponent("\(sessionID).txt"),
       atomically: true, encoding: .utf8)
 
     let scripted = ScriptedTranscriber(results: [
@@ -461,7 +461,7 @@ struct TranscribePipelineTests {
     ])
 
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -480,25 +480,25 @@ struct TranscribePipelineTests {
   }
 
   @Test(
-    "--meeting reads per-meeting chunks for a source that has them and falls back to the ring for one that doesn't"
+    "--session reads per-session chunks for a source that has them and falls back to the ring for one that doesn't"
   )
-  func meetingPrefersPerMeetingAndFallsBackToRing() async throws {
-    let dataRoot = makeTempDirectory("meeting-mixed")
-    let outputRoot = makeTempDirectory("meeting-mixed-output")
-    let meetingID = "mixed-meeting"
+  func sessionPrefersPerSessionAndFallsBackToRing() async throws {
+    let dataRoot = makeTempDirectory("session-mixed")
+    let outputRoot = makeTempDirectory("session-mixed-output")
+    let sessionID = "mixed-session"
 
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       sources: ["mic", "browser:meet:speaker-1"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
-    // mic has NO per-meeting dir — only the ring holds it (the issue's mic
-    // case). The browser source is the authoritative per-meeting copy and has
+    // mic has NO per-session dir — only the ring holds it (the issue's mic
+    // case). The browser source is the authoritative per-session copy and has
     // no ring dir at all.
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
@@ -506,19 +506,19 @@ struct TranscribePipelineTests {
       vadSpeechStart: now.advanced(by: -8), vadSpeechEnd: now.advanced(by: -6))
     try await writeFixtureSource(
       sourceID: "browser:meet:speaker-1",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -13))
 
-    // Read order follows the meeting's source list: mic (ring) then browser
-    // (per-meeting).
+    // Read order follows the session's source list: mic (ring) then browser
+    // (per-session).
     let scripted = ScriptedTranscriber(results: [
       [Segment(start: 0, end: 1, text: "mic-from-ring")],
-      [Segment(start: 0, end: 1, text: "browser-from-meeting")],
+      [Segment(start: 0, end: 1, text: "browser-from-session")],
     ])
 
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -536,43 +536,43 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: meetingID)
+      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: sessionID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("mic-from-ring"))
-    #expect(markdown.contains("browser-from-meeting"))
+    #expect(markdown.contains("browser-from-session"))
     // The chosen lookup order is recorded in frontmatter, per issue #20.
-    #expect(markdown.contains("audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=meeting\"]"))
+    #expect(markdown.contains("audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=session\"]"))
 
     // Frontmatter round-trips the per-source store record.
     let parsed = try TranscriptParser.parseFrontmatter(markdown)
     #expect(
       parsed.audioStores == [
         TranscriptAudioStore(source: "mic", store: "ring"),
-        TranscriptAudioStore(source: "browser:meet:speaker-1", store: "meeting"),
+        TranscriptAudioStore(source: "browser:meet:speaker-1", store: "session"),
       ])
   }
 
-  @Test("--meeting with no audio in any store exits 0 and logs a per-source reason")
-  func meetingEmptyLogsPerSourceReason() async throws {
-    let dataRoot = makeTempDirectory("meeting-empty")
-    let outputRoot = makeTempDirectory("meeting-empty-output")
-    let meetingID = "empty-meeting"
+  @Test("--session with no audio in any store exits 0 and logs a per-source reason")
+  func sessionEmptyLogsPerSourceReason() async throws {
+    let dataRoot = makeTempDirectory("session-empty")
+    let outputRoot = makeTempDirectory("session-empty-output")
+    let sessionID = "empty-session"
 
-    // meeting.toml exists, but neither the per-meeting dir nor the ring holds
+    // session.toml exists, but neither the per-session dir nor the ring holds
     // either source's audio.
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       sources: ["mic", "browser:meet:speaker-2"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
     let logs = LogCollector()
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -593,47 +593,47 @@ struct TranscribePipelineTests {
       lines.contains {
         $0.contains("run.empty: source=browser:meet:speaker-2 reason=store missing")
       })
-    #expect(lines.contains { $0.contains("source mic: consulted meeting store at") })
+    #expect(lines.contains { $0.contains("source mic: consulted session store at") })
     #expect(lines.contains { $0.contains("source mic: consulted ring store at") })
 
-    // An empty meeting still produces a (segment-less) transcript with the
+    // An empty session still produces a (segment-less) transcript with the
     // per-source store record (`none`, since nothing was found).
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-2"], explicitOut: nil, slug: meetingID)
+      sourceIDs: ["mic", "browser:meet:speaker-2"], explicitOut: nil, slug: sessionID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-2=none\"]"))
   }
 
   @Test(
-    "--meeting with one source that has data and one that has none transcribes the former, exits 0, and reports the missing source in the log and transcript metadata"
+    "--session with one source that has data and one that has none transcribes the former, exits 0, and reports the missing source in the log and transcript metadata"
   )
-  func meetingMissingOneSourceTranscribesRest() async throws {
-    // The issue's exact shape: `meeting.toml` lists `mic` plus a browser
+  func sessionMissingOneSourceTranscribesRest() async throws {
+    // The issue's exact shape: `session.toml` lists `mic` plus a browser
     // source, but `mic` was misrouted (issue #19) and has no data in either
-    // store. The browser source's per-meeting audio is present. The run must
+    // store. The browser source's per-session audio is present. The run must
     // transcribe the browser source, exit 0 (never exit-1-with-no-message,
     // never a silent exit-0-empty), and name `mic` as missing in both the log
     // and the transcript's per-source `audio_stores` record (issue #21).
-    let dataRoot = makeTempDirectory("meeting-partial")
-    let outputRoot = makeTempDirectory("meeting-partial-output")
-    let meetingID = "b7acc61f"
+    let dataRoot = makeTempDirectory("session-partial")
+    let outputRoot = makeTempDirectory("session-partial-output")
+    let sessionID = "b7acc61f"
 
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       sources: ["mic", "browser:meet:speaker-1"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
-    // Only the browser source has audio (its authoritative per-meeting copy);
-    // `mic` has no directory in the per-meeting tree or the ring.
+    // Only the browser source has audio (its authoritative per-session copy);
+    // `mic` has no directory in the per-session tree or the ring.
     try await writeFixtureSource(
       sourceID: "browser:meet:speaker-1",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -10), vadSpeechEnd: now.advanced(by: -8))
 
@@ -643,7 +643,7 @@ struct TranscribePipelineTests {
     ])
 
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -662,7 +662,7 @@ struct TranscribePipelineTests {
 
     let lines = logs.snapshot()
     // The missing source is named, non-silently, with its no-data reason...
-    #expect(lines.contains { $0.contains("meeting \(meetingID) source mic: no audio store found") })
+    #expect(lines.contains { $0.contains("session \(sessionID) source mic: no audio store found") })
     // The run produced segments, so it is not an empty run at all.
     #expect(!lines.contains { $0.contains("run.empty:") })
     // ...and the run summary's honest resolved/missing counts distinguish this
@@ -671,42 +671,42 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: meetingID)
+      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: sessionID)
     let markdown = try outputText(at: paths.markdown)
     // The transcript carries the transcribed text and, in metadata, the
     // per-source outcome: `mic` read from no store, the browser source from the
-    // per-meeting copy.
+    // per-session copy.
     #expect(markdown.contains("speaker one speaking"))
-    #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-1=meeting\"]"))
+    #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-1=session\"]"))
   }
 
   @Test(
-    "--meeting reads per-meeting chunks even when the ring also holds the source (per-meeting is authoritative)"
+    "--session reads per-session chunks even when the ring also holds the source (per-session is authoritative)"
   )
-  func meetingPrefersPerMeetingOverRing() async throws {
-    let dataRoot = makeTempDirectory("meeting-both")
-    let outputRoot = makeTempDirectory("meeting-both-output")
-    let meetingID = "both-meeting"
+  func sessionPrefersPerSessionOverRing() async throws {
+    let dataRoot = makeTempDirectory("session-both")
+    let outputRoot = makeTempDirectory("session-both-output")
+    let sessionID = "both-session"
 
-    let meeting = Meeting(
-      id: meetingID,
+    let session = Session(
+      id: sessionID,
       title: "call",
       state: .ended,
       started: now.advanced(by: -20),
       ended: now,
-      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
       sources: ["mic"])
-    try MeetingStore.write(meeting, dataRoot: dataRoot)
+    try SessionStore.write(session, dataRoot: dataRoot)
 
-    // Both stores hold mic; the per-meeting copy must win, so only one read
-    // (of the per-meeting store) happens.
+    // Both stores hold mic; the per-session copy must win, so only one read
+    // (of the per-session store) happens.
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -8), vadSpeechEnd: now.advanced(by: -6))
     try await writeFixtureSource(
       sourceID: "mic",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
       vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -13))
 
@@ -715,7 +715,7 @@ struct TranscribePipelineTests {
     ])
 
     let exitCode = await TranscribePipeline.run(
-      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
       outputRoot: outputRoot,
       backendName: "fluidaudio",
@@ -729,14 +729,14 @@ struct TranscribePipelineTests {
     )
 
     #expect(exitCode == 0)
-    // Only the chosen (per-meeting) store is read — never both.
+    // Only the chosen (per-session) store is read — never both.
     #expect(scripted.recordedCalls.count == 1)
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, slug: meetingID)
+      explicitOut: nil, slug: sessionID)
     let markdown = try outputText(at: paths.markdown)
-    #expect(markdown.contains("audio_stores: [\"mic=meeting\"]"))
+    #expect(markdown.contains("audio_stores: [\"mic=session\"]"))
   }
 
   @Test("segments from two sources are merged onto one shared timeline, ordered by time")

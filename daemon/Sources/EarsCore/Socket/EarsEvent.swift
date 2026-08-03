@@ -13,8 +13,8 @@ public enum EarsEvent: Sendable, Hashable {
   case vad(source: SourceID, state: VADState, t: Instant)
   /// A transcribed segment republished by `transcribe --follow` (telemetry).
   case segment(SegmentPublishParams)
-  /// A meeting changed — always the full object (state).
-  case meeting(Meeting)
+  /// A session changed — always the full object (state).
+  case session(Session)
   /// A source's runtime state changed (state).
   case source(id: SourceID, state: SourceRuntimeState)
   /// Pipeline job progress republished from `job.publish` (telemetry).
@@ -25,7 +25,7 @@ public enum EarsEvent: Sendable, Hashable {
     switch self {
     case .vad: .vad
     case .segment: .segment
-    case .meeting: .meeting
+    case .session: .session
     case .source: .source
     case .job: .job
     }
@@ -63,7 +63,8 @@ extension EventFrame: Codable {
   private enum ParamsKeys: String, CodingKey {
     case source, state, t, id
     case speaker, start, end, text
-    case meeting
+    // `session` is the wire's `meeting` key until the wire rename (#47).
+    case session = "meeting"
   }
 
   public init(from decoder: any Decoder) throws {
@@ -79,9 +80,9 @@ extension EventFrame: Codable {
         t: try params.decodeISO8601Instant(forKey: .t))
     case .segment:
       event = .segment(try container.decode(SegmentPublishParams.self, forKey: .params))
-    case .meeting:
+    case .session:
       let params = try container.nestedContainer(keyedBy: ParamsKeys.self, forKey: .params)
-      event = .meeting(try params.decode(Meeting.self, forKey: .meeting))
+      event = .session(try params.decode(Session.self, forKey: .session))
     case .source:
       let params = try container.nestedContainer(keyedBy: ParamsKeys.self, forKey: .params)
       event = .source(
@@ -104,9 +105,9 @@ extension EventFrame: Codable {
       try params.encodeISO8601Instant(t, forKey: .t)
     case .segment(let segment):
       try container.encode(segment, forKey: .params)
-    case .meeting(let meeting):
+    case .session(let session):
       var params = container.nestedContainer(keyedBy: ParamsKeys.self, forKey: .params)
-      try params.encode(meeting, forKey: .meeting)
+      try params.encode(session, forKey: .session)
     case .source(let id, let state):
       var params = container.nestedContainer(keyedBy: ParamsKeys.self, forKey: .params)
       try params.encode(id, forKey: .id)

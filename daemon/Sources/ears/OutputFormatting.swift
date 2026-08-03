@@ -39,10 +39,10 @@ enum OutputFormatting {
   static func humanStatus(_ data: StatusData) -> String {
     var lines = ["uptime: \(data.uptimeSeconds)s"]
     lines.append(contentsOf: data.sources.map { "source\t" + humanSourceLine($0) })
-    // Meetings carry an explicit row-kind prefix so a meeting id can't be
+    // Sessions carry an explicit row-kind prefix so a session id can't be
     // read as a source id in the flat status list.
-    if !data.meetings.isEmpty {
-      lines.append(contentsOf: data.meetings.map(humanMeetingLine))
+    if !data.sessions.isEmpty {
+      lines.append(contentsOf: data.sessions.map(humanSessionLine))
     }
     return lines.joined(separator: "\n")
   }
@@ -60,45 +60,45 @@ enum OutputFormatting {
     "ok"
   }
 
-  static func humanMeeting(_ meeting: Meeting) -> String {
-    humanMeetingLine(meeting)
+  static func humanSession(_ session: Session) -> String {
+    humanSessionLine(session)
   }
 
-  static func humanMeetingList(_ data: MeetingListData) -> String {
-    humanMeetings(data.meetings)
+  static func humanSessionList(_ data: SessionListData) -> String {
+    humanSessions(data.sessions)
   }
 
-  static func humanMeetings(_ meetings: [Meeting]) -> String {
-    meetings.isEmpty
-      ? "(no meetings)" : meetings.map(humanMeetingLine).joined(separator: "\n")
+  static func humanSessions(_ sessions: [Session]) -> String {
+    sessions.isEmpty
+      ? "(no sessions)" : sessions.map(humanSessionLine).joined(separator: "\n")
   }
 
-  static func humanMeetingLine(_ meeting: Meeting) -> String {
+  static func humanSessionLine(_ session: Session) -> String {
     var parts = [
-      "meeting",
-      meeting.id,
-      meeting.state.rawValue,
-      "\"\(meeting.title)\"",
+      "session",
+      session.id,
+      session.state.rawValue,
+      "\"\(session.title)\"",
     ]
-    if let identity = meeting.identity {
+    if let identity = session.identity {
       parts.append("\(identity.platform):\(identity.externalID)")
     }
-    parts.append("intervals=\(meeting.intervals.count)")
-    if !meeting.attendees.isEmpty {
-      parts.append("attendees=\(meeting.attendees.count)")
+    parts.append("intervals=\(session.intervals.count)")
+    if !session.attendees.isEmpty {
+      parts.append("attendees=\(session.attendees.count)")
     }
     // Age surfacing (#24): the start instant, and the last interval boundary as
-    // last-activity, so a weeks-old still-`active` meeting is visually anomalous.
-    parts.append("started=\(ISO8601InstantCodec.format(meeting.started))")
-    parts.append("last_activity=\(ISO8601InstantCodec.format(lastActivity(meeting)))")
+    // last-activity, so a weeks-old still-`active` session is visually anomalous.
+    parts.append("started=\(ISO8601InstantCodec.format(session.started))")
+    parts.append("last_activity=\(ISO8601InstantCodec.format(lastActivity(session)))")
     return parts.joined(separator: "\t")
   }
 
   /// The most recent interval boundary (or `started` if none) — mirrors the
-  /// daemon's own last-activity notion for the CLI's meeting rows.
-  private static func lastActivity(_ meeting: Meeting) -> Instant {
-    var latest = meeting.started
-    for interval in meeting.intervals {
+  /// daemon's own last-activity notion for the CLI's session rows.
+  private static func lastActivity(_ session: Session) -> Instant {
+    var latest = session.started
+    for interval in session.intervals {
       latest = max(latest, interval.start)
       if let end = interval.end {
         latest = max(latest, end)
@@ -114,13 +114,13 @@ enum OutputFormatting {
       return "[\(t)] vad \(source.rawValue) \(state.rawValue)"
     case .segment(let segment):
       return
-        "[\(segment.meeting)] \(segment.speaker) (\(segment.start)-\(segment.end)): \(segment.text)"
-    case .meeting(let meeting):
-      return "[meeting] \(humanMeetingLine(meeting))\(revSuffix)"
+        "[\(segment.session)] \(segment.speaker) (\(segment.start)-\(segment.end)): \(segment.text)"
+    case .session(let session):
+      return "[session] \(humanSessionLine(session))\(revSuffix)"
     case .source(let id, let state):
       return "[source] \(id.rawValue) \(state.rawValue)\(revSuffix)"
     case .job(let job):
-      let target = job.meeting.map { " meeting=\($0)" } ?? ""
+      let target = job.session.map { " session=\($0)" } ?? ""
       return "[job] \(job.job) \(job.kind)\(target) \(job.state.rawValue)"
     }
   }

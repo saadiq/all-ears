@@ -2,7 +2,7 @@ import ArgumentParser
 import EarsCLISupport
 
 /// The always-running capture daemon. Owns every audio source, writes the ring
-/// buffer, maintains the VAD index and meeting records, and exposes the control
+/// buffer, maintains the VAD index and session records, and exposes the control
 /// socket. See `docs/architecture.md`.
 ///
 /// Every invocation still runs `EarsCLI.run(tool:version:arguments:)`

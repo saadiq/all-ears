@@ -16,11 +16,11 @@ enum FrontmatterRenderer {
     if let derivedFrom = frontmatter.derivedFrom {
       lines.append(YAML.line("derived_from", scalar(derivedFrom)))
     }
+    if let rangeRun = frontmatter.rangeRun {
+      lines.append(YAML.line("range_run", .plain(rangeRun)))
+    }
     if let session = frontmatter.session {
       lines.append(YAML.line("session", .plain(session)))
-    }
-    if let meeting = frontmatter.meeting {
-      lines.append(YAML.line("meeting", .plain(meeting)))
     }
     lines.append(YAML.line("sources", .flowArray(frontmatter.sources.map(sourceValue))))
     lines.append(
@@ -83,7 +83,7 @@ enum FrontmatterRenderer {
   /// ambiguous to a YAML parser: empty, flow/quote-significant characters,
   /// leading/trailing whitespace, a leading digit (numbers, dates, and
   /// version-like strings such as `"0.x"` all start with a digit), or a
-  /// YAML reserved word. Fields with a known-safe shape (the session id,
+  /// YAML reserved word. Fields with a known-safe shape (the range-run id,
   /// `kind`, numeric fields) bypass this and render `.plain` directly.
   private static func scalar(_ string: String) -> YAML.Value {
     needsQuoting(string) ? .quoted(string) : .plain(string)

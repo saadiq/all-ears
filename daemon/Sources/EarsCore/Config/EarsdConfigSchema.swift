@@ -37,7 +37,7 @@ public enum EarsdConfigSchema {
         "port": .int(47812),
         "allowed_origins": .array([]),
       ]),
-      "meetings": .table([
+      "sessions": .table([
         "ingest_close_grace_s": .int(120),
         "local_sources": .array([.string("mic")]),
       ]),
@@ -143,32 +143,32 @@ public enum EarsdConfigSchema {
                 ]
               ),
               description: "Loopback control-plane WebSocket."),
-            // Meeting lifecycle knobs: how long a browser meeting's last
+            // Session lifecycle knobs: how long a browser session's last
             // ingest stream may stay closed before the daemon auto-ends the
-            // meeting (`reason = "ingest-idle"`), and which locally-captured
+            // session (`reason = "ingest-idle"`), and which locally-captured
             // sources (your own mic, system audio) the daemon folds into every
-            // browser meeting so your side is transcribed alongside the
-            // extension's per-participant streams. See `MeetingRegistry`.
+            // browser session so your side is transcribed alongside the
+            // extension's per-participant streams. See `SessionRegistry`.
             // `local_sources` is a plain string array (elementSchema-nil
             // convention, like `ingest_ws.allowed_origins`).
-            "meetings": ConfigSchema.Field(
+            "sessions": ConfigSchema.Field(
               type: .table,
               children: ConfigSchema(
                 fields: [
                   "ingest_close_grace_s": ConfigSchema.Field(
                     type: .int,
                     description:
-                      "Grace period before a browser meeting's idle ingest stream auto-ends it, in seconds."
+                      "Grace period before a browser session's idle ingest stream auto-ends it, in seconds."
                   ),
                   "local_sources": ConfigSchema.Field(
                     type: .array,
-                    description: "Local sources folded into every browser meeting (e.g. your mic)."),
+                    description: "Local sources folded into every browser session (e.g. your mic)."),
                 ]
               ),
-              description: "Meeting lifecycle knobs."),
-            // Transcript-driven retention: evict a meeting's audio this many
+              description: "Session lifecycle knobs."),
+            // Transcript-driven retention: evict a session's audio this many
             // seconds after its transcript completes successfully, or — for a
-            // meeting whose transcript never completed — this many seconds
+            // session whose transcript never completed — this many seconds
             // after it ended, whichever deadline comes first. Transcripts are
             // never evicted. See `EvictionSweeper`.
             "retention": ConfigSchema.Field(
@@ -178,7 +178,7 @@ public enum EarsdConfigSchema {
                   "evict_after_transcript_seconds": ConfigSchema.Field(
                     type: .int,
                     description:
-                      "Evict a meeting's audio this many seconds after its transcript completes."
+                      "Evict a session's audio this many seconds after its transcript completes."
                   ),
                   "max_audio_age_seconds": ConfigSchema.Field(
                     type: .int,

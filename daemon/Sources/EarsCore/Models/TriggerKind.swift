@@ -1,4 +1,4 @@
-/// What started a meeting, recorded as its `trigger` provenance field.
+/// What started a session, recorded as its `trigger` provenance field.
 public enum TriggerKind: String, Sendable, Hashable, Codable, CaseIterable {
   /// Started by an explicit user action.
   case manual

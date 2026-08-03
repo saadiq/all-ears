@@ -5,7 +5,7 @@ import Foundation
 
 /// Dispatches v2 control calls to the right actor and builds each reply —
 /// the seam both `EarsIPC` control transports plug into. It owns the source
-/// id → ``CaptureActor`` lookup, the ``MeetingRegistry`` reference, and the
+/// id → ``CaptureActor`` lookup, the ``SessionRegistry`` reference, and the
 /// daemon start instant (for `uptime_s`). Deliberately **thin wiring**: it
 /// decodes intent and shapes wire payloads, pushing all real logic into the
 /// registry and capture actors. An `actor` because its source→actor map is
@@ -22,7 +22,7 @@ import Foundation
 /// |---|---|---|
 /// | `status` | every ``CaptureActor/status()`` + registry | `StatusData` |
 /// | `subscribe` | registry + ``EventBus/currentRev()`` | `SnapshotData` (the transport registered the filter first) |
-/// | `meeting.*` | ``MeetingRegistry`` | the full meeting object (`meeting.list` → `MeetingListData`) |
+/// | `session.*` | ``SessionRegistry`` | the full session object (`session.list` → `SessionListData`) |
 /// | `segment.publish`, `job.publish` | the ``EventBus`` (notification-only) | `EmptyData` |
 /// | `sources.*`, `capture.*`, `flush` | ``CaptureActor``s | as v1 |
 ///
@@ -31,9 +31,9 @@ import Foundation
 /// clearly rather than leaving a half-built source.
 public actor ControlServer {
   private var captureActors: [SourceID: CaptureActor]
-  /// The meeting lifecycle owner; `nil` (for callers that don't wire
-  /// meetings) makes every `meeting.*` call fail clearly.
-  private let meetings: MeetingRegistry?
+  /// The session lifecycle owner; `nil` (for callers that don't wire
+  /// sessions) makes every `session.*` call fail clearly.
+  private let sessions: SessionRegistry?
   private let dataRoot: URL
   private let clock: any NowProviding
   /// The daemon's start instant, for the `status` reply's `uptime_s`.
@@ -49,10 +49,10 @@ public actor ControlServer {
     startInstant: Instant,
     clock: any NowProviding = SystemClock(),
     bus: EventBus? = nil,
-    meetings: MeetingRegistry? = nil
+    sessions: SessionRegistry? = nil
   ) {
     self.captureActors = captureActors
-    self.meetings = meetings
+    self.sessions = sessions
     self.dataRoot = dataRoot
     self.startInstant = startInstant
     self.clock = clock
@@ -73,7 +73,7 @@ public actor ControlServer {
   }
 
   /// Drops a source from the lookup — ``EarsDaemon`` calls this when a
-  /// meeting-scoped source's `CaptureActor` is torn down at meeting end, so
+  /// session-scoped source's `CaptureActor` is torn down at session end, so
   /// `status`/`sources.list` stop reporting a source that is no longer
   /// recording. Its `meta.toml` and audio stay on disk (retention's concern).
   public func unregisterDynamicSource(id: SourceID) {
@@ -89,27 +89,27 @@ public actor ControlServer {
     case .subscribe:
       return await handleSubscribe()
 
-    case .meetingStart(let params):
-      return await withMeetings { try await $0.start(params) }
-    case .meetingEnd(let meeting):
-      return await withMeetings { try await $0.end(id: meeting) }
-    case .meetingPause(let meeting):
-      return await withMeetings { try await $0.pause(id: meeting) }
-    case .meetingResume(let meeting):
-      return await withMeetings { try await $0.resume(id: meeting) }
-    case .meetingRename(let params):
-      return await withMeetings {
-        try await $0.rename(id: params.meeting, title: params.title, ifRev: params.ifRev)
+    case .sessionStart(let params):
+      return await withSessions { try await $0.start(params) }
+    case .sessionEnd(let session):
+      return await withSessions { try await $0.end(id: session) }
+    case .sessionPause(let session):
+      return await withSessions { try await $0.pause(id: session) }
+    case .sessionResume(let session):
+      return await withSessions { try await $0.resume(id: session) }
+    case .sessionRename(let params):
+      return await withSessions {
+        try await $0.rename(id: params.session, title: params.title, ifRev: params.ifRev)
       }
-    case .meetingAttendee(let params):
-      return await withMeetings { try await $0.upsertAttendee(params) }
-    case .meetingGet(let meeting):
-      return await withMeetings { try await $0.get(id: meeting) }
-    case .meetingList:
-      guard let meetings else {
-        return .failure(.internalError, "this daemon has no meeting registry")
+    case .sessionAttendee(let params):
+      return await withSessions { try await $0.upsertAttendee(params) }
+    case .sessionGet(let session):
+      return await withSessions { try await $0.get(id: session) }
+    case .sessionList:
+      guard let sessions else {
+        return .failure(.internalError, "this daemon has no session registry")
       }
-      return ControlReply(result: MeetingListData(meetings: await meetings.list()))
+      return ControlReply(result: SessionListData(sessions: await sessions.list()))
 
     case .segmentPublish(let params):
       // A pass-through to the live feed, not a new source of truth: no
@@ -151,12 +151,12 @@ public actor ControlServer {
 
   private func handleStatus() async -> ControlReply {
     let uptime = max(0, Int(clock.now().interval(since: startInstant)))
-    let liveMeetings = (await meetings?.list() ?? []).filter { $0.state != .ended }
+    let liveSessions = (await sessions?.list() ?? []).filter { $0.state != .ended }
     return ControlReply(
       result: StatusData(
         uptimeSeconds: uptime,
         sources: await sourceStatuses(),
-        meetings: liveMeetings))
+        sessions: liveSessions))
   }
 
   /// Builds the `subscribe` snapshot. The revision is read *before* the
@@ -165,11 +165,11 @@ public actor ControlServer {
   /// missed update.
   private func handleSubscribe() async -> ControlReply {
     let rev = await bus?.currentRev() ?? 0
-    let liveMeetings = (await meetings?.list() ?? []).filter { $0.state != .ended }
+    let liveSessions = (await sessions?.list() ?? []).filter { $0.state != .ended }
     return ControlReply(
       result: SnapshotData(
         rev: rev,
-        meetings: liveMeetings,
+        sessions: liveSessions,
         sources: await sourceStatuses()))
   }
 
@@ -182,16 +182,16 @@ public actor ControlServer {
     return statuses
   }
 
-  // MARK: - meetings
+  // MARK: - sessions
 
-  private func withMeetings(
-    _ operation: (MeetingRegistry) async throws -> Meeting
+  private func withSessions(
+    _ operation: (SessionRegistry) async throws -> Session
   ) async -> ControlReply {
-    guard let meetings else {
-      return .failure(.internalError, "this daemon has no meeting registry")
+    guard let sessions else {
+      return .failure(.internalError, "this daemon has no session registry")
     }
     do {
-      return ControlReply(result: try await operation(meetings))
+      return ControlReply(result: try await operation(sessions))
     } catch {
       return ControlReply(error: wireError(for: error))
     }
@@ -265,12 +265,12 @@ public actor ControlServer {
         return WireError(code: .invalidRequest, message: "source is not paused")
       }
     }
-    if let error = error as? MeetingRegistryError {
+    if let error = error as? SessionRegistryError {
       switch error {
       case .notFound(let id):
-        return WireError(code: .meetingNotFound, message: "no active meeting \(id)")
+        return WireError(code: .sessionNotFound, message: "no active session \(id)")
       case .ended(let id):
-        return WireError(code: .meetingEnded, message: "meeting \(id) has ended")
+        return WireError(code: .sessionEnded, message: "session \(id) has ended")
       case .conflict(let message):
         return WireError(code: .conflict, message: message)
       }

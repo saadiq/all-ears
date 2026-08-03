@@ -164,7 +164,7 @@ struct ControlSocketServerTests {
     let server = makeServer(listener: listener) { call in
       guard case .subscribe = call else { return .failure(.internalError, "unexpected") }
       return ControlReply(
-        result: SnapshotData(rev: 41, meetings: [], sources: []))
+        result: SnapshotData(rev: 41, sessions: [], sources: []))
     }
     let runner = Task { await server.run() }
     let connection = FakeSocketConnection()
@@ -206,7 +206,7 @@ struct ControlSocketServerTests {
     let server = makeServer(listener: listener) { call in
       switch call {
       case .subscribe:
-        return ControlReply(result: SnapshotData(rev: 0, meetings: [], sources: []))
+        return ControlReply(result: SnapshotData(rev: 0, sessions: [], sources: []))
       case .status:
         return ControlReply(result: StatusData(uptimeSeconds: 7, sources: []))
       default:
@@ -250,11 +250,11 @@ struct ControlSocketServerTests {
 
   @Test("concurrent connections each get their own correct reply")
   func concurrentConnectionsDoNotCrossWires() async throws {
-    // Echo the requested meeting id back as the uptime so each connection's
+    // Echo the requested session id back as the uptime so each connection's
     // reply is uniquely identifiable; assert none get another's answer.
     let listener = FakeSocketListener()
     let server = makeServer(listener: listener) { call in
-      guard case .meetingEnd(let id) = call else {
+      guard case .sessionEnd(let id) = call else {
         return .failure(.internalError, "unexpected")
       }
       return ControlReply(result: StatusData(uptimeSeconds: Int(id) ?? -1, sources: []))
@@ -266,7 +266,7 @@ struct ControlSocketServerTests {
     for (index, connection) in connections.enumerated() {
       sendHello(connection)
       connection.feedLine(
-        ControlRequestFrame.call(id: .int(1), call: .meetingEnd(meeting: String(index))))
+        ControlRequestFrame.call(id: .int(1), call: .sessionEnd(session: String(index))))
     }
 
     try await withThrowingTaskGroup(of: Void.self) { group in
@@ -291,7 +291,7 @@ struct ControlSocketServerTests {
     let listener = FakeSocketListener()
     let server = makeServer(listener: listener, outboundQueueBound: bound) { call in
       guard case .subscribe = call else { return .failure(.internalError, "no") }
-      return ControlReply(result: SnapshotData(rev: 0, meetings: [], sources: []))
+      return ControlReply(result: SnapshotData(rev: 0, sessions: [], sources: []))
     }
     let runner = Task { await server.run() }
     // A connection whose send() never completes: a client that subscribes then

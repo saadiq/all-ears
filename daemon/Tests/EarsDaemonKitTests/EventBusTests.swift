@@ -56,19 +56,19 @@ struct EventBusTests {
     let recorded = Mutex<[EventFrame]>([])
     await bus.attach { frame in recorded.withLock { $0.append(frame) } }
 
-    let meeting = Meeting(
+    let session = Session(
       id: "m1", title: "t", state: .active, started: Instant(secondsSinceEpoch: 1))
     let rev = await bus.publishState { rev in
-      var stamped = meeting
+      var stamped = session
       stamped.rev = rev
-      return .meeting(stamped)
+      return .session(stamped)
     }
 
     #expect(rev == 1)
     await waitForFrames(recorded, count: 1)
     let frames = recorded.withLock { $0 }
-    guard case .meeting(let published)? = frames.first?.event else {
-      Issue.record("expected a meeting frame")
+    guard case .session(let published)? = frames.first?.event else {
+      Issue.record("expected a session frame")
       return
     }
     #expect(published.rev == 1)

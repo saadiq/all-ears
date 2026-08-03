@@ -9,23 +9,25 @@
 /// {"cmd":"ingest.close","stream_id":"s7"}
 /// ```
 ///
-/// `meeting` is optional: when present, the daemon links the source into that
-/// meeting's membership itself (see `MeetingRegistry.ingestStreamOpened`), so
+/// `session` is optional: when present, the daemon links the source into that
+/// session's membership itself (see `SessionRegistry.ingestStreamOpened`), so
 /// the ingest-idle grace policy holds even when the client's own
-/// `meeting.attendee` source upserts never arrive (an MV3 service worker that
+/// `session.attendee` source upserts never arrive (an MV3 service worker that
 /// lost its in-memory state mid-call). Untagged opens behave exactly as
 /// before.
 public enum IngestRequest: Sendable, Hashable {
   /// Begin pushing audio for a `browser:<label>` source; declares its format
-  /// and (optionally) the meeting identity the source belongs to.
-  case open(source: SourceID, format: AudioFormatSpec, meeting: MeetingIdentity?)
+  /// and (optionally) the session identity the source belongs to.
+  case open(source: SourceID, format: AudioFormatSpec, session: SessionIdentity?)
   /// End a stream opened by `ingest.open`, by its `stream_id`.
   case close(streamID: String)
 }
 
 extension IngestRequest: Codable {
   private enum CodingKeys: String, CodingKey {
-    case cmd, source, format, meeting
+    case cmd, source, format
+    // `session` is the wire's `meeting` tag until the wire rename (#47).
+    case session = "meeting"
     case streamID = "stream_id"
   }
 
@@ -41,7 +43,7 @@ extension IngestRequest: Codable {
       self = .open(
         source: try container.decode(SourceID.self, forKey: .source),
         format: try container.decode(AudioFormatSpec.self, forKey: .format),
-        meeting: try container.decodeIfPresent(MeetingIdentity.self, forKey: .meeting))
+        session: try container.decodeIfPresent(SessionIdentity.self, forKey: .session))
     case .close:
       self = .close(streamID: try container.decode(String.self, forKey: .streamID))
     }
@@ -50,11 +52,11 @@ extension IngestRequest: Codable {
   public func encode(to encoder: any Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     switch self {
-    case .open(let source, let format, let meeting):
+    case .open(let source, let format, let session):
       try container.encode(Tag.open, forKey: .cmd)
       try container.encode(source, forKey: .source)
       try container.encode(format, forKey: .format)
-      try container.encodeIfPresent(meeting, forKey: .meeting)
+      try container.encodeIfPresent(session, forKey: .session)
     case .close(let streamID):
       try container.encode(Tag.close, forKey: .cmd)
       try container.encode(streamID, forKey: .streamID)

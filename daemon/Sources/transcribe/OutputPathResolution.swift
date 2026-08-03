@@ -25,9 +25,9 @@ enum OutputPathResolution {
   ///   - explicitOut: `--out`, if given -- used verbatim as the Markdown
   ///     path; the JSON sidecar is derived by swapping its extension to
   ///     `.json`.
-  ///   - slug: `--meeting`'s meeting id, when given -- used as the
+  ///   - slug: `--session`'s session id, when given -- used as the
   ///     filename's `<slug>` in place of the joined source ids, so a
-  ///     meeting run's output name reflects the meeting rather than its
+  ///     session run's output name reflects the session rather than its
   ///     source list.
   static func resolve(
     outputRoot: URL, requestedStart: Instant, sourceIDs: [SourceID], explicitOut: String?,
@@ -60,11 +60,11 @@ enum OutputPathResolution {
 
   /// Synthesises a run identifier for a plain `--last`/`--source` run, in
   /// the `<start-timestamp>_<slug>` shape (e.g.
-  /// `2026-07-17T10-30-00Z_mic`), so ``TranscriptFrontmatter/session``
+  /// `2026-07-17T10-30-00Z_mic`), so ``TranscriptFrontmatter/rangeRun``
   /// gets a meaningful, reproducible value instead of a placeholder
-  /// string. A `--meeting` run uses the meeting id instead -- this
+  /// string. A `--session` run uses the session id instead -- this
   /// function is never called for that case (see ``TranscribePipeline``).
-  static func sessionIdentifier(requestedStart: Instant, sourceIDs: [SourceID]) -> String {
+  static func rangeRunIdentifier(requestedStart: Instant, sourceIDs: [SourceID]) -> String {
     let timestamp = FilenameTimestampCodec.string(for: requestedStart)
     let slug = sourceIDs.map(\.pathSafe).joined(separator: "_")
     return "\(timestamp)_\(slug)"

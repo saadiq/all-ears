@@ -42,7 +42,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("mic"), SourceID("app:us.zoom.xos")],
       transcriptions: [mic, zoom],
       requested: requested,
-      session: "2026-07-17T10-30-00Z_mic",
+      rangeRun: "2026-07-17T10-30-00Z_mic",
       model: model,
       generated: start.advanced(by: 40),
       speechSeconds: 6
@@ -92,7 +92,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("app:us.zoom.xos"), SourceID("mic")],
       transcriptions: [guest, mic],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       model: model,
       generated: start,
       speechSeconds: 12
@@ -140,7 +140,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("mic")],
       transcriptions: [mic],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       model: model,
       generated: start,
       speechSeconds: 4
@@ -190,7 +190,7 @@ struct TranscriptAssemblyTests {
       ],
       transcriptions: [early, late],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       speakers: speakers,
       model: model,
       generated: start,
@@ -211,7 +211,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("mic")],
       transcriptions: [mic],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       model: model,
       generated: start,
       speechSeconds: 2
@@ -237,7 +237,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("mic")],
       transcriptions: [mic],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       model: model,
       generated: start,
       speechSeconds: 2
@@ -415,7 +415,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("app:us.zoom.xos"), SourceID("mic")],
       transcriptions: [zoom, mic],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       diarization: [
         SourceID("app:us.zoom.xos"): [
           SpeakerSpan(start: 0, end: 3, speaker: "Speaker 1"),
@@ -447,7 +447,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("app:us.zoom.xos")],
       transcriptions: [zoom],
       requested: requested,
-      session: "id",
+      rangeRun: "id",
       diarization: [:],
       diarizationBackend: "sortformer-fluidaudio",
       model: model,
@@ -466,7 +466,7 @@ struct TranscriptAssemblyTests {
       sourceIDs: [SourceID("mic")],
       transcriptions: [],
       requested: requested,
-      session: "2026-07-17T10-30-00Z_mic",
+      rangeRun: "2026-07-17T10-30-00Z_mic",
       model: model,
       generated: start.advanced(by: 40),
       speechSeconds: 12
@@ -474,7 +474,7 @@ struct TranscriptAssemblyTests {
 
     #expect(document.frontmatter.schema == 1)
     #expect(document.frontmatter.kind == .transcript)
-    #expect(document.frontmatter.session == "2026-07-17T10-30-00Z_mic")
+    #expect(document.frontmatter.rangeRun == "2026-07-17T10-30-00Z_mic")
     #expect(document.frontmatter.sources == [SourceID("mic")])
     #expect(document.frontmatter.range == requested)
     #expect(document.frontmatter.model == model)

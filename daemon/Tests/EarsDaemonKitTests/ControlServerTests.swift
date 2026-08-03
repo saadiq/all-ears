@@ -10,7 +10,7 @@ import Testing
 /// Covers ``ControlServer``'s v2 dispatch: the reply frames it builds
 /// (`{"id", "result"}` / `{"id", "error": {"code", "message"}}`), the stable
 /// error-code mapping, the `subscribe` snapshot, and routing into the
-/// meeting registry. Transport-level concerns (`hello` gating,
+/// session registry. Transport-level concerns (`hello` gating,
 /// capability tiers) live in `EarsIPCTests` — every call reaching this actor
 /// has already cleared them.
 @Suite("ControlServer")
@@ -28,7 +28,7 @@ struct ControlServerTests {
     startInstant: Instant = Instant(secondsSinceEpoch: 0),
     clock: any NowProviding,
     bus: EventBus? = nil,
-    meetings: MeetingRegistry? = nil
+    sessions: SessionRegistry? = nil
   ) -> ControlServer {
     ControlServer(
       captureActors: captureActors,
@@ -36,7 +36,7 @@ struct ControlServerTests {
       startInstant: startInstant,
       clock: clock,
       bus: bus,
-      meetings: meetings)
+      sessions: sessions)
   }
 
   /// Decodes a `ControlReply`'s JSON frame (with a fixed test id) for
@@ -65,7 +65,7 @@ struct ControlServerTests {
 
   // MARK: - status / subscribe
 
-  @Test("status reports uptime, sources, and the (empty) meeting list")
+  @Test("status reports uptime, sources, and the (empty) session list")
   func statusReportsUptime() async throws {
     let clock = ManualClock(Instant(secondsSinceEpoch: 1000))
     let server = makeServer(
@@ -93,15 +93,15 @@ struct ControlServerTests {
     let clock = ManualClock()
     let bus = EventBus()
     await bus.publish(.source(id: "mic", state: .capturing))  // rev 1
-    let meetings = MeetingRegistry(dataRoot: dataRoot, clock: clock, bus: bus)
-    let started = try await meetings.start(MeetingStartParams(title: "standup"))  // rev 2
-    let server = makeServer(dataRoot: dataRoot, clock: clock, bus: bus, meetings: meetings)
+    let sessions = SessionRegistry(dataRoot: dataRoot, clock: clock, bus: bus)
+    let started = try await sessions.start(SessionStartParams(title: "standup"))  // rev 2
+    let server = makeServer(dataRoot: dataRoot, clock: clock, bus: bus, sessions: sessions)
 
     let data = try result(await server.handle(.subscribe(SubscribeParams())))
     #expect(data["rev"] as? Int == 2)
-    let snapshotMeetings: [[String: Any]]? = data["meetings"] as? [[String: Any]]
-    #expect(try #require(snapshotMeetings).count == 1)
-    #expect(try #require(snapshotMeetings).first?["id"] as? String == started.id)
+    let snapshotSessions: [[String: Any]]? = data["meetings"] as? [[String: Any]]
+    #expect(try #require(snapshotSessions).count == 1)
+    #expect(try #require(snapshotSessions).first?["id"] as? String == started.id)
   }
 
   // MARK: - sources / capture error mapping
@@ -150,9 +150,9 @@ struct ControlServerTests {
     let server = makeServer(dataRoot: try makeDataRoot(), clock: clock, bus: bus)
 
     let segment = SegmentPublishParams(
-      meeting: "s1", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
+      session: "s1", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
     _ = try result(await server.handle(.segmentPublish(segment)))
-    let job = JobPublishParams(job: "j1", kind: "transcribe", meeting: "m1", state: .running)
+    let job = JobPublishParams(job: "j1", kind: "transcribe", session: "m1", state: .running)
     _ = try result(await server.handle(.jobPublish(job)))
 
     for _ in 0..<1_000 {
@@ -170,7 +170,7 @@ struct ControlServerTests {
     _ = try result(
       await server.handle(
         .segmentPublish(
-          SegmentPublishParams(meeting: "s1", speaker: "You", start: 0, end: 1, text: "hi"))))
+          SegmentPublishParams(session: "s1", speaker: "You", start: 0, end: 1, text: "hi"))))
   }
 
   // MARK: - makeHandler wiring
@@ -183,73 +183,73 @@ struct ControlServerTests {
     #expect((data["sources"] as? [Any])?.isEmpty == true)
   }
 
-  // MARK: - meeting dispatch
+  // MARK: - session dispatch
 
-  @Test("meeting verbs fail with internal when no registry is wired")
-  func meetingWithoutRegistryFails() async throws {
+  @Test("session verbs fail with internal when no registry is wired")
+  func sessionWithoutRegistryFails() async throws {
     let server = makeServer(dataRoot: try makeDataRoot(), clock: ManualClock())
     #expect(
-      try errorCode(await server.handle(.meetingStart(MeetingStartParams()))) == "internal")
+      try errorCode(await server.handle(.sessionStart(SessionStartParams()))) == "internal")
   }
 
-  @Test("meeting.start is idempotent through the wire and returns the full meeting object")
-  func meetingStartIdempotent() async throws {
+  @Test("session.start is idempotent through the wire and returns the full session object")
+  func sessionStartIdempotent() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock()
-    let meetings = MeetingRegistry(dataRoot: dataRoot, clock: clock)
-    let server = makeServer(dataRoot: dataRoot, clock: clock, meetings: meetings)
-    let params = MeetingStartParams(
+    let sessions = SessionRegistry(dataRoot: dataRoot, clock: clock)
+    let server = makeServer(dataRoot: dataRoot, clock: clock, sessions: sessions)
+    let params = SessionStartParams(
       platform: "meet", externalID: "abc", trigger: .browserExtension)
 
-    let first = try result(await server.handle(.meetingStart(params)))
+    let first = try result(await server.handle(.sessionStart(params)))
     let firstID = try #require(first["id"] as? String)
     #expect(first["state"] as? String == "active")
     #expect((first["intervals"] as? [Any])?.count == 1)
 
-    let again = try result(await server.handle(.meetingStart(params)))
+    let again = try result(await server.handle(.sessionStart(params)))
     #expect(again["id"] as? String == firstID)
   }
 
-  @Test("meeting error mapping: not-found, ended, and rename conflict codes")
-  func meetingErrorMapping() async throws {
+  @Test("session error mapping: not-found, ended, and rename conflict codes")
+  func sessionErrorMapping() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock()
-    let meetings = MeetingRegistry(dataRoot: dataRoot, clock: clock)
-    let server = makeServer(dataRoot: dataRoot, clock: clock, meetings: meetings)
+    let sessions = SessionRegistry(dataRoot: dataRoot, clock: clock)
+    let server = makeServer(dataRoot: dataRoot, clock: clock, sessions: sessions)
 
     #expect(
-      try errorCode(await server.handle(.meetingPause(meeting: "nope"))) == "meeting_not_found")
+      try errorCode(await server.handle(.sessionPause(session: "nope"))) == "meeting_not_found")
 
     let started = try result(
-      await server.handle(.meetingStart(MeetingStartParams(title: "standup"))))
+      await server.handle(.sessionStart(SessionStartParams(title: "standup"))))
     let id = try #require(started["id"] as? String)
-    _ = try result(await server.handle(.meetingEnd(meeting: id)))
-    #expect(try errorCode(await server.handle(.meetingResume(meeting: id))) == "meeting_ended")
+    _ = try result(await server.handle(.sessionEnd(session: id)))
+    #expect(try errorCode(await server.handle(.sessionResume(session: id))) == "meeting_ended")
     #expect(
       try errorCode(
         await server.handle(
-          .meetingRename(MeetingRenameParams(meeting: "nope", title: "x", ifRev: nil))))
+          .sessionRename(SessionRenameParams(session: "nope", title: "x", ifRev: nil))))
         == "meeting_not_found")
 
     let second = try result(
-      await server.handle(.meetingStart(MeetingStartParams(title: "retro"))))
+      await server.handle(.sessionStart(SessionStartParams(title: "retro"))))
     let secondID = try #require(second["id"] as? String)
     #expect(
       try errorCode(
         await server.handle(
-          .meetingRename(MeetingRenameParams(meeting: secondID, title: "x", ifRev: 999))))
+          .sessionRename(SessionRenameParams(session: secondID, title: "x", ifRev: 999))))
         == "conflict")
   }
 
-  @Test("meeting.list returns live + recent meetings")
-  func meetingList() async throws {
+  @Test("session.list returns live + recent sessions")
+  func sessionList() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock()
-    let meetings = MeetingRegistry(dataRoot: dataRoot, clock: clock)
-    let server = makeServer(dataRoot: dataRoot, clock: clock, meetings: meetings)
-    _ = try result(await server.handle(.meetingStart(MeetingStartParams(title: "standup"))))
+    let sessions = SessionRegistry(dataRoot: dataRoot, clock: clock)
+    let server = makeServer(dataRoot: dataRoot, clock: clock, sessions: sessions)
+    _ = try result(await server.handle(.sessionStart(SessionStartParams(title: "standup"))))
 
-    let data = try result(await server.handle(.meetingList))
+    let data = try result(await server.handle(.sessionList))
     #expect((data["meetings"] as? [Any])?.count == 1)
   }
 }

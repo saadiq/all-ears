@@ -46,7 +46,7 @@ public struct SegmentedAudioReader: Sendable {
   /// the range (audio on record at all) and how many of the range's VAD spans
   /// are speech (the silence-skipping input). Together they distinguish "no
   /// audio here", "audio but all silence", and "real speech" — the very
-  /// question a `--meeting` run that yields `segments=0` needs answered per
+  /// question a `--session` run that yields `segments=0` needs answered per
   /// source (all-ears issue #20).
   public struct RangeAudioReport: Sendable, Equatable {
     public var slices: [AudioSlice]
@@ -120,7 +120,7 @@ public struct SegmentedAudioReader: Sendable {
   /// exists in the reader's data root at all, and — if so — the same chunk /
   /// speech-span counts ``read(source:range:)`` would find, without loading
   /// `meta.toml` or decoding any audio. This is the cheap "is there anything
-  /// here, and is it worth reading?" question the `--meeting` store selection
+  /// here, and is it worth reading?" question the `--session` store selection
   /// asks of each candidate store before committing to decode one of them.
   public struct RangeProbe: Sendable, Equatable {
     public var sourceExists: Bool
@@ -138,7 +138,7 @@ public struct SegmentedAudioReader: Sendable {
   /// speech spans in `requested`, but never reads `meta.toml` or decodes audio.
   /// A missing source directory reports `sourceExists == false` with zero
   /// counts rather than throwing — a candidate store that simply doesn't hold
-  /// this source is a normal, expected outcome the `--meeting` fallback keys
+  /// this source is a normal, expected outcome the `--session` fallback keys
   /// off, not an error.
   public func probe(source sourceID: SourceID, range requested: TimeRange) -> RangeProbe {
     let sourceDirectory = DataStoreLayout.sourceDirectory(dataRoot: dataRoot, sourceID: sourceID)

@@ -4,9 +4,9 @@ import EarsTranscribeKit
 import Foundation
 
 /// `transcribe --follow`'s pipeline, per `docs/specs/transcribe.md`'s
-/// "Streaming mode": attach to a live source — resolved through the meeting
+/// "Streaming mode": attach to a live source — resolved through the session
 /// currently capturing it, since live capture writes only under
-/// `meetings/<id>/sources/<source>/` — tail its index for newly-written
+/// `sessions/<id>/sources/<source>/` — tail its index for newly-written
 /// `chunk`/`vad` events (byte-offset tail, no re-polling of the whole file —
 /// ``IndexTailReader``), decode incrementally through a real
 /// ``StreamingTranscriber``, and emit finalised segments to three sinks:
@@ -57,10 +57,10 @@ import Foundation
 /// boundary (end of stream *is* a boundary) and ``StreamingDelta/finish()``
 /// flushes any held-back partial as a final commit — except a trailing
 /// U+FFFD, which is discarded (see that type's doc for the decision). Exit
-/// is non-zero only for setup failures (no live meeting capturing the
+/// is non-zero only for setup failures (no live session capturing the
 /// source, non-streaming backend, model load) or a final transcript write
 /// that never succeeded.
-/// Exiting when the meeting capturing the source ends is not implemented —
+/// Exiting when the session capturing the source ends is not implemented —
 /// follow runs until signalled.
 ///
 /// Same tier split as ``TranscribePipeline``: this type takes already-
@@ -153,37 +153,37 @@ enum TranscribeFollowPipeline {
   ) async -> Int32 {
     let sourceID = SourceID(inputs.source)
 
-    // Live capture is meeting-scoped (a CaptureActor's data root is its
-    // meeting's directory), so a live tail must resolve the source through
-    // the meeting currently capturing it. The legacy global ring
+    // Live capture is session-scoped (a CaptureActor's data root is its
+    // session's directory), so a live tail must resolve the source through
+    // the session currently capturing it. The legacy global ring
     // (`<data-root>/sources/`) is never written by a live capture and
     // deliberately not consulted: attaching to it would tail a dead index
     // forever with no output and no error.
-    let liveMeetings = MeetingStore.readAll(dataRoot: dataRoot).filter { meeting in
-      meeting.state != .ended && meeting.sources.contains(sourceID)
+    let liveSessions = SessionStore.readAll(dataRoot: dataRoot).filter { session in
+      session.state != .ended && session.sources.contains(sourceID)
     }
-    guard let meeting = liveMeetings.max(by: { $0.started < $1.started }) else {
+    guard let session = liveSessions.max(by: { $0.started < $1.started }) else {
       dependencies.writeStderr(
-        "error: source '\(sourceID.rawValue)' is not live: no active meeting is capturing it "
-          + "(start one with `ears meeting start --source \(sourceID.rawValue)`)")
+        "error: source '\(sourceID.rawValue)' is not live: no active session is capturing it "
+          + "(start one with `ears session start --source \(sourceID.rawValue)`)")
       return 1
     }
-    let meetingRoot = DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meeting.id)
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id)
 
     let sourceDirectory = DataStoreLayout.sourceDirectory(
-      dataRoot: meetingRoot, sourceID: sourceID)
+      dataRoot: sessionRoot, sourceID: sourceID)
     guard FileManager.default.fileExists(atPath: sourceDirectory.path) else {
       dependencies.writeStderr(
-        "error: source '\(sourceID.rawValue)' is claimed by meeting '\(meeting.id)' "
+        "error: source '\(sourceID.rawValue)' is claimed by session '\(session.id)' "
           + "but no data found under \(sourceDirectory.path)")
       return 1
     }
     dependencies.log(
-      "attaching to meeting '\(meeting.id)' (\(meeting.title)) for source '\(sourceID.rawValue)'")
+      "attaching to session '\(session.id)' (\(session.title)) for source '\(sourceID.rawValue)'")
 
     let descriptor: SourceDescriptor
     do {
-      descriptor = try SourceMetaStore.read(sourceID: sourceID, dataRoot: meetingRoot)
+      descriptor = try SourceMetaStore.read(sourceID: sourceID, dataRoot: sessionRoot)
     } catch {
       dependencies.writeStderr(
         "error: failed to read source metadata for '\(sourceID.rawValue)': \(error)")
@@ -207,12 +207,12 @@ enum TranscribeFollowPipeline {
 
     let run = FollowRun(
       inputs: inputs,
-      dataRoot: meetingRoot,
+      dataRoot: sessionRoot,
       outputRoot: outputRoot,
       backendName: backendName,
       dependencies: dependencies,
       sourceID: sourceID,
-      meetingID: meeting.id,
+      sessionID: session.id,
       asrSampleRate: descriptor.asrSampleRate,
       streaming: streaming
     )
@@ -233,9 +233,9 @@ private final class FollowRun {
   private let streaming: any StreamingTranscriber
   private let speaker: String
   private let followStart: Instant
-  /// The meeting whose capture this follow run attached to — the transcript
-  /// frontmatter's `meeting:` key and the `segment.publish` correlation key.
-  private let meetingID: String
+  /// The session whose capture this follow run attached to — the transcript
+  /// frontmatter's `session:` key and the `segment.publish` correlation key.
+  private let sessionID: String
   private let paths: OutputPathResolution.Paths
   private let modelInfo: TranscriptModelInfo
 
@@ -283,7 +283,7 @@ private final class FollowRun {
     backendName: String,
     dependencies: TranscribeFollowPipeline.Dependencies,
     sourceID: SourceID,
-    meetingID: String,
+    sessionID: String,
     asrSampleRate: Int,
     streaming: any StreamingTranscriber
   ) {
@@ -291,7 +291,7 @@ private final class FollowRun {
     self.dataRoot = dataRoot
     self.dependencies = dependencies
     self.sourceID = sourceID
-    self.meetingID = meetingID
+    self.sessionID = sessionID
     self.asrSampleRate = asrSampleRate
     self.streaming = streaming
     self.speaker = TranscriptAssembly.speakerLabel(for: sourceID)
@@ -585,7 +585,7 @@ private final class FollowRun {
 
     let event = EarsEvent.segment(
       SegmentPublishParams(
-        meeting: meetingID, speaker: speaker, start: segment.start, end: segment.end,
+        session: sessionID, speaker: speaker, start: segment.start, end: segment.end,
         text: segmentText))
     dependencies.writeStdoutLine(stdoutLine(for: segment, event: event))
     writeTranscript()
@@ -638,7 +638,7 @@ private final class FollowRun {
       sourceIDs: [sourceID],
       transcriptions: [SourceTranscription(sourceID: sourceID, segments: committedSegments)],
       requested: requested,
-      meeting: meetingID,
+      session: sessionID,
       model: modelInfo,
       generated: dependencies.clock.now(),
       speechSeconds: speechSeconds

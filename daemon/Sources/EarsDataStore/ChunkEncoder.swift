@@ -273,7 +273,7 @@ public actor ChunkEncoder {
       // `transcribe` always decodes the `asr/` feed, so that is the file whose
       // unreadability poisons a run — open it now with the same reader and log
       // the result, so a chunk `ExtAudioFileOpenURL` will later refuse is
-      // flagged here, in the capture log, not six meetings later as an opaque
+      // flagged here, in the capture log, not six sessions later as an opaque
       // transcribe abort (all-ears issue #26).
       await logChunkFinalized(
         file: asrFinalURL,

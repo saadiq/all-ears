@@ -146,11 +146,11 @@ public enum TranscriptParser {
     }
     let derivedFrom = fields["derived_from"].map(unquote)
     let preset = fields["preset"].map(unquote)
-    // `session:` (a synthesized range-run identifier) and `meeting:` are each
-    // optional: a meeting transcript carries only `meeting:`, a plain range
-    // transcript only `session:`.
+    // `range_run:` (a synthesized range-run identifier) and `session:` (the
+    // session UUID) are each optional: a session transcript carries only
+    // `session:`, a plain range transcript only `range_run:`.
+    let rangeRun = fields["range_run"].map(unquote)
     let session = fields["session"].map(unquote)
-    let meeting = fields["meeting"].map(unquote)
     let sources = try splitFlowArray(field("sources")).map { SourceID(unquote($0)) }
 
     let rangeMapping = try flowMappingFields(field("range"))
@@ -190,8 +190,8 @@ public enum TranscriptParser {
     return TranscriptFrontmatter(
       schema: schema,
       kind: kind,
+      rangeRun: rangeRun,
       session: session,
-      meeting: meeting,
       sources: sources,
       range: range,
       model: model,

@@ -10,7 +10,7 @@ import Foundation
 /// encode failure, keep the partial chunk."
 ///
 /// This is the one place in the module that performs the rename/fsync
-/// dance, so every caller (chunk encoding, `meta.toml`/`meeting.toml`
+/// dance, so every caller (chunk encoding, `meta.toml`/`session.toml`
 /// writes) gets the same atomicity and failure-keeping guarantee for free.
 public enum AtomicFileIO {
   /// Writes to `finalURL` by calling `write` with a temporary sibling URL
