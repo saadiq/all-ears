@@ -6,7 +6,7 @@
 /// {"event":"session","params":{"session":{…}},"rev":43}
 /// {"event":"source","params":{"id":"mic","state":"paused"},"rev":44}
 /// {"event":"vad","params":{"source":"mic","state":"speech","t":"…"}}
-/// {"event":"segment","params":{"session":"…","speaker":"You","start":604.1,"end":611.9,"text":"…"}}
+/// {"event":"segment","params":{"meeting":"…","speaker":"You","start":604.1,"end":611.9,"text":"…"}}
 /// {"event":"job","params":{"job":"j3","kind":"transcribe","meeting":"0d5e…","state":"running"}}
 /// ```
 public enum EarsEvent: Sendable, Hashable {

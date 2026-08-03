@@ -161,7 +161,7 @@ struct ControlServerTests {
     let server = makeServer(dataRoot: try makeDataRoot(), clock: clock, bus: bus)
 
     let segment = SegmentPublishParams(
-      session: "s1", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
+      meeting: "s1", speaker: "You", start: 604.1, end: 611.9, text: "ship it")
     _ = try result(await server.handle(.segmentPublish(segment)))
     let job = JobPublishParams(job: "j1", kind: "transcribe", meeting: "m1", state: .running)
     _ = try result(await server.handle(.jobPublish(job)))
@@ -181,7 +181,7 @@ struct ControlServerTests {
     _ = try result(
       await server.handle(
         .segmentPublish(
-          SegmentPublishParams(session: "s1", speaker: "You", start: 0, end: 1, text: "hi"))))
+          SegmentPublishParams(meeting: "s1", speaker: "You", start: 0, end: 1, text: "hi"))))
   }
 
   // MARK: - makeHandler wiring

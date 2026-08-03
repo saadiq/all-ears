@@ -14,11 +14,11 @@ import Foundation
 /// 1. **stdout**, one segment per line (`--json` for the live feed's exact
 ///    `segment`-event JSON shape), written unbuffered so a piped consumer
 ///    sees each segment promptly;
-/// 2. **the session transcript file** — the *same* Markdown + JSON-sidecar
+/// 2. **the transcript file** — the *same* Markdown + JSON-sidecar
 ///    pair batch mode writes (``TranscriptAssembly``/``TranscriptRenderer``,
 ///    same ``OutputPathResolution`` paths), atomically rewritten on every
 ///    commit so the on-disk file is complete and correctly formed at any
-///    instant, including when the session closes;
+///    instant, including when the run is stopped;
 /// 3. **the daemon's live feed**, via the `segment.publish` control-socket
 ///    command — best-effort per the spec's "notification only" rule: a
 ///    publish failure is logged and never aborts the run or drops the
@@ -60,10 +60,8 @@ import Foundation
 /// is non-zero only for setup failures (no live meeting capturing the
 /// source, non-streaming backend, model load) or a final transcript write
 /// that never succeeded.
-/// Exiting when the source's *session* closes arrives with `--session`
-/// support (deferred alongside batch mode's own `--session` flag, per
-/// `TranscribeRangeResolution`'s doc comment) — until then, follow runs
-/// until signalled.
+/// Exiting when the meeting capturing the source ends is not implemented —
+/// follow runs until signalled.
 ///
 /// Same tier split as ``TranscribePipeline``: this type takes already-
 /// resolved values and injected seams so it is tier-1 testable against a
@@ -214,6 +212,7 @@ enum TranscribeFollowPipeline {
       backendName: backendName,
       dependencies: dependencies,
       sourceID: sourceID,
+      meetingID: meeting.id,
       asrSampleRate: descriptor.asrSampleRate,
       streaming: streaming
     )
@@ -234,7 +233,9 @@ private final class FollowRun {
   private let streaming: any StreamingTranscriber
   private let speaker: String
   private let followStart: Instant
-  private let sessionID: String
+  /// The meeting whose capture this follow run attached to — the transcript
+  /// frontmatter's `meeting:` key and the `segment.publish` correlation key.
+  private let meetingID: String
   private let paths: OutputPathResolution.Paths
   private let modelInfo: TranscriptModelInfo
 
@@ -282,6 +283,7 @@ private final class FollowRun {
     backendName: String,
     dependencies: TranscribeFollowPipeline.Dependencies,
     sourceID: SourceID,
+    meetingID: String,
     asrSampleRate: Int,
     streaming: any StreamingTranscriber
   ) {
@@ -289,6 +291,7 @@ private final class FollowRun {
     self.dataRoot = dataRoot
     self.dependencies = dependencies
     self.sourceID = sourceID
+    self.meetingID = meetingID
     self.asrSampleRate = asrSampleRate
     self.streaming = streaming
     self.speaker = TranscriptAssembly.speakerLabel(for: sourceID)
@@ -296,8 +299,6 @@ private final class FollowRun {
     let followStart = dependencies.clock.now()
     self.followStart = followStart
     self.latestBoundary = followStart
-    self.sessionID = OutputPathResolution.sessionIdentifier(
-      requestedStart: followStart, sourceIDs: [sourceID])
     self.paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: followStart, sourceIDs: [sourceID],
       explicitOut: inputs.out)
@@ -584,7 +585,7 @@ private final class FollowRun {
 
     let event = EarsEvent.segment(
       SegmentPublishParams(
-        session: sessionID, speaker: speaker, start: segment.start, end: segment.end,
+        meeting: meetingID, speaker: speaker, start: segment.start, end: segment.end,
         text: segmentText))
     dependencies.writeStdoutLine(stdoutLine(for: segment, event: event))
     writeTranscript()
@@ -637,7 +638,7 @@ private final class FollowRun {
       sourceIDs: [sourceID],
       transcriptions: [SourceTranscription(sourceID: sourceID, segments: committedSegments)],
       requested: requested,
-      sessionIdentifier: sessionID,
+      meeting: meetingID,
       model: modelInfo,
       generated: dependencies.clock.now(),
       speechSeconds: speechSeconds

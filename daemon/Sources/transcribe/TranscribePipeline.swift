@@ -113,7 +113,6 @@ enum TranscribePipeline {
     var last: String?
     var from: String?
     var to: String?
-    var session: String?
     /// `--meeting <id>`: union the meeting's intervals into one transcript
     /// (paused spans are skipped exactly like silence). Mutually exclusive
     /// with every other range flag — `Transcribe` validates that before the
@@ -163,9 +162,9 @@ enum TranscribePipeline {
   ) async -> Int32 {
     let now = dependencies.clock.now()
 
-    // `--meeting` resolves to the meeting's interval union; every other
-    // flag combination resolves to exactly one range.
-    let resolved: TranscribeRangeResolution.Resolved
+    // `--meeting` resolves to the meeting's interval union; the raw range
+    // flags (`--last`, `--from`/`--to`) resolve to exactly one range.
+    let requestedRange: TimeRange
     let intervalRanges: [TimeRange]
     let meetingRecord: Meeting?
     if let meetingID = inputs.meeting {
@@ -176,8 +175,8 @@ enum TranscribePipeline {
         dependencies.writeStderr("error: unknown meeting '\(meetingID)': \(error)")
         return 1
       }
-      // A still-open interval (meeting active) reads up to now, matching
-      // --session's own in-progress semantics.
+      // A still-open interval (meeting active) reads up to now — "give me
+      // what's there so far", matching `--last`'s own "ending now" semantics.
       let ranges = meeting.intervals.compactMap { interval -> TimeRange? in
         let end = interval.end ?? now
         return interval.start < end ? TimeRange(start: interval.start, end: end) : nil
@@ -186,40 +185,27 @@ enum TranscribePipeline {
         dependencies.writeStderr("error: meeting '\(meetingID)' has no non-empty intervals")
         return 1
       }
-      resolved = TranscribeRangeResolution.Resolved(
-        range: TimeRange(start: first.start, end: last.end),
-        sourceIDs: meeting.sources,
-        vocab: nil,
-        sessionIdentifier: meeting.id,
-        sessionSlug: meeting.id)
+      requestedRange = TimeRange(start: first.start, end: last.end)
       intervalRanges = ranges
       meetingRecord = meeting
     } else {
       switch TranscribeRangeResolution.resolve(
-        last: inputs.last, from: inputs.from, to: inputs.to, session: inputs.session, now: now,
-        sessionReader: { id in
-          do {
-            return .success(try SessionStore.read(sessionID: id, dataRoot: dataRoot))
-          } catch {
-            return .failure(.unknownSession(id))
-          }
-        }
+        last: inputs.last, from: inputs.from, to: inputs.to, now: now
       ) {
-      case .success(let value): resolved = value
+      case .success(let value): requestedRange = value
       case .failure(let error):
         dependencies.writeStderr("error: \(error.description)")
         return 1
       }
-      intervalRanges = [resolved.range]
+      intervalRanges = [requestedRange]
       meetingRecord = nil
     }
-    let requestedRange = resolved.range
 
-    // --session's sources override any --source flags; otherwise --source
-    // is required, exactly as before.
-    let sourceIDs = resolved.sourceIDs ?? inputs.sourceIDs.map { SourceID($0) }
+    // A meeting names its own sources; otherwise --source is required,
+    // exactly as before.
+    let sourceIDs = meetingRecord?.sources ?? inputs.sourceIDs.map { SourceID($0) }
     guard !sourceIDs.isEmpty else {
-      dependencies.writeStderr("error: at least one --source is required (or --session naming one)")
+      dependencies.writeStderr("error: at least one --source is required (or --meeting naming one)")
       return 1
     }
 
@@ -231,24 +217,20 @@ enum TranscribePipeline {
     // it holds chunks and falling back to the ring only where it doesn't
     // (issue #20). It logs both consultations and never fails on a source that
     // exists in neither store — that source simply contributes nothing, with a
-    // logged reason, so the meeting's other sources still transcribe. Every
-    // other path (`--session`, `--last`/`--from`/`--to`) reads one shared root
-    // and keeps the fail-fast "unknown source" guard.
+    // logged reason, so the meeting's other sources still transcribe. The raw
+    // range path (`--last`/`--from`/`--to`) reads one shared root and keeps
+    // the fail-fast "unknown source" guard.
     let plans: [SourceAudioPlan]
     if let meetingID = inputs.meeting {
       plans = planMeetingSources(
         sourceIDs: sourceIDs, meetingID: meetingID, dataRoot: dataRoot,
         intervalRanges: intervalRanges, log: dependencies.log)
     } else {
-      // Audio is meeting-scoped: `--session` reads it under meetings/<slug>/
-      // (sessions are materialized with slug = meeting id). The ad-hoc flags
-      // (--last/--from/--to) have no meeting context and keep the global root;
-      // there is no global audio store any more, so they only find audio a
-      // caller staged there deliberately.
-      let audioRoot =
-        resolved.sessionSlug.map {
-          DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: $0)
-        } ?? dataRoot
+      // Audio is meeting-scoped: the ad-hoc flags (--last/--from/--to) have
+      // no meeting context and keep the global root; there is no global audio
+      // store any more, so they only find audio a caller staged there
+      // deliberately.
+      let audioRoot = dataRoot
       // Fail fast on an unknown source before loading the (expensive) ASR
       // model or reading any audio, per docs/specs/transcribe.md: "exits
       // non-zero with a precise error if ... sources are unknown." Checking
@@ -273,18 +255,37 @@ enum TranscribePipeline {
       plans = sourceIDs.map { SourceAudioPlan(sourceID: $0, reader: reader, store: nil) }
     }
 
-    // Session id is resolved up front (rather than at write time, where it used
-    // to be) so every stage record below can carry it as its correlation key,
-    // matching the worked example in docs/logging.md.
-    let sessionIdentifier =
-      resolved.sessionIdentifier
+    // The run's correlation identifier is resolved up front so every stage
+    // record below can carry it as its correlation key, matching the worked
+    // example in docs/logging.md: the meeting id for a `--meeting` run, a
+    // synthesized `<start-timestamp>_<slug>` identifier for a raw range run.
+    let runIdentifier =
+      meetingRecord?.id
       ?? OutputPathResolution.sessionIdentifier(
         requestedStart: requestedRange.start, sourceIDs: sourceIDs)
+
+    // Optional per-meeting vocabulary, keyed by meeting id by convention:
+    // `<data-root>/vocab/<meeting-id>.txt`. Parsed terms feed the
+    // ``TranscribeContext`` handed to each transcribe call; absent file (or a
+    // raw range run) means no vocabulary, exactly as before.
+    var vocabulary: [String] = []
+    if let meetingID = inputs.meeting {
+      let vocabURL =
+        dataRoot
+        .appendingPathComponent("vocab")
+        .appendingPathComponent("\(meetingID).txt")
+      if let content = try? String(contentsOf: vocabURL, encoding: .utf8) {
+        vocabulary = VocabFile.parse(content)
+        dependencies.log(
+          "vocab: merged \(vocabulary.count) terms from \(vocabURL.path)")
+      }
+    }
+    let transcribeContext = TranscribeContext(vocabulary: vocabulary)
 
     let transcriber: any Transcriber
     do {
       transcriber = try await measure(
-        dependencies.spans, "model_load", session: sessionIdentifier,
+        dependencies.spans, "model_load", session: runIdentifier,
         fields: [LogField("backend", .string(backendName))]
       ) {
         let loaded = try dependencies.transcriberFactory()
@@ -304,7 +305,7 @@ enum TranscribePipeline {
     if let factory = dependencies.diarizerFactory {
       do {
         diarizer = try await measure(
-          dependencies.spans, "diarizer_load", session: sessionIdentifier
+          dependencies.spans, "diarizer_load", session: runIdentifier
         ) {
           let loaded = try factory()
           try loaded.load(dependencies.diarizerLoadOptions)
@@ -384,7 +385,7 @@ enum TranscribePipeline {
       // the body inline on this same task.
       do {
         segments = try await measure(
-          dependencies.spans, "asr", session: sessionIdentifier,
+          dependencies.spans, "asr", session: runIdentifier,
           audioSeconds: sliceAudioSeconds,
           fields: [
             LogField("source", .string(sourceID.rawValue)),
@@ -402,7 +403,7 @@ enum TranscribePipeline {
             // timeline" step.
             let sliceOffset = slice.range.start.interval(since: requestedRange.start)
             let sliceSegments = try transcriber.transcribe(
-              slice.audio, context: TranscribeContext())
+              slice.audio, context: transcribeContext)
             for segment in sliceSegments {
               shiftedSegments.append(shifted(segment, by: sliceOffset))
             }
@@ -425,7 +426,7 @@ enum TranscribePipeline {
       if let diarizer, shouldDiarize(sourceID), !slices.isEmpty {
         do {
           let spans = try await measure(
-            dependencies.spans, "diarize", session: sessionIdentifier,
+            dependencies.spans, "diarize", session: runIdentifier,
             audioSeconds: sliceAudioSeconds,
             fields: [LogField("source", .string(sourceID.rawValue))]
           ) {
@@ -468,7 +469,9 @@ enum TranscribePipeline {
       sourceIDs: sourceIDs,
       transcriptions: transcriptions,
       requested: requestedRange,
-      sessionIdentifier: sessionIdentifier,
+      // A meeting transcript is keyed by `meeting:` alone; only a raw range
+      // run still carries the synthesized `session:` identifier.
+      session: meetingRecord == nil ? runIdentifier : nil,
       meeting: meetingRecord?.id,
       speakers: speakers,
       diarization: diarization,
@@ -481,7 +484,7 @@ enum TranscribePipeline {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: requestedRange.start, sourceIDs: sourceIDs,
-      explicitOut: inputs.out, sessionSlug: resolved.sessionSlug)
+      explicitOut: inputs.out, slug: meetingRecord?.id)
 
     do {
       let markdown = TranscriptRenderer.renderMarkdown(document)

@@ -183,7 +183,7 @@ enum TranscribeFilePipeline {
       sourceIDs: [sourceID],
       transcriptions: [SourceTranscription(sourceID: sourceID, segments: segments)],
       requested: requested,
-      sessionIdentifier: sourceID.rawValue,
+      session: sourceID.rawValue,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,
       model: modelInfo,

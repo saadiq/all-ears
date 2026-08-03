@@ -69,16 +69,16 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --meeting`. Default `["mic"]`; `[]` disables.
   public var browserMeetingLocalSources: [SourceID]
-  /// Whether a browser-triggered meeting (and, until the v1 session surface
-  /// is removed, a `trigger == .browserExtension` session) auto-runs the
-  /// transcribe stage via the shared ``OnClosePipelineRunner`` when it ends.
+  /// Whether a browser-triggered meeting auto-runs the transcribe stage
+  /// (`transcribe --meeting <id>`) via the shared ``OnClosePipelineRunner``
+  /// when it ends.
   /// Default `true`; no config key — tests inject `false` so a meeting end
   /// never spawns a real transcribe subprocess.
   public var transcribeOnBrowserSessionClose: Bool
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
-  /// `summarize` write. `earsd` itself never writes here; it's only needed
-  /// to construct an `on_close` pipeline stage's file-path arguments (see
-  /// ``OnClosePipelineRunner``).
+  /// `summarize` write. `earsd` itself never writes here; retained on the
+  /// configuration so a future meeting-level `cleanup`/`summarize` chain can
+  /// construct file-path arguments from it.
   public var outputRoot: URL
 
   public init(
@@ -433,11 +433,11 @@ public actor EarsDaemon {
       eventSink: { [eventBus] event in await eventBus.publish(event) })
     // The daemon-owned meeting lifecycle registry, serving the `meeting.*`
     // verbs on both control transports. Meeting end fires the meeting-level
-    // auto-transcribe (gated the same way as the v1 per-session hook).
+    // auto-transcribe (`transcribe --meeting <id>`).
     let onMeetingEnded: MeetingRegistry.EndedHook?
     if configuration.transcribeOnBrowserSessionClose {
-      let pipeline = OnClosePipelineRunner(outputRoot: configuration.outputRoot, log: log)
-      onMeetingEnded = { [weak self] meeting, _ in
+      let pipeline = OnClosePipelineRunner(log: log)
+      onMeetingEnded = { [weak self] meeting in
         guard meeting.trigger == .browserExtension else { return }
         // Spawned in its own task so `meeting.end` never blocks behind a full
         // transcription run. On success, stamp the transcript-completion marker
@@ -477,25 +477,6 @@ public actor EarsDaemon {
     // control server so `status`/`sources.list` see it.
     meetingRegistry = meetings
 
-    // Browser-triggered on-close transcribe: a session closed with
-    // `trigger == .browserExtension` runs the transcribe stage directly —
-    // gated by `transcribeOnBrowserSessionClose`, and spawned in its own
-    // task so the `session.close` reply is never blocked behind a full
-    // transcription run.
-    let onSessionClosed: (@Sendable (SessionDescriptor) async -> Void)?
-    if configuration.transcribeOnBrowserSessionClose {
-      let pipeline = OnClosePipelineRunner(outputRoot: configuration.outputRoot, log: log)
-      onSessionClosed = { descriptor in
-        guard descriptor.trigger == .browserExtension else { return }
-        Task {
-          await pipeline.run(
-            stages: ["transcribe"], for: descriptor, context: "browser-session-close")
-        }
-      }
-    } else {
-      onSessionClosed = nil
-    }
-
     let controlServer = ControlServer(
       captureActors: captureActors,
       sessions: sessions,
@@ -505,8 +486,7 @@ public actor EarsDaemon {
       // `segment.publish`/`job.publish` → the live feed, and `subscribe`
       // snapshots read the bus's revision.
       bus: eventBus,
-      meetings: meetings,
-      onSessionClosed: onSessionClosed)
+      meetings: meetings)
 
     let socketDirectory = URL(fileURLWithPath: configuration.socketPath).deletingLastPathComponent()
     try FileManager.default.createDirectory(

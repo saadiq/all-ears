@@ -99,7 +99,7 @@ struct EarsEventTests {
       EventFrame(
         event: .segment(
           SegmentPublishParams(
-            session: "2026-07-17T10-30-00Z_standup", speaker: "You", start: 604.1, end: 611.9,
+            meeting: "m1", speaker: "You", start: 604.1, end: 611.9,
             text: "Nothing from me, the deploy went out last night."))),
       EventFrame(
         event: .job(

@@ -139,11 +139,14 @@ enum TranscriptAssembly {
     return base
   }
 
+  /// Builds the final document. Exactly one of `session` (the synthesized
+  /// raw-range run identifier) and `meeting` (the meeting UUID) is normally
+  /// non-`nil`; each renders as its own frontmatter line only when present.
   static func assemble(
     sourceIDs: [SourceID],
     transcriptions: [SourceTranscription],
     requested: TimeRange,
-    sessionIdentifier: String,
+    session: String? = nil,
     meeting: String? = nil,
     speakers: [String: String] = [:],
     diarization: [SourceID: [SpeakerSpan]] = [:],
@@ -180,7 +183,7 @@ enum TranscriptAssembly {
     let frontmatter = TranscriptFrontmatter(
       schema: 1,
       kind: .transcript,
-      session: sessionIdentifier,
+      session: session,
       meeting: meeting,
       sources: sourceIDs,
       range: requested,

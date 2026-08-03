@@ -135,14 +135,13 @@ enum OutputFormatting {
       return "[session] \(summary.id) \(summary.state.rawValue)\(revSuffix)"
     case .segment(let segment):
       return
-        "[\(segment.session)] \(segment.speaker) (\(segment.start)-\(segment.end)): \(segment.text)"
+        "[\(segment.meeting)] \(segment.speaker) (\(segment.start)-\(segment.end)): \(segment.text)"
     case .meeting(let meeting):
       return "[meeting] \(humanMeetingLine(meeting))\(revSuffix)"
     case .source(let id, let state):
       return "[source] \(id.rawValue) \(state.rawValue)\(revSuffix)"
     case .job(let job):
-      let target =
-        job.meeting.map { " meeting=\($0)" } ?? job.session.map { " session=\($0)" } ?? ""
+      let target = job.meeting.map { " meeting=\($0)" } ?? ""
       return "[job] \(job.job) \(job.kind)\(target) \(job.state.rawValue)"
     }
   }

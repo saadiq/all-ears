@@ -40,31 +40,20 @@ struct SessionDescriptorTOMLTests {
           "trigger": .string("app-signal"),
           "trigger_detail": .string("us.zoom.xos"),
           "vocab": .string("vocab/2026-07-17T10-30-00Z_standup.txt"),
-          "pre_roll_seconds": .int(0),
           "speakers": .table([:]),
         ])
     )
   }
 
-  @Test("a non-zero preRollSeconds round-trips")
-  func preRollSecondsRoundTrips() throws {
-    var withPreRoll = Self.referenceDescriptor
-    withPreRoll.preRollSeconds = 15
-    let text = TOMLBridge.serialize(SessionDescriptorTOML.encode(withPreRoll))
-    let table = try TOMLTable(string: text)
-    let decoded = try SessionDescriptorTOML.decode(TOMLBridge.configValue(from: table))
-    #expect(decoded.preRollSeconds == 15)
-  }
-
-  @Test("a session.toml written before pre_roll_seconds existed decodes to 0, not an error")
-  func missingPreRollSecondsDefaultsToZero() throws {
+  @Test("a session.toml written when pre_roll_seconds existed still decodes (the key is ignored)")
+  func stalePreRollSecondsKeyIsIgnored() throws {
     guard case .table(var fields) = SessionDescriptorTOML.encode(Self.referenceDescriptor) else {
       Issue.record("expected a table")
       return
     }
-    fields.removeValue(forKey: "pre_roll_seconds")
+    fields["pre_roll_seconds"] = .int(15)
     let decoded = try SessionDescriptorTOML.decode(.table(fields))
-    #expect(decoded.preRollSeconds == 0)
+    #expect(decoded == Self.referenceDescriptor)
   }
 
   @Test("decode parses the doc's exact session.toml example back to the model")

@@ -23,11 +23,15 @@
 public struct TranscriptFrontmatter: Sendable, Hashable {
   public var schema: Int
   public var kind: TranscriptKind
-  /// The session id, e.g. `2026-07-17T10-30-00Z_standup` (``SessionDescriptor/id``).
-  public var session: String
+  /// A synthesized run identifier for a plain range run
+  /// (`--last`/`--from`/`--to`), in the `<start-timestamp>_<slug>` shape —
+  /// see `OutputPathResolution.sessionIdentifier`. `nil` for meeting
+  /// transcripts, which carry ``meeting`` instead; rendered as a `session:`
+  /// line only when present.
+  public var session: String?
   /// The meeting UUID this transcript unions the intervals of
-  /// (`transcribe --meeting`); `nil` for plain range/session transcripts.
-  /// Rendered as a `meeting:` line right after `session`.
+  /// (`transcribe --meeting`); `nil` for plain range transcripts.
+  /// Rendered as a `meeting:` line.
   public var meeting: String?
   public var sources: [SourceID]
   public var range: TimeRange
@@ -59,7 +63,7 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
   public init(
     schema: Int,
     kind: TranscriptKind,
-    session: String,
+    session: String? = nil,
     meeting: String? = nil,
     sources: [SourceID],
     range: TimeRange,

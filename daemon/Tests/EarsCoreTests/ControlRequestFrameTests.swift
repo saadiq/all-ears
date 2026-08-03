@@ -229,7 +229,7 @@ struct ControlRequestFrameTests {
       .sessionAddSource(id: "sid", source: "browser:meet:jane"),
       .mark(sources: ["mic"], slug: "chat", range: .lastSeconds(1800)),
       .segmentPublish(
-        SegmentPublishParams(session: "sid", speaker: "You", start: 1, end: 2, text: "hi")),
+        SegmentPublishParams(meeting: "m1", speaker: "You", start: 1, end: 2, text: "hi")),
       .jobPublish(JobPublishParams(job: "j1", kind: "transcribe", state: .done)),
       .sourcesRemove(source: "mic"),
       .capturePause(source: nil),

@@ -154,9 +154,8 @@ Semantics:
 The canonical artifact is **one transcript per meeting**. `transcribe` gains a
 `--meeting <id>` mode: it reads `meeting.toml`, unions the meeting's intervals (paused spans are
 skipped exactly like silence), and writes a single transcript whose frontmatter carries a
-`meeting:` field alongside the existing `session:`/`range:` fields. The per-interval sessions
-remain addressable via `transcribe --session` for partial re-runs, but the meeting-level union
-is what auto-triggers and users invoke. This is the one deliberate change to the pipeline
+`meeting:` field alongside the existing `range:` fields. The meeting-level union
+is what auto-triggers and users invoke; meetings are the only transcription target. This is the one deliberate change to the pipeline
 contract; `cleanup` and `summarize` are untouched.
 
 ### Sessions and sources
@@ -186,7 +185,7 @@ the verb is retained.
 | `meetings` | `meeting.get` | `{meeting}` → meeting |
 | `sessions` | `session.open` / `session.close` / `session.list` / `session.add_source` / `mark` | as v1 |
 | `sessions` | `segment.publish` | as v1 (notification-only republish from `transcribe --follow`) |
-| `sessions` | `job.publish` | `{job, kind: "transcribe", meeting?, session?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing |
+| `sessions` | `job.publish` | `{job, kind: "transcribe", meeting?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing |
 | `sources` | `sources.list` / `sources.enable` / `sources.disable` | as v1 |
 | `admin` | `sources.add` / `sources.remove` / `capture.pause` / `capture.resume` / `flush` | as v1 |
 
@@ -213,7 +212,7 @@ plus one counter.
 {"event": "meeting", "params": {"meeting": {…}}, "rev": 42}
 {"event": "source",  "params": {"id": "mic", "state": "paused"}, "rev": 43}
 {"event": "vad",     "params": {"source": "mic", "state": "speech", "t": "…"}}
-{"event": "segment", "params": {"session": "…", "speaker": "You", "start": 604.1, "end": 611.9, "text": "…"}}
+{"event": "segment", "params": {"meeting": "…", "speaker": "You", "start": 604.1, "end": 611.9, "text": "…"}}
 {"event": "job",     "params": {"job": "j3", "kind": "transcribe", "meeting": "0d5e…", "state": "running"}}
 ```
 

@@ -220,7 +220,7 @@
       "frame": {
         "event": "segment",
         "params": {
-          "session": "2026-07-19T10-00-00Z_0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "speaker": "Jane Doe",
           "start": 604.1,
           "end": 611.9,

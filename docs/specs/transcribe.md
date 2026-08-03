@@ -2,11 +2,11 @@
 
 ## One job
 
-Turn captured audio for a source + time range (or a session) into a transcript on disk. Batch or streaming. Reads files directly; does not depend on `earsd` running except to publish live-feed events in `--follow` mode.
+Turn captured audio for a source + time range (or a meeting) into a transcript on disk. Batch or streaming. Reads files directly; does not depend on `earsd` running except to publish live-feed events in `--follow` mode.
 
 ## Inputs
 
-- A **source** (`--source mic`, repeatable) and a **time range** (`--last 30m`, or `--from`/`--to`), **or** a **session** (`--session <id>`, which resolves sources, range, pre-roll widening, and vocabulary from the descriptor), **or** a **standalone file** (`--file memo.m4a`, repeatable) transcribed directly with no capture store involved.
+- A **source** (`--source mic`, repeatable) and a **time range** (`--last 30m`, or `--from`/`--to`), **or** a **meeting** (`--meeting <id>`, which resolves sources, interval ranges, and optional vocabulary — `vocab/<id>.txt` — from the meeting record), **or** a **standalone file** (`--file memo.m4a`, repeatable) transcribed directly with no capture store involved.
 - An output override (`--out`); otherwise the [output layout](../data-formats.md#directory-layout) decides — except `--file`, which writes each transcript next to its input (`--out` applies only to a single `--file`).
 
 The ASR backend is currently fixed: Parakeet via FluidAudio on the Apple Neural Engine.
@@ -57,21 +57,20 @@ The delta logic is pure and lives in `EarsCore`, covered by tier-0 tests.
 
 ## Vocabulary
 
-A session's vocabulary (global + per-session lists) is resolved with the session and recorded in the transcript frontmatter so `cleanup` can use it as a correction backstop. Decoder-level biasing (the `BiasingTranscriber` capability in the [model interface](./model-interface.md)) is designed but not implemented by the Parakeet backend yet.
+A meeting's optional vocabulary (`vocab/<meeting-id>.txt`, relative to the data root) is merged into the run's biasing context. Decoder-level biasing (the `BiasingTranscriber` capability in the [model interface](./model-interface.md)) is designed but not implemented by the Parakeet backend yet.
 
 ## CLI
 
 ```
 transcribe --last 20m --source mic
 transcribe --from 2026-07-17T10:30:00Z --to 2026-07-17T11:02:00Z --source mic --source app:us.zoom.xos
-transcribe --session 2026-07-17T10-30-00Z_standup
+transcribe --meeting 0d5e7f6a-…
 transcribe --follow mic --json | my-live-ui
 
 Options:
   --source <id>            source(s) to transcribe; repeatable
   --last <dur>             range ending now (e.g. 30m, 2h)
   --from/--to <ts>         explicit ISO-8601 range
-  --session <id>           resolve range, sources, and vocab from a session
   --meeting <id>           union a meeting's intervals into one transcript
                            (per-source store lookup: per-meeting copy, ring fallback)
   --follow <id>            attach to a live source and stream finalised segments

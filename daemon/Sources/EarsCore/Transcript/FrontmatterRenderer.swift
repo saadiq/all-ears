@@ -16,7 +16,9 @@ enum FrontmatterRenderer {
     if let derivedFrom = frontmatter.derivedFrom {
       lines.append(YAML.line("derived_from", scalar(derivedFrom)))
     }
-    lines.append(YAML.line("session", .plain(frontmatter.session)))
+    if let session = frontmatter.session {
+      lines.append(YAML.line("session", .plain(session)))
+    }
     if let meeting = frontmatter.meeting {
       lines.append(YAML.line("meeting", .plain(meeting)))
     }

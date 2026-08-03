@@ -311,109 +311,6 @@ struct TranscribePipelineTests {
       })
   }
 
-  @Test(
-    "--session resolves range/sources from a real session.toml fixture, with no --source needed")
-  func sessionEndToEnd() async throws {
-    let dataRoot = makeTempDirectory("session")
-    let outputRoot = makeTempDirectory("session-output")
-    // Sessions are materialized from meetings with slug = meeting id, and a
-    // meeting's audio lives under its own directory — so the fixture audio
-    // goes under meetings/<slug>/sources/mic/, where the pipeline reads it.
-    try await writeFixtureSource(
-      sourceID: "mic",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: "standup"),
-      chunkStart: now.advanced(by: -20), chunkDuration: 20,
-      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
-
-    let descriptor = SessionDescriptor(
-      schema: 1, id: "session-fixture_standup", slug: "standup", sources: ["mic"],
-      start: now.advanced(by: -20), end: now, state: .closed, trigger: .manual)
-    try SessionStore.write(descriptor, dataRoot: dataRoot)
-
-    let scripted = ScriptedTranscriber(results: [
-      [Segment(start: 0, end: 2, text: "session hello")]
-    ])
-
-    let exitCode = await TranscribePipeline.run(
-      inputs: .init(session: "session-fixture_standup", sourceIDs: [], out: nil),
-      dataRoot: dataRoot,
-      outputRoot: outputRoot,
-      backendName: "fluidaudio",
-      dependencies: .init(
-        clock: ManualClock(now),
-        transcriberFactory: { scripted },
-        loadOptions: LoadOptions(),
-        log: { _ in },
-        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
-      )
-    )
-
-    #expect(exitCode == 0)
-    #expect(scripted.recordedCalls.count == 1)
-
-    // The session's real id/slug drive the output filename, not a
-    // synthesized <timestamp>_<sources> stand-in.
-    let expectedPaths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, sessionSlug: "standup")
-    let markdown = try outputText(at: expectedPaths.markdown)
-    #expect(markdown.contains("session hello"))
-    #expect(markdown.contains("session: session-fixture_standup"))
-  }
-
-  @Test(
-    "--session with pre_roll_seconds widens the read range to include speech before the session's nominal start"
-  )
-  func sessionPreRollWidensRange() async throws {
-    let dataRoot = makeTempDirectory("pre-roll")
-    let outputRoot = makeTempDirectory("pre-roll-output")
-    // A speech span well before the session's nominal start (-10), but
-    // within a 16s pre-roll window (nominal start - 16 = -26).
-    try await writeFixtureSource(
-      sourceID: "mic",
-      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: "standup"),
-      chunkStart: now.advanced(by: -30), chunkDuration: 30,
-      vadSpeechStart: now.advanced(by: -24), vadSpeechEnd: now.advanced(by: -20))
-
-    let descriptor = SessionDescriptor(
-      schema: 1, id: "session-preroll_standup", slug: "standup", sources: ["mic"],
-      start: now.advanced(by: -10), end: now, state: .closed, trigger: .manual,
-      preRollSeconds: 16)
-    try SessionStore.write(descriptor, dataRoot: dataRoot)
-
-    let scripted = ScriptedTranscriber(results: [
-      [Segment(start: 0, end: 2, text: "pre-roll speech")]
-    ])
-
-    let exitCode = await TranscribePipeline.run(
-      inputs: .init(session: "session-preroll_standup", sourceIDs: [], out: nil),
-      dataRoot: dataRoot,
-      outputRoot: outputRoot,
-      backendName: "fluidaudio",
-      dependencies: .init(
-        clock: ManualClock(now),
-        transcriberFactory: { scripted },
-        loadOptions: LoadOptions(),
-        log: { _ in },
-        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
-      )
-    )
-
-    #expect(exitCode == 0)
-    // Without the pre-roll widening, this speech span (entirely before the
-    // session's nominal start) would never be read at all -- proving the
-    // widened range is what made this call happen.
-    #expect(scripted.recordedCalls.count == 1)
-    #expect(scripted.recordedCalls[0].audio.duration > 0)
-
-    let markdown = try outputText(
-      at: OutputPathResolution.resolve(
-        outputRoot: outputRoot, requestedStart: now.advanced(by: -26), sourceIDs: ["mic"],
-        explicitOut: nil, sessionSlug: "standup"
-      ).markdown)
-    #expect(markdown.contains("pre-roll speech"))
-  }
-
   @Test("--meeting reads the meeting's audio from its own directory and writes a transcript")
   func meetingEndToEnd() async throws {
     let dataRoot = makeTempDirectory("meeting")
@@ -462,10 +359,124 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, sessionSlug: meetingID)
+      explicitOut: nil, slug: meetingID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("meeting hello"))
     #expect(markdown.contains("meeting: \(meetingID)"))
+    // A meeting transcript is keyed by `meeting:` alone — no v1 `session:`
+    // line remains in its frontmatter.
+    #expect(!markdown.contains("session:"))
+  }
+
+  @Test(
+    "--meeting resolves speaker names from the roster (attendee source → display_name) at transcribe time"
+  )
+  func meetingRosterDrivesSpeakerNames() async throws {
+    let dataRoot = makeTempDirectory("meeting-roster")
+    let outputRoot = makeTempDirectory("meeting-roster-output")
+    let meetingID = "roster-meeting"
+
+    // The roster links the browser source to a display name; the pipeline
+    // derives the speaker-name map from meeting.toml at transcribe time —
+    // there is no materialized [speakers] map anywhere on disk.
+    var attendee = MeetingAttendee(id: "a1", joined: now.advanced(by: -20))
+    attendee.displayName = "Jane Doe"
+    attendee.source = "browser:meet:speaker-1"
+    let meeting = Meeting(
+      id: meetingID,
+      title: "call",
+      state: .ended,
+      started: now.advanced(by: -20),
+      ended: now,
+      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      attendees: [attendee],
+      sources: ["browser:meet:speaker-1"])
+    try MeetingStore.write(meeting, dataRoot: dataRoot)
+
+    try await writeFixtureSource(
+      sourceID: "browser:meet:speaker-1",
+      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from jane")]
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      outputRoot: outputRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let paths = OutputPathResolution.resolve(
+      outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
+      sourceIDs: ["browser:meet:speaker-1"], explicitOut: nil, slug: meetingID)
+    let markdown = try outputText(at: paths.markdown)
+    // The turn renders under the roster name, not the raw source id.
+    #expect(markdown.contains("Jane Doe"))
+    #expect(markdown.contains("hello from jane"))
+  }
+
+  @Test("--meeting merges an optional vocab/<meeting-id>.txt into the transcribe context")
+  func meetingVocabKeyedByMeetingID() async throws {
+    let dataRoot = makeTempDirectory("meeting-vocab")
+    let outputRoot = makeTempDirectory("meeting-vocab-output")
+    let meetingID = "vocab-meeting"
+
+    let meeting = Meeting(
+      id: meetingID,
+      title: "call",
+      state: .ended,
+      started: now.advanced(by: -20),
+      ended: now,
+      intervals: [MeetingInterval(start: now.advanced(by: -20), end: now)],
+      sources: ["mic"])
+    try MeetingStore.write(meeting, dataRoot: dataRoot)
+
+    try await writeFixtureSource(
+      sourceID: "mic",
+      dataRoot: DataStoreLayout.meetingDirectory(dataRoot: dataRoot, meetingID: meetingID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    // The optional per-meeting vocab file is keyed by meeting id.
+    let vocabDirectory = dataRoot.appendingPathComponent("vocab")
+    try FileManager.default.createDirectory(at: vocabDirectory, withIntermediateDirectories: true)
+    try "Sortformer\n# a comment\nParakeet\n".write(
+      to: vocabDirectory.appendingPathComponent("\(meetingID).txt"),
+      atomically: true, encoding: .utf8)
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "vocab hello")]
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(meeting: meetingID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      outputRoot: outputRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    #expect(scripted.recordedCalls.count == 1)
+    #expect(scripted.recordedCalls[0].context.vocabulary == ["Sortformer", "Parakeet"])
   }
 
   @Test(
@@ -525,7 +536,7 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, sessionSlug: meetingID)
+      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: meetingID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("mic-from-ring"))
     #expect(markdown.contains("browser-from-meeting"))
@@ -589,7 +600,7 @@ struct TranscribePipelineTests {
     // per-source store record (`none`, since nothing was found).
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-2"], explicitOut: nil, sessionSlug: meetingID)
+      sourceIDs: ["mic", "browser:meet:speaker-2"], explicitOut: nil, slug: meetingID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-2=none\"]"))
   }
@@ -660,7 +671,7 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, sessionSlug: meetingID)
+      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: meetingID)
     let markdown = try outputText(at: paths.markdown)
     // The transcript carries the transcribed text and, in metadata, the
     // per-source outcome: `mic` read from no store, the browser source from the
@@ -723,7 +734,7 @@ struct TranscribePipelineTests {
 
     let paths = OutputPathResolution.resolve(
       outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, sessionSlug: meetingID)
+      explicitOut: nil, slug: meetingID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("audio_stores: [\"mic=meeting\"]"))
   }
