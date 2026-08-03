@@ -17,7 +17,7 @@
 //
 // Scenarios (all previously verified green, 24/24 — see roadmap Phase 7 status):
 //   A  stock harness: injection race, capture, epoch reinject, tab-close cleanup
-//   B1 PCM flows; keepalive alarm armed; session state persisted
+//   B1 PCM flows; keepalive alarm armed; keepalive state persisted
 //   B2 toggle OFF mid-call: pipelines torn down, streams ingest.closed, no wakes
 //   B3 toggle ON mid-call: live tracks re-adopted, PCM resumes
 //   B4 service worker force-killed (CDP Target.closeTarget — the scriptable
@@ -96,7 +96,7 @@ const popState = (await pop.evaluate(
   "({checked: document.getElementById('toggle').checked, disabled: document.getElementById('toggle').disabled, status: document.getElementById('status-text').textContent})",
 )) as { checked: boolean; disabled: boolean; status: string };
 check("popup: toggle live and defaulted ON", popState.checked && !popState.disabled, JSON.stringify(popState));
-check("popup: transport status rendered", /earsd/.test(popState.status), popState.status);
+check("popup: transport status rendered", /connected/i.test(popState.status), popState.status);
 await pop.close();
 
 // ── Phase A: stock harness scenario ─────────────────────────────────────────
@@ -109,9 +109,9 @@ await page.goto("http://localhost:8899/");
 await page.waitForFunction("window.__earsHarnessDone === true", { timeout: 60000 });
 
 check("A: hook won head-time race", pageLogs.some((l) => l.includes("hook already installed = true")));
-check("A: 3 initial + 1 mid-call tracks captured", pageLogs.filter((l) => l.includes("[ears] +track")).length >= 4,
-  `${pageLogs.filter((l) => l.includes("[ears] +track")).length} +track events`);
-check("A: participant-left seen", pageLogs.some((l) => l.includes("[ears] -track")));
+check("A: 3 initial + 1 mid-call tracks captured", pageLogs.filter((l) => l.includes("[ears][capture] +track")).length >= 4,
+  `${pageLogs.filter((l) => l.includes("[ears][capture] +track")).length} +track events`);
+check("A: participant-left seen", pageLogs.some((l) => l.includes("[ears][capture] -track")));
 check("A: epoch reinject handed off", pageLogs.some((l) => l.includes("capture epoch 2 active")));
 const aStub = stubSince();
 check("A: tone PCM reached the stub over the real wire", count(aStub, "ingest.open browser:") >= 3,
@@ -169,17 +169,17 @@ await sleep(5000);
 
 let drained = since();
 let stub = stubSince();
-check("B1: capture started on both tracks", drained.filter((l) => l.includes("[ears] +track")).length === 2);
+check("B1: capture started on both tracks", drained.filter((l) => l.includes("[ears][capture] +track")).length === 2);
 check("B1: PCM for both participants reached the stub", count(stub, "ingest.open browser:teams:speaker-") === 2,
   `${count(stub, "ingest.open browser:teams:speaker-")} opens`);
 const alarmsDuring = (await swEval("chrome.alarms.getAll()")) as { name: string }[];
 check("B1: keepalive alarm armed during call",
   Array.isArray(alarmsDuring) && alarmsDuring.some((a) => a.name === "ears-capture-keepalive"),
   JSON.stringify(alarmsDuring));
-const sessDuring = (await swEval("chrome.storage.session.get('captureSession')")) as
-  | { captureSession?: { active?: boolean } }
+const sessDuring = (await swEval("chrome.storage.session.get('keepalive')")) as
+  | { keepalive?: { active?: boolean } }
   | string;
-check("B1: session state persisted", typeof sessDuring === "object" && sessDuring?.captureSession?.active === true,
+check("B1: keepalive state persisted", typeof sessDuring === "object" && sessDuring?.keepalive?.active === true,
   JSON.stringify(sessDuring));
 
 step("toggling capture OFF");
@@ -189,8 +189,8 @@ drained = since();
 stub = stubSince();
 check("B2: toggle OFF tears down pipelines", drained.some((l) => l.includes("capture disabled")));
 check("B2: both streams closed on earsd side", count(stub, "ingest.close") === 2, `${count(stub, "ingest.close")} closes`);
-const sessOff = (await swEval("chrome.storage.session.get('captureSession')")) as Record<string, unknown> | string;
-check("B2: session state cleared after OFF", typeof sessOff === "object" && sessOff.captureSession === undefined,
+const sessOff = (await swEval("chrome.storage.session.get('keepalive')")) as Record<string, unknown> | string;
+check("B2: keepalive state cleared after OFF", typeof sessOff === "object" && sessOff.keepalive === undefined,
   JSON.stringify(sessOff));
 const alarmsOff = (await swEval("chrome.alarms.getAll()")) as { name: string }[];
 check("B2: alarm cleared after OFF", Array.isArray(alarmsOff) && !alarmsOff.some((a) => a.name === "ears-capture-keepalive"));
@@ -202,7 +202,7 @@ await swEval("chrome.storage.local.set({ captureEnabled: true })");
 await sleep(5000);
 drained = since();
 stub = stubSince();
-check("B3: toggle ON re-adopts live tracks", drained.filter((l) => l.includes("[ears] +track")).length === 2);
+check("B3: toggle ON re-adopts live tracks", drained.filter((l) => l.includes("[ears][capture] +track")).length === 2);
 check("B3: PCM resumed to the stub", count(stub, "ingest.open browser:teams:speaker-") === 2,
   `${count(stub, "ingest.open browser:teams:speaker-")} opens`);
 
@@ -263,8 +263,8 @@ await sleep(3500);
 const alarmsEnd = (await swEval("chrome.alarms.getAll()")) as { name: string }[];
 check("B5: alarm cleared after hangup", Array.isArray(alarmsEnd) && !alarmsEnd.some((a) => a.name === "ears-capture-keepalive"),
   JSON.stringify(alarmsEnd));
-const sessEnd = (await swEval("chrome.storage.session.get('captureSession')")) as Record<string, unknown> | string;
-check("B5: session state cleared after hangup", typeof sessEnd === "object" && !sessEnd.captureSession,
+const sessEnd = (await swEval("chrome.storage.session.get('keepalive')")) as Record<string, unknown> | string;
+check("B5: keepalive state cleared after hangup", typeof sessEnd === "object" && !sessEnd.keepalive,
   JSON.stringify(sessEnd));
 check("B5: hangup closed both streams", count(stubSince(), "ingest.close") >= 2);
 
