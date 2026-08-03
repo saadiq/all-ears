@@ -1,4 +1,4 @@
-import type { BadgeState } from "./meeting-tracker";
+import type { BadgeState } from "./session-tracker";
 
 // Toolbar action badge: mirrors the popup's status badge onto the extension's
 // toolbar icon so the current state is visible without opening the popup.

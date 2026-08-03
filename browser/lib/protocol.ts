@@ -21,7 +21,7 @@ export type ParticipantId = string;
  * One (participantId → displayName) pair harvested from the platform's own
  * participant roster/UI, independent of whether that participant's audio track
  * has been correlated to this id yet (issue #23). The daemon upserts these onto
- * the meeting's attendee roster, so a name lands even when the speaking-onset
+ * the session's attendee roster, so a name lands even when the speaking-onset
  * correlation never tied the participant to a captured track (in which case the
  * track stays `speaker-<n>` and this named entry sits beside it, rather than the
  * name being silently lost). `displayName` is always a non-empty string —
@@ -173,11 +173,11 @@ export type PortMessage =
       sentAt: number;
     }
   // Participant identity (with display name, when the DOM knows it) — what
-  // the background upserts onto the daemon meeting's roster.
+  // the background upserts onto the daemon session's roster.
   | { type: "joined"; participantId: ParticipantId; platform: Platform; displayName?: string }
   // Identity-only roster names (see MainMessage "participant-roster"). The
-  // background upserts each onto the daemon meeting's attendee roster without
-  // treating them as capture participants (they don't gate meeting-end).
+  // background upserts each onto the daemon session's attendee roster without
+  // treating them as capture participants (they don't gate session-end).
   | { type: "roster"; platform: Platform; entries: RosterEntry[] }
   // A late identity for a dead-track participant (see MainMessage
   // "participant-renamed"): the background upserts `fromId`'s source label
@@ -210,9 +210,9 @@ export function sourceLabel(platform: Platform, participantId: ParticipantId): s
 // id-correlated {id, method, params} envelope, a mandatory `hello`
 // handshake, and revision-tagged {event, params, rev} notifications. The
 // same frames the CLI speaks over the Unix socket; this transport's
-// capability tier is `observe` + `meetings`.
+// capability tier is `observe` + `sessions`.
 
-/** Provenance recorded on daemon meetings this extension declares (earsd's
+/** Provenance recorded on daemon sessions this extension declares (earsd's
  * TriggerKind.browserExtension). */
 export const BROWSER_TRIGGER = "browser-extension" as const;
 
@@ -249,8 +249,8 @@ export interface HelloResult {
   capabilities: string[];
 }
 
-/** The v2 meeting object (wire shape). */
-export interface MeetingWire {
+/** The v2 session object (wire shape). */
+export interface SessionWire {
   id: string;
   identity?: { platform: string; external_id: string };
   title: string;
@@ -273,11 +273,11 @@ export interface MeetingWire {
 /** `subscribe`'s snapshot result. */
 export interface SnapshotWire {
   rev: number;
-  meetings: MeetingWire[];
+  sessions: SessionWire[];
   sources: Array<{ id: string; state: string }>;
 }
 
-/** `meeting.attendee` upsert params (minus the meeting id, which the
+/** `session.attendee` upsert params (minus the session id, which the
  * transport fills in). */
 export interface AttendeeUpsert {
   id: string;
@@ -296,20 +296,20 @@ export const controlRequest = {
     ({ id, method: "hello", params: { protocol: PROTOCOL_VERSION, client } }) as const,
   subscribe: (id: RequestId, events: readonly string[]) =>
     ({ id, method: "subscribe", params: { events } }) as const,
-  meetingStart: (id: RequestId, platform: Platform, externalMeetingId: string) =>
+  sessionStart: (id: RequestId, platform: Platform, externalMeetingId: string) =>
     ({
       id,
-      method: "meeting.start",
+      method: "session.start",
       params: { platform, external_id: externalMeetingId, trigger: BROWSER_TRIGGER },
     }) as const,
-  meetingEnd: (id: RequestId, meeting: string) =>
-    ({ id, method: "meeting.end", params: { meeting } }) as const,
-  meetingPause: (id: RequestId, meeting: string) =>
-    ({ id, method: "meeting.pause", params: { meeting } }) as const,
-  meetingResume: (id: RequestId, meeting: string) =>
-    ({ id, method: "meeting.resume", params: { meeting } }) as const,
-  meetingAttendee: (id: RequestId, meeting: string, attendee: AttendeeUpsert) =>
-    ({ id, method: "meeting.attendee", params: { meeting, ...attendee } }) as const,
+  sessionEnd: (id: RequestId, session: string) =>
+    ({ id, method: "session.end", params: { session } }) as const,
+  sessionPause: (id: RequestId, session: string) =>
+    ({ id, method: "session.pause", params: { session } }) as const,
+  sessionResume: (id: RequestId, session: string) =>
+    ({ id, method: "session.resume", params: { session } }) as const,
+  sessionAttendee: (id: RequestId, session: string, attendee: AttendeeUpsert) =>
+    ({ id, method: "session.attendee", params: { session, ...attendee } }) as const,
 };
 
 /**

@@ -126,7 +126,7 @@ describe("EarsSocket", () => {
     expect(decodeFrame(binarySent(ws)[1]!).streamId).toBe("s1");
   });
 
-  it("ingest.open carries the meeting membership tag when the caller knows it", () => {
+  it("ingest.open carries the session membership tag when the caller knows it", () => {
     const socket = new EarsSocket(47811);
     const ws = connectAndOpen(socket);
 
@@ -136,7 +136,7 @@ describe("EarsSocket", () => {
         cmd: "ingest.open",
         source: sourceLabel("meet", "jane-a1b2"),
         format: INGEST_FORMAT,
-        meeting: { platform: "meet", external_id: "kQ0DRVtDaekB" },
+        session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
       },
     ]);
   });

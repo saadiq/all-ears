@@ -1,6 +1,6 @@
 /// `status`'s result payload: daemon + per-source state (with buffer
 /// occupancy, see ``SourceStatus``), plus the active sessions — v2 widened
-/// the v1 shape with the `meetings` list.
+/// the v1 shape with the `sessions` list.
 public struct StatusData: Sendable, Hashable, Codable {
   public var uptimeSeconds: Int
   public var sources: [SourceStatus]
@@ -15,8 +15,7 @@ public struct StatusData: Sendable, Hashable, Codable {
   private enum CodingKeys: String, CodingKey {
     case uptimeSeconds = "uptime_s"
     case sources
-    // `sessions` is the wire's `meetings` key until the wire rename (#47).
-    case sessions = "meetings"
+    case sessions
   }
 
   public init(from decoder: any Decoder) throws {

@@ -139,7 +139,7 @@ struct ControlProtocolV2FixtureTests {
         #expect(result.capabilities == [.observe, .sessions])
         let reencoded = try JSONEncoder().encode(frame)
         #expect(try JSONValue(data: reencoded) == entry.frame)
-      case "meeting-result":
+      case "session-result":
         let frame = try JSONDecoder().decode(ControlResponseFrame<Session>.self, from: raw)
         let session = try frame.get()
         #expect(session.state == .active)
@@ -152,7 +152,7 @@ struct ControlProtocolV2FixtureTests {
         let snapshot = try frame.get()
         #expect(snapshot.rev == 41)
         #expect(snapshot.sources.count == 1)
-      case "error-meeting-not-found", "error-hello-required":
+      case "error-session-not-found", "error-hello-required":
         let frame = try JSONDecoder().decode(
           ControlResponseFrame<EmptyData>.self, from: raw)
         #expect(throws: WireError.self) { try frame.get() }

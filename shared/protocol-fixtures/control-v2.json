@@ -14,10 +14,10 @@
       "frame": { "id": 2, "method": "subscribe", "params": { "events": ["job"] } }
     },
     {
-      "name": "meeting.start-browser",
+      "name": "session.start-browser",
       "frame": {
         "id": 3,
-        "method": "meeting.start",
+        "method": "session.start",
         "params": {
           "platform": "meet",
           "external_id": "abc-defg-hij",
@@ -26,40 +26,40 @@
       }
     },
     {
-      "name": "meeting.start-manual",
+      "name": "session.start-manual",
       "frame": {
         "id": 4,
-        "method": "meeting.start",
+        "method": "session.start",
         "params": { "title": "standup", "sources": ["mic"] }
       }
     },
     {
-      "name": "meeting.pause",
-      "frame": { "id": 5, "method": "meeting.pause", "params": { "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
+      "name": "session.pause",
+      "frame": { "id": 5, "method": "session.pause", "params": { "session": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
     },
     {
-      "name": "meeting.resume",
-      "frame": { "id": 6, "method": "meeting.resume", "params": { "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
+      "name": "session.resume",
+      "frame": { "id": 6, "method": "session.resume", "params": { "session": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
     },
     {
-      "name": "meeting.end",
-      "frame": { "id": 7, "method": "meeting.end", "params": { "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
+      "name": "session.end",
+      "frame": { "id": 7, "method": "session.end", "params": { "session": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
     },
     {
-      "name": "meeting.rename-if-rev",
+      "name": "session.rename-if-rev",
       "frame": {
         "id": 8,
-        "method": "meeting.rename",
-        "params": { "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444", "title": "Weekly sync", "if_rev": 41 }
+        "method": "session.rename",
+        "params": { "session": "0d5e1111-aaaa-bbbb-cccc-222233334444", "title": "Weekly sync", "if_rev": 41 }
       }
     },
     {
-      "name": "meeting.attendee-upsert",
+      "name": "session.attendee-upsert",
       "frame": {
         "id": 9,
-        "method": "meeting.attendee",
+        "method": "session.attendee",
         "params": {
-          "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "id": "spaces/x/devices/y",
           "display_name": "Jane Doe",
           "source": "browser:meet:jane-a1b2"
@@ -74,14 +74,14 @@
         "params": {
           "job": "transcribe-4fd1a2b0",
           "kind": "transcribe",
-          "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "state": "running"
         }
       }
     },
     {
       "name": "string-request-id",
-      "frame": { "id": "req-77", "method": "meeting.list" }
+      "frame": { "id": "req-77", "method": "session.list" }
     }
   ],
   "responses": [
@@ -94,13 +94,13 @@
           "protocol": 2,
           "daemon": "earsd 0.1.0",
           "boot_id": "b3f1c0de-0000-1111-2222-333344445555",
-          "capabilities": ["observe", "meetings"]
+          "capabilities": ["observe", "sessions"]
         }
       }
     },
     {
-      "name": "meeting-result",
-      "expecting": "meeting",
+      "name": "session-result",
+      "expecting": "session",
       "frame": {
         "id": 3,
         "result": {
@@ -134,7 +134,7 @@
         "id": 2,
         "result": {
           "rev": 41,
-          "meetings": [],
+          "sessions": [],
           "sources": [
             { "id": "mic", "state": "capturing", "codec": "aac", "bytes_used": 0 }
           ]
@@ -142,13 +142,13 @@
       }
     },
     {
-      "name": "error-meeting-not-found",
+      "name": "error-session-not-found",
       "expecting": "error",
       "frame": {
         "id": 7,
         "error": {
-          "code": "meeting_not_found",
-          "message": "no active meeting 0d5e1111-aaaa-bbbb-cccc-222233334444"
+          "code": "session_not_found",
+          "message": "no active session 0d5e1111-aaaa-bbbb-cccc-222233334444"
         }
       }
     },
@@ -163,12 +163,12 @@
   ],
   "events": [
     {
-      "name": "meeting-event",
+      "name": "session-event",
       "frame": {
-        "event": "meeting",
+        "event": "session",
         "rev": 43,
         "params": {
-          "meeting": {
+          "session": {
             "id": "0d5e1111-aaaa-bbbb-cccc-222233334444",
             "identity": { "platform": "meet", "external_id": "abc-defg-hij" },
             "title": "Weekly sync",
@@ -203,7 +203,7 @@
       "frame": {
         "event": "segment",
         "params": {
-          "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "speaker": "Jane Doe",
           "start": 604.1,
           "end": 611.9,
@@ -218,7 +218,7 @@
         "params": {
           "job": "transcribe-4fd1a2b0",
           "kind": "transcribe",
-          "meeting": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "state": "running"
         }
       }

@@ -651,9 +651,7 @@ struct CLISmokeTests {
     }
     #expect(run.socketBecameReady)
     #expect(run.result.exitCode == 0)
-    // The JSON payload's key is still the wire's `meetings` until the wire
-    // rename (#47).
-    #expect(run.result.stdout.contains("\"meetings\":[]"))
+    #expect(run.result.stdout.contains("\"sessions\":[]"))
   }
 
   @Test("ears status exits non-zero with a clear message when no daemon is reachable")

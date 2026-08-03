@@ -46,14 +46,14 @@ function connectAndOpen(socket: ControlSocket): FakeWebSocket {
   return ws;
 }
 
-const SNAPSHOT: SnapshotWire = { rev: 41, meetings: [], sources: [] };
+const SNAPSHOT: SnapshotWire = { rev: 41, sessions: [], sources: [] };
 
 /** Answers the hello + subscribe handshake so the socket reaches "ready". */
 async function completeHandshake(ws: FakeWebSocket, bootId = "boot-1"): Promise<void> {
   const hello = sentJson(ws)[0]!;
   ws.respond({
     id: hello.id,
-    result: { protocol: 2, daemon: "earsd-test", boot_id: bootId, capabilities: ["observe", "meetings"] },
+    result: { protocol: 2, daemon: "earsd-test", boot_id: bootId, capabilities: ["observe", "sessions"] },
   });
   await vi.waitFor(() => {
     expect(sentJson(ws).length).toBeGreaterThan(1);
@@ -74,7 +74,7 @@ async function readySocket(
   return { ws, snapshots };
 }
 
-const MEETING = {
+const SESSION = {
   id: "m-1",
   title: "meet abc",
   state: "active",
@@ -112,19 +112,19 @@ describe("ControlSocket (v2)", () => {
     expect(snapshots[0]).toEqual(SNAPSHOT);
   });
 
-  it("meeting.start resolves the correlated result even out of order", async () => {
+  it("session.start resolves the correlated result even out of order", async () => {
     const socket = new ControlSocket(47812);
     const { ws } = await readySocket(socket);
 
-    const first = socket.meetingStart("meet", "abc");
-    const second = socket.meetingEnd("m-1");
+    const first = socket.sessionStart("meet", "abc");
+    const second = socket.sessionEnd("m-1");
     const [startFrame, endFrame] = sentJson(ws).slice(2);
 
     // Answer in reverse order — correlation ids make this legal.
-    ws.respond({ id: endFrame!.id, result: { ...MEETING, state: "ended" } });
-    ws.respond({ id: startFrame!.id, result: MEETING });
+    ws.respond({ id: endFrame!.id, result: { ...SESSION, state: "ended" } });
+    ws.respond({ id: startFrame!.id, result: SESSION });
 
-    await expect(first).resolves.toEqual(MEETING);
+    await expect(first).resolves.toEqual(SESSION);
     await expect(second).resolves.toMatchObject({ state: "ended" });
   });
 
@@ -132,13 +132,13 @@ describe("ControlSocket (v2)", () => {
     const socket = new ControlSocket(47812);
     const { ws } = await readySocket(socket);
 
-    const promise = socket.meetingPause("nope");
+    const promise = socket.sessionPause("nope");
     const frame = sentJson(ws).at(-1)!;
-    ws.respond({ id: frame.id, error: { code: "meeting_not_found", message: "no active meeting nope" } });
+    ws.respond({ id: frame.id, error: { code: "session_not_found", message: "no active session nope" } });
 
-    await expect(promise).rejects.toThrow(/meeting_not_found/);
+    await expect(promise).rejects.toThrow(/session_not_found/);
     await promise.catch((err: unknown) => {
-      expect((err as ControlError).wire.code).toBe("meeting_not_found");
+      expect((err as ControlError).wire.code).toBe("session_not_found");
     });
   });
 
@@ -148,7 +148,7 @@ describe("ControlSocket (v2)", () => {
     socket.onEvent = (frame) => events.push(frame);
     const { ws } = await readySocket(socket);
 
-    ws.respond({ event: "meeting", params: { meeting: MEETING }, rev: 42 });
+    ws.respond({ event: "session", params: { session: SESSION }, rev: 42 });
     ws.respond({ event: "job", params: { job: "j1", kind: "transcribe", state: "running" } });
 
     expect(events).toHaveLength(2);
@@ -158,10 +158,10 @@ describe("ControlSocket (v2)", () => {
 
   it("rejects immediately when not connected (or before the handshake lands)", async () => {
     const socket = new ControlSocket(47812);
-    await expect(socket.meetingEnd("m-1")).rejects.toThrow(/not connected/);
+    await expect(socket.sessionEnd("m-1")).rejects.toThrow(/not connected/);
 
     connectAndOpen(socket); // open but hello unanswered
-    await expect(socket.meetingEnd("m-1")).rejects.toThrow(/not connected/);
+    await expect(socket.sessionEnd("m-1")).rejects.toThrow(/not connected/);
   });
 
   it("rejects in-flight requests when the socket drops, then reconnects with backoff", async () => {

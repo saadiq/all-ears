@@ -1,11 +1,10 @@
 /// The daemon-owned session lifecycle entity of control protocol v2
-/// (`docs/specs/control-protocol.md`'s "Meeting" — daemon vocabulary says
-/// "session"; the wire keeps the `meeting.*` spelling until #47): owns the
+/// (`docs/specs/control-protocol.md`): owns the
 /// transcription marks (``intervals``), the attendee roster, and the title.
 /// Persisted as `sessions/<uuid>/session.toml` (schema 3, see
 /// `EarsConfig.SessionDescriptorTOML`) plus an append-only `events.jsonl`
 /// timeline; its `Codable` conformance is the v2 *wire* shape (snake_case,
-/// ISO-8601 instants) carried in `meeting.*` results and `meeting` events.
+/// ISO-8601 instants) carried in `session.*` results and `session` events.
 ///
 /// Intervals are marks over the recording, never capture control: pausing a
 /// session closes the open interval, resuming opens a new one, and the

@@ -8,8 +8,7 @@
 public enum EventKind: String, Sendable, Hashable, Codable, CaseIterable {
   case vad
   case segment
-  /// Still `"meeting"` on the wire until the wire rename (#47).
-  case session = "meeting"
+  case session
   case source
   case job
 

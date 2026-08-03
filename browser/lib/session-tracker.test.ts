@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MeetingTracker, type MeetingControl, type MeetingState } from "./meeting-tracker";
-import type { AttendeeUpsert, MeetingWire, SnapshotWire } from "./protocol";
+import { SessionTracker, type SessionControl, type SessionState } from "./session-tracker";
+import type { AttendeeUpsert, SessionWire, SnapshotWire } from "./protocol";
 
-// The tracker is a signal forwarder in v2: the daemon owns the meeting state
-// machine, so these tests assert exactly which meeting verbs each DOM signal
+// The tracker is a signal forwarder in v2: the daemon owns the session state
+// machine, so these tests assert exactly which session verbs each DOM signal
 // turns into — no session churn, no client-side pause emulation.
 
-function meetingWire(overrides: Partial<MeetingWire> = {}): MeetingWire {
+function sessionWire(overrides: Partial<SessionWire> = {}): SessionWire {
   return {
     id: "m-1",
     identity: { platform: "meet", external_id: "abc" },
@@ -24,18 +24,18 @@ function meetingWire(overrides: Partial<MeetingWire> = {}): MeetingWire {
 
 type Call =
   | { verb: "start"; platform: string; externalMeetingId: string }
-  | { verb: "end" | "pause" | "resume"; meeting: string }
-  | { verb: "attendee"; meeting: string; attendee: AttendeeUpsert };
+  | { verb: "end" | "pause" | "resume"; session: string }
+  | { verb: "attendee"; session: string; attendee: AttendeeUpsert };
 
 /** Records every verb; resolves immediately unless `deferStart` holds the
- * meeting.start promise open for in-flight-race tests. */
-class FakeControl implements MeetingControl {
+ * session.start promise open for in-flight-race tests. */
+class FakeControl implements SessionControl {
   calls: Call[] = [];
   deferStart = false;
-  private startResolvers: Array<(m: MeetingWire) => void> = [];
-  startResult: MeetingWire = meetingWire();
+  private startResolvers: Array<(m: SessionWire) => void> = [];
+  startResult: SessionWire = sessionWire();
 
-  meetingStart(platform: string, externalMeetingId: string): Promise<MeetingWire> {
+  sessionStart(platform: string, externalMeetingId: string): Promise<SessionWire> {
     this.calls.push({ verb: "start", platform, externalMeetingId });
     if (this.deferStart) {
       return new Promise((resolve) => this.startResolvers.push(resolve));
@@ -43,28 +43,28 @@ class FakeControl implements MeetingControl {
     return Promise.resolve(this.startResult);
   }
 
-  resolveStart(meeting: MeetingWire = this.startResult): void {
-    this.startResolvers.shift()?.(meeting);
+  resolveStart(session: SessionWire = this.startResult): void {
+    this.startResolvers.shift()?.(session);
   }
 
-  meetingEnd(meeting: string): Promise<MeetingWire> {
-    this.calls.push({ verb: "end", meeting });
-    return Promise.resolve(meetingWire({ id: meeting, state: "ended" }));
+  sessionEnd(session: string): Promise<SessionWire> {
+    this.calls.push({ verb: "end", session });
+    return Promise.resolve(sessionWire({ id: session, state: "ended" }));
   }
 
-  meetingPause(meeting: string): Promise<MeetingWire> {
-    this.calls.push({ verb: "pause", meeting });
-    return Promise.resolve(meetingWire({ id: meeting, state: "paused" }));
+  sessionPause(session: string): Promise<SessionWire> {
+    this.calls.push({ verb: "pause", session });
+    return Promise.resolve(sessionWire({ id: session, state: "paused" }));
   }
 
-  meetingResume(meeting: string): Promise<MeetingWire> {
-    this.calls.push({ verb: "resume", meeting });
-    return Promise.resolve(meetingWire({ id: meeting, state: "active" }));
+  sessionResume(session: string): Promise<SessionWire> {
+    this.calls.push({ verb: "resume", session });
+    return Promise.resolve(sessionWire({ id: session, state: "active" }));
   }
 
-  meetingAttendee(meeting: string, attendee: AttendeeUpsert): Promise<MeetingWire> {
-    this.calls.push({ verb: "attendee", meeting, attendee });
-    return Promise.resolve(meetingWire({ id: meeting }));
+  sessionAttendee(session: string, attendee: AttendeeUpsert): Promise<SessionWire> {
+    this.calls.push({ verb: "attendee", session, attendee });
+    return Promise.resolve(sessionWire({ id: session }));
   }
 
   ofVerb(verb: Call["verb"]): Call[] {
@@ -75,11 +75,11 @@ class FakeControl implements MeetingControl {
 const NOW = "2026-07-19T11:00:00.000Z";
 
 function makeTracker(control: FakeControl): {
-  tracker: MeetingTracker;
-  states: MeetingState[];
+  tracker: SessionTracker;
+  states: SessionState[];
 } {
-  const states: MeetingState[] = [];
-  const tracker = new MeetingTracker(control, (s) => states.push(s), () => NOW);
+  const states: SessionState[] = [];
+  const tracker = new SessionTracker(control, (s) => states.push(s), () => NOW);
   return { tracker, states };
 }
 
@@ -87,8 +87,8 @@ async function flush(): Promise<void> {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-describe("MeetingTracker (v2 signal forwarder)", () => {
-  it("meeting-started declares the meeting and records its daemon id", async () => {
+describe("SessionTracker (v2 signal forwarder)", () => {
+  it("meeting-started declares the session and records its daemon id", async () => {
     const control = new FakeControl();
     const { tracker, states } = makeTracker(control);
 
@@ -97,10 +97,10 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
 
     expect(control.calls).toEqual([{ verb: "start", platform: "meet", externalMeetingId: "abc" }]);
     expect(states).toEqual(["recording"]);
-    expect(tracker.meetingActive).toBe(true);
+    expect(tracker.sessionActive).toBe(true);
   });
 
-  it("externalIdFor answers for the declaring port and goes silent once the meeting ends", async () => {
+  it("externalIdFor answers for the declaring port and goes silent once the session ends", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -128,7 +128,7 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     expect(control.ofVerb("start")).toHaveLength(1);
   });
 
-  it("attendee signals queue until the meeting id lands, then flush in order", async () => {
+  it("attendee signals queue until the session id lands, then flush in order", async () => {
     const control = new FakeControl();
     control.deferStart = true;
     const { tracker } = makeTracker(control);
@@ -142,10 +142,10 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", meeting: "m-1", attendee: { id: "jane", display_name: "Jane Doe" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe" } },
       {
         verb: "attendee",
-        meeting: "m-1",
+        session: "m-1",
         attendee: { id: "jane", source: "browser:meet:jane" },
       },
     ]);
@@ -154,7 +154,7 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
   it("buffers participant/stream signals that arrive before meeting-started and flushes them once it lands", async () => {
     // The linkage race: the tab's participant-joined / ingest stream-opened
     // events beat the Meet meeting-id resolution, so meeting-started arrives
-    // last. These must not be dropped (which stranded the meeting with no
+    // last. These must not be dropped (which stranded the session with no
     // attendees and no browser:* source).
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
@@ -168,8 +168,8 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
 
     expect(control.ofVerb("start")).toEqual([{ verb: "start", platform: "meet", externalMeetingId: "abc" }]);
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", meeting: "m-1", attendee: { id: "jane", display_name: "Jane Doe" } },
-      { verb: "attendee", meeting: "m-1", attendee: { id: "jane", source: "browser:meet:jane" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "jane", source: "browser:meet:jane" } },
     ]);
   });
 
@@ -180,13 +180,13 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     tracker.participantJoined("p1", "meet", "jane", "Jane Doe");
     tracker.portDisconnected("p1");
 
-    // A later meeting on the same port id must not resurrect the dropped signal.
+    // A later session on the same port id must not resurrect the dropped signal.
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     expect(control.ofVerb("attendee")).toHaveLength(0);
   });
 
-  it("participant-left upserts a left timestamp; the last leaver ends the meeting", async () => {
+  it("participant-left upserts a left timestamp; the last leaver ends the session", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -201,14 +201,14 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     expect(control.ofVerb("end")).toHaveLength(0);
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
-      meeting: "m-1",
+      session: "m-1",
       attendee: { id: "jane", left: NOW },
     });
 
     tracker.participantLeft("p1", "marcus");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", meeting: "m-1" }]);
-    expect(tracker.meetingActive).toBe(false);
+    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
+    expect(tracker.sessionActive).toBe(false);
   });
 
   it("rosterUpdate upserts display-name-only attendees keyed by device id (issue #23)", async () => {
@@ -224,12 +224,12 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", meeting: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot" } },
-      { verb: "attendee", meeting: "m-1", attendee: { id: "spaces/s/devices/446", display_name: "Tom E" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/446", display_name: "Tom E" } },
     ]);
   });
 
-  it("a roster name is identity-only: it does not enrol a capture participant or keep the meeting alive", async () => {
+  it("a roster name is identity-only: it does not enrol a capture participant or keep the session alive", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -240,12 +240,12 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     tracker.rosterUpdate("p1", "meet", [{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
     await flush();
 
-    // The only capture participant leaving ends the meeting — the roster name
+    // The only capture participant leaving ends the session — the roster name
     // must not count as a live participant that strands it open.
     tracker.participantLeft("p1", "speaker-1");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", meeting: "m-1" }]);
-    expect(tracker.meetingActive).toBe(false);
+    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
+    expect(tracker.sessionActive).toBe(false);
   });
 
   it("buffers roster names that arrive before meeting-started and flushes them once it lands", async () => {
@@ -258,7 +258,7 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", meeting: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot" } },
     ]);
   });
 
@@ -277,14 +277,14 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", meeting: "m-1", attendee: { id: "spaces/s/devices/183", display_name: "Etel Friedmann" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", display_name: "Etel Friedmann" } },
       // Name and source now land on the same attendee row — the join the
       // transcript's speaker map needs. The id is sanitized into the label.
-      { verb: "attendee", meeting: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1" } },
     ]);
   });
 
-  it("a rename is identity-only: it does not enrol a capture participant or keep the meeting alive", async () => {
+  it("a rename is identity-only: it does not enrol a capture participant or keep the session alive", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -296,8 +296,8 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
 
     tracker.participantLeft("p1", "speaker-1");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", meeting: "m-1" }]);
-    expect(tracker.meetingActive).toBe(false);
+    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
+    expect(tracker.sessionActive).toBe(false);
   });
 
   it("buffers a rename that arrives before meeting-started and flushes it once it lands", async () => {
@@ -310,7 +310,7 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", meeting: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1" } },
     ]);
   });
 
@@ -325,7 +325,7 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     expect(control.ofVerb("attendee")).toHaveLength(0);
   });
 
-  it("the pause toggle maps to meeting.pause / meeting.resume — never session churn", async () => {
+  it("the pause toggle maps to session.pause / session.resume — never session churn", async () => {
     const control = new FakeControl();
     const { tracker, states } = makeTracker(control);
 
@@ -333,16 +333,16 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
 
     await tracker.setPaused(true);
-    expect(control.ofVerb("pause")).toEqual([{ verb: "pause", meeting: "m-1" }]);
+    expect(control.ofVerb("pause")).toEqual([{ verb: "pause", session: "m-1" }]);
     expect(states).toEqual(["recording", "paused"]);
     expect(tracker.paused).toBe(true);
 
     await tracker.setPaused(false);
-    expect(control.ofVerb("resume")).toEqual([{ verb: "resume", meeting: "m-1" }]);
+    expect(control.ofVerb("resume")).toEqual([{ verb: "resume", session: "m-1" }]);
     expect(tracker.paused).toBe(false);
   });
 
-  it("a pause toggled before the meeting id lands is applied when it does", async () => {
+  it("a pause toggled before the session id lands is applied when it does", async () => {
     const control = new FakeControl();
     control.deferStart = true;
     const { tracker } = makeTracker(control);
@@ -353,10 +353,10 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
 
     control.resolveStart();
     await flush();
-    expect(control.ofVerb("pause")).toEqual([{ verb: "pause", meeting: "m-1" }]);
+    expect(control.ofVerb("pause")).toEqual([{ verb: "pause", session: "m-1" }]);
   });
 
-  it("meeting-ended and port disconnect both end the daemon meeting", async () => {
+  it("meeting-ended and port disconnect both end the daemon session", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -364,9 +364,9 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
     tracker.meetingEnded("abc");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", meeting: "m-1" }]);
+    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
 
-    control.startResult = meetingWire({
+    control.startResult = sessionWire({
       id: "m-2",
       identity: { platform: "meet", external_id: "xyz" },
     });
@@ -374,10 +374,10 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
     tracker.portDisconnected("p2");
     await flush();
-    expect(control.ofVerb("end").at(-1)).toEqual({ verb: "end", meeting: "m-2" });
+    expect(control.ofVerb("end").at(-1)).toEqual({ verb: "end", session: "m-2" });
   });
 
-  it("a meeting ended while meeting.start is in flight is ended once the id lands", async () => {
+  it("a session ended while session.start is in flight is ended once the id lands", async () => {
     const control = new FakeControl();
     control.deferStart = true;
     const { tracker } = makeTracker(control);
@@ -388,7 +388,7 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
 
     control.resolveStart();
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", meeting: "m-1" }]);
+    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
   });
 
   it("job telemetry drives the transcribing badge with real pipeline state", async () => {
@@ -397,18 +397,18 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
 
     tracker.jobEvent({
       event: "job",
-      params: { job: "j1", kind: "transcribe", meeting: "m-1", state: "started" },
+      params: { job: "j1", kind: "transcribe", session: "m-1", state: "started" },
     });
     expect(states).toEqual(["transcribing"]);
 
     tracker.jobEvent({
       event: "job",
-      params: { job: "j1", kind: "transcribe", meeting: "m-1", state: "done" },
+      params: { job: "j1", kind: "transcribe", session: "m-1", state: "done" },
     });
     expect(states).toEqual(["transcribing", "idle"]);
   });
 
-  it("onReady re-declares live meetings (idempotent recovery) and adopts daemon pause state", async () => {
+  it("onReady re-declares live sessions (idempotent recovery) and adopts daemon pause state", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -416,14 +416,14 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
     await flush();
     expect(control.ofVerb("start")).toHaveLength(1);
 
-    // Reconnect: the daemon says the meeting is paused (e.g. paused from the
+    // Reconnect: the daemon says the session is paused (e.g. paused from the
     // CLI while the worker was evicted).
     const snapshot: SnapshotWire = {
       rev: 50,
-      meetings: [meetingWire({ state: "paused" })],
+      sessions: [sessionWire({ state: "paused" })],
       sources: [],
     };
-    control.startResult = meetingWire({ state: "paused" });
+    control.startResult = sessionWire({ state: "paused" });
     tracker.onReady(snapshot, true);
     await flush();
 

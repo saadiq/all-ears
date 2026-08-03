@@ -5,11 +5,10 @@ import Foundation
 /// Errors surfaced by ``SessionRegistry``, mapped 1:1 onto the v2 wire's
 /// stable error codes by `ControlServer`.
 public enum SessionRegistryError: Error, Sendable, Hashable {
-  /// No session (live or on disk) has this id → `meeting_not_found` (the
-  /// wire error codes keep the "meeting" spelling until #47).
+  /// No session (live or on disk) has this id → `session_not_found`.
   case notFound(String)
   /// A lifecycle verb targeted a session that has already ended →
-  /// `meeting_ended`.
+  /// `session_ended`.
   case ended(String)
   /// `session.rename`'s `if_rev` didn't match the session's current
   /// revision → `conflict`.
