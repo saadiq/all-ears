@@ -4,7 +4,7 @@ import { EarsSocket, type TransportStatus } from "../lib/transport";
 import { ControlSocket } from "../lib/control-transport";
 import { MeetingTracker, type BadgeState, type MeetingState } from "../lib/meeting-tracker";
 import { applyActionBadge } from "../lib/action-badge";
-import { KEEPALIVE_ALARM, SessionTracker } from "../lib/session-state";
+import { KEEPALIVE_ALARM, KeepaliveTracker } from "../lib/keepalive";
 import { DEBUG_LOG_KEY, PERF_ENABLED_KEY, resolvePerfToggleState } from "../lib/capture-toggle";
 import { createBatcher, installConsoleTap, type LogEntry } from "../lib/debug-log";
 import {
@@ -30,10 +30,10 @@ import type { PortMessage } from "../lib/protocol";
 //
 // Chrome runs this as a suspendable MV3 service worker; Firefox as a
 // persistent background page. Everything here is written for the weaker
-// (Chrome) guarantee: SessionTracker keeps a chrome.alarms keepalive armed
-// only while a capture session is active (silence produces no socket traffic,
-// so WebSocket-activity keepalive alone can't be relied on), and persists the
-// session flag to storage.session so a respawned worker re-arms it. The rest
+// (Chrome) guarantee: KeepaliveTracker keeps a chrome.alarms keepalive armed
+// only while capture is live (silence produces no socket traffic, so
+// WebSocket-activity keepalive alone can't be relied on), and persists the
+// live flag to storage.session so a respawned worker re-arms it. The rest
 // of respawn recovery is free: this module's top level reconnects both
 // sockets, streams re-open lazily on the next PCM frame, and the content
 // relay re-establishes its port on the next post (pcm-port.ts).
@@ -182,8 +182,10 @@ export default defineBackground(() => {
     if (portId) meetings.streamOpened(portId, platform, participantId);
   };
 
-  const tracker = new SessionTracker(browser.alarms, browser.storage.session);
-  // Respawn path: re-arm the keepalive if a session was active when the old
+  // browser.storage.session is the browser API (browsing-session-scoped
+  // storage), not a concept of ours.
+  const tracker = new KeepaliveTracker(browser.alarms, browser.storage.session);
+  // Respawn path: re-arm the keepalive if capture was live when the old
   // worker died (and clear any stale alarm if not).
   void tracker.restore();
 

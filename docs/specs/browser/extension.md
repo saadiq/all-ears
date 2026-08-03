@@ -35,7 +35,7 @@ Four contexts, one direction of audio flow:
 
 The main world is the only place that can patch page globals; the isolated world is the only place with `chrome.runtime`; `content.ts` exists solely to bridge them via `window.postMessage`. The MV3 service worker holds the WebSockets directly (WebSocket activity keeps it alive, Chrome 116+) — there is no offscreen document, so Chrome and Firefox share one code path.
 
-Layout (WXT project in `browser/`): entrypoints `hook.content.ts` (MAIN world, `document_start`), `content.ts` (isolated relay), `background.ts` (socket owner), `popup/`; libraries `lib/rtc-hook.ts`, `audio-tap.ts`, `transport.ts`, `control-transport.ts`, `meeting-tracker.ts`, `session-state.ts`, `capture-toggle.ts`, `pcm-port.ts`, `protocol.ts`, `epoch.ts`, and `lib/identity/` (the adapters). Build with `bun run build` / `bun run build:firefox`.
+Layout (WXT project in `browser/`): entrypoints `hook.content.ts` (MAIN world, `document_start`), `content.ts` (isolated relay), `background.ts` (socket owner), `popup/`; libraries `lib/rtc-hook.ts`, `audio-tap.ts`, `transport.ts`, `control-transport.ts`, `meeting-tracker.ts`, `keepalive.ts`, `capture-toggle.ts`, `pcm-port.ts`, `protocol.ts`, `epoch.ts`, and `lib/identity/` (the adapters). Build with `bun run build` / `bun run build:firefox`.
 
 ## Injection & timing
 

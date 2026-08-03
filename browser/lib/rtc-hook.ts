@@ -209,7 +209,7 @@ function maybeWarnCollectionsSchema(): void {
   console.warn(
     "[ears][hook] Meet 'collections' datachannel is sending messages but none parsed as the expected " +
       "device-id/speaking-flag shape — Meet likely changed its wire format. Identity upgrade via " +
-      "this path is disabled for this session; capture still works via speaker-<n>. See lib/identity/meet-collections.ts.",
+      "this path is disabled for this page load; capture still works via speaker-<n>. See lib/identity/meet-collections.ts.",
   );
 }
 
@@ -593,7 +593,7 @@ function installMeetWebAudioProbe(): void {
     }
     // Audio generators are the leading candidate output of Meet's post-RTP
     // pipeline (2026-07-24 drift capture): register each constructed audio
-    // generator (it IS a MediaStreamTrack) so a live session can reach the
+    // generator (it IS a MediaStreamTrack) so a live debugging run can reach the
     // object, and fingerprint its energy when the debug flag is on.
     {
       const Native = w.MediaStreamTrackGenerator;
@@ -748,7 +748,7 @@ function installMeetWebAudioProbe(): void {
 //   1. `window.__earsWebAudioTracks` — the actual MediaStreamTrack objects Meet
 //      routes through WebAudio (createMediaStreamSource inputs, audio
 //      MediaStreamTrackGenerator outputs), keyed by track id. During the live
-//      capture session the track objects were unreachable (only their ids had
+//      capture run the track objects were unreachable (only their ids had
 //      been logged), which blocked measuring them; this registry closes that gap.
 //   2. Per-track energy fingerprints (`[ears][probe][webaudio] energy …`),
 //      gated by the same `__earsDebugAudio` localStorage flag as audio-tap's
