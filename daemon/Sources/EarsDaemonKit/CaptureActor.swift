@@ -8,7 +8,7 @@ import Foundation
 /// The domain (non-wire) snapshot of one source's capture state, returned by
 /// ``CaptureActor/status()``. `ControlServer` converts this to the wire
 /// `SourceStatus` at the socket boundary (see ``SourceStatus/init(_:)`` below),
-/// mirroring the `SessionDescriptor` ↔ `SessionSummary` domain/wire split this
+/// mirroring the `IndexedChunk` ↔ `IndexEvent.chunk` domain/wire split this
 /// codebase already uses. Keeping the actor free of the wire `Codable`
 /// (ISO-8601 / snake_case) concern is deliberate.
 public struct CaptureSourceStatus: Sendable, Hashable {
@@ -45,7 +45,7 @@ public struct CaptureSourceStatus: Sendable, Hashable {
 extension SourceStatus {
   /// The wire mapping of a domain ``CaptureSourceStatus`` — pure field copy,
   /// the domain→wire seam ``ControlServer`` uses to build `status` /
-  /// `sources.list` replies (the same pattern as `SessionSummary.init(_:)`).
+  /// `sources.list` replies.
   public init(_ status: CaptureSourceStatus) {
     self.init(
       id: status.id,
@@ -267,9 +267,8 @@ public actor CaptureActor {
   /// task 4a implements exactly as specified here.
   ///
   /// - Postcondition: ``status()`` reports `.paused`; the backend is stopped.
-  /// - Note: If a session is open on this source, nothing special happens — the
-  ///   gap simply lands in `index.jsonl` and the session's `end` is set
-  ///   independently by `session.close` (see ``ActorContracts``).
+  /// - Note: A pause needs no cross-actor coordination — the gap simply lands
+  ///   in `index.jsonl` (see ``ActorContracts``).
   /// - Idempotent: a no-op when already paused.
   public func pause() async throws {
     guard runtimeState == .capturing else { return }

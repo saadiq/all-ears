@@ -2,7 +2,7 @@ import EarsCore
 
 /// A ``CaptureBackend`` that emits a scripted sequence of ``AudioBuffer``s and
 /// then finishes, so tests can drive capture-consuming code (a future
-/// `CaptureActor`, session/index wiring) deterministically with no Core Audio,
+/// `CaptureActor`, index wiring) deterministically with no Core Audio,
 /// no device, and no permission.
 ///
 /// Distinct from ``NullCaptureBackend`` (which emits nothing) and from the real

@@ -125,21 +125,6 @@ extension ControlRequestFrame: Codable {
       return .meetingList
     case .meetingGet:
       return .meetingGet(meeting: try container.decode(MeetingRef.self, forKey: .params).meeting)
-    case .sessionOpen:
-      return .sessionOpen(try container.decode(SessionOpenParams.self, forKey: .params))
-    case .sessionClose:
-      return .sessionClose(id: try container.decode(SessionRef.self, forKey: .params).id)
-    case .sessionList:
-      return .sessionList
-    case .sessionAddSource:
-      let params = try container.decode(SessionAddSourceRef.self, forKey: .params)
-      return .sessionAddSource(id: params.id, source: params.source)
-    case .mark:
-      let params = try container.nestedContainer(keyedBy: MarkKeys.self, forKey: .params)
-      return .mark(
-        sources: try params.decode([SourceID].self, forKey: .sources),
-        slug: try params.decode(String.self, forKey: .slug),
-        range: try decodeMarkRange(from: params))
     case .segmentPublish:
       return .segmentPublish(try container.decode(SegmentPublishParams.self, forKey: .params))
     case .jobPublish:
@@ -187,7 +172,7 @@ extension ControlRequestFrame: Codable {
     of call: ControlCall, into container: inout KeyedEncodingContainer<CodingKeys>
   ) throws {
     switch call {
-    case .status, .meetingList, .sessionList, .sourcesList, .flush:
+    case .status, .meetingList, .sourcesList, .flush:
       break  // no params
     case .subscribe(let params):
       try container.encode(params, forKey: .params)
@@ -200,23 +185,6 @@ extension ControlRequestFrame: Codable {
       try container.encode(params, forKey: .params)
     case .meetingAttendee(let params):
       try container.encode(params, forKey: .params)
-    case .sessionOpen(let params):
-      try container.encode(params, forKey: .params)
-    case .sessionClose(let id):
-      try container.encode(SessionRef(id: id), forKey: .params)
-    case .sessionAddSource(let id, let source):
-      try container.encode(SessionAddSourceRef(id: id, source: source), forKey: .params)
-    case .mark(let sources, let slug, let range):
-      var params = container.nestedContainer(keyedBy: MarkKeys.self, forKey: .params)
-      try params.encode(sources, forKey: .sources)
-      try params.encode(slug, forKey: .slug)
-      switch range {
-      case .lastSeconds(let seconds):
-        try params.encode(seconds, forKey: .lastSeconds)
-      case .absolute(let start, let end):
-        try params.encodeISO8601Instant(start, forKey: .start)
-        try params.encodeISO8601Instant(end, forKey: .end)
-      }
     case .segmentPublish(let params):
       try container.encode(params, forKey: .params)
     case .jobPublish(let params):
@@ -238,13 +206,6 @@ extension ControlRequestFrame: Codable {
   private struct MeetingRef: Codable {
     var meeting: String
   }
-  private struct SessionRef: Codable {
-    var id: String
-  }
-  private struct SessionAddSourceRef: Codable {
-    var id: String
-    var source: SourceID
-  }
   private struct SourceRef: Codable {
     var source: SourceID
   }
@@ -253,34 +214,5 @@ extension ControlRequestFrame: Codable {
   }
   private enum SpecKeys: String, CodingKey {
     case spec
-  }
-  private enum MarkKeys: String, CodingKey {
-    case sources, slug, start, end
-    case lastSeconds = "last_seconds"
-  }
-
-  /// `mark`'s dual-shape range: exactly one of `last_seconds` or
-  /// `start`+`end` — see ``MarkRange``.
-  private static func decodeMarkRange(
-    from container: KeyedDecodingContainer<MarkKeys>
-  ) throws -> MarkRange {
-    let lastSeconds = try container.decodeIfPresent(Double.self, forKey: .lastSeconds)
-    let hasAbsolute = container.contains(.start) || container.contains(.end)
-    switch (lastSeconds, hasAbsolute) {
-    case (let seconds?, false):
-      return .lastSeconds(seconds)
-    case (nil, true):
-      return .absolute(
-        start: try container.decodeISO8601Instant(forKey: .start),
-        end: try container.decodeISO8601Instant(forKey: .end))
-    case (nil, false):
-      throw DecodingError.dataCorruptedError(
-        forKey: .lastSeconds, in: container,
-        debugDescription: "mark requires either last_seconds or start+end")
-    case (_, true):
-      throw DecodingError.dataCorruptedError(
-        forKey: .lastSeconds, in: container,
-        debugDescription: "mark accepts either last_seconds or start+end, not both")
-    }
   }
 }

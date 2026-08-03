@@ -10,17 +10,11 @@ import Testing
 /// Covers ``ControlServer``'s v2 dispatch: the reply frames it builds
 /// (`{"id", "result"}` / `{"id", "error": {"code", "message"}}`), the stable
 /// error-code mapping, the `subscribe` snapshot, and routing into the
-/// meeting/session registries. Transport-level concerns (`hello` gating,
+/// meeting registry. Transport-level concerns (`hello` gating,
 /// capability tiers) live in `EarsIPCTests` — every call reaching this actor
 /// has already cleared them.
 @Suite("ControlServer")
 struct ControlServerTests {
-  private func makeSessions(
-    dataRoot: URL, clock: any NowProviding, known: Set<SourceID> = []
-  ) -> SessionRegistry {
-    SessionRegistry(dataRoot: dataRoot, knownSourceIDs: { known }, clock: clock)
-  }
-
   private func makeDataRoot() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       "ControlServerTests-\(UUID().uuidString)")
@@ -34,19 +28,15 @@ struct ControlServerTests {
     startInstant: Instant = Instant(secondsSinceEpoch: 0),
     clock: any NowProviding,
     bus: EventBus? = nil,
-    meetings: MeetingRegistry? = nil,
-    known: Set<SourceID> = [],
-    onSessionClosed: (@Sendable (SessionDescriptor) async -> Void)? = nil
+    meetings: MeetingRegistry? = nil
   ) -> ControlServer {
     ControlServer(
       captureActors: captureActors,
-      sessions: makeSessions(dataRoot: dataRoot, clock: clock, known: known),
       dataRoot: dataRoot,
       startInstant: startInstant,
       clock: clock,
       bus: bus,
-      meetings: meetings,
-      onSessionClosed: onSessionClosed)
+      meetings: meetings)
   }
 
   /// Decodes a `ControlReply`'s JSON frame (with a fixed test id) for
@@ -75,7 +65,7 @@ struct ControlServerTests {
 
   // MARK: - status / subscribe
 
-  @Test("status reports uptime, sources, and the (empty) meeting/session lists")
+  @Test("status reports uptime, sources, and the (empty) meeting list")
   func statusReportsUptime() async throws {
     let clock = ManualClock(Instant(secondsSinceEpoch: 1000))
     let server = makeServer(
@@ -85,7 +75,6 @@ struct ControlServerTests {
     #expect(data["uptime_s"] as? Int == 900)
     #expect((data["sources"] as? [Any])?.isEmpty == true)
     #expect((data["meetings"] as? [Any])?.isEmpty == true)
-    #expect((data["sessions"] as? [Any])?.isEmpty == true)
   }
 
   @Test("status never reports negative uptime, even if the clock precedes startInstant")
@@ -262,49 +251,5 @@ struct ControlServerTests {
 
     let data = try result(await server.handle(.meetingList))
     #expect((data["meetings"] as? [Any])?.count == 1)
-  }
-
-  // MARK: - session dispatch
-
-  @Test("session errors map to the stable codes")
-  func sessionErrorMapping() async throws {
-    let server = makeServer(dataRoot: try makeDataRoot(), clock: ManualClock(), known: ["mic"])
-
-    #expect(
-      try errorCode(await server.handle(.sessionClose(id: "nope"))) == "session_not_found")
-    #expect(
-      try errorCode(
-        await server.handle(
-          .sessionOpen(SessionOpenParams(sources: ["bogus"], slug: "x"))))
-        == "source_not_found")
-    #expect(
-      try errorCode(
-        await server.handle(.sessionOpen(SessionOpenParams(sources: [], slug: "x"))))
-        == "invalid_request")
-  }
-
-  @Test("session.open records the wire trigger, and close fires onSessionClosed with it")
-  func sessionOpenTriggerAndOnClosed() async throws {
-    let dataRoot = try makeDataRoot()
-    let clock = ManualClock(Instant(secondsSinceEpoch: 1_784_284_200))
-    let closed = Mutex<[SessionDescriptor]>([])
-    let server = makeServer(
-      dataRoot: dataRoot, clock: clock, known: ["mic"],
-      onSessionClosed: { descriptor in
-        closed.withLock { $0.append(descriptor) }
-      })
-
-    let opened = try result(
-      await server.handle(
-        .sessionOpen(
-          SessionOpenParams(sources: ["mic"], slug: "call", trigger: .browserExtension))))
-    let id = try #require(opened["id"] as? String)
-
-    _ = try result(await server.handle(.sessionAddSource(id: id, source: "mic")))
-    _ = try result(await server.handle(.sessionClose(id: id)))
-
-    let descriptors = closed.withLock { $0 }
-    #expect(descriptors.count == 1)
-    #expect(descriptors.first?.trigger == .browserExtension)
   }
 }

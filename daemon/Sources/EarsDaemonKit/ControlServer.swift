@@ -5,12 +5,11 @@ import Foundation
 
 /// Dispatches v2 control calls to the right actor and builds each reply —
 /// the seam both `EarsIPC` control transports plug into. It owns the source
-/// id → ``CaptureActor`` lookup, the ``SessionRegistry`` and
-/// ``MeetingRegistry`` references, and the daemon start instant (for
-/// `uptime_s`). Deliberately **thin wiring**: it decodes intent and shapes
-/// wire payloads, pushing all real logic into the registries and capture
-/// actors. An `actor` because its source→actor map is mutable at runtime
-/// (`sources.remove`, dynamic ingest sources).
+/// id → ``CaptureActor`` lookup, the ``MeetingRegistry`` reference, and the
+/// daemon start instant (for `uptime_s`). Deliberately **thin wiring**: it
+/// decodes intent and shapes wire payloads, pushing all real logic into the
+/// registry and capture actors. An `actor` because its source→actor map is
+/// mutable at runtime (`sources.remove`, dynamic ingest sources).
 ///
 /// The transports own the envelope, `hello`, and capability enforcement
 /// (privilege differs by transport, not by dialect) — every ``ControlCall``
@@ -21,10 +20,9 @@ import Foundation
 ///
 /// | call | routed to | result payload |
 /// |---|---|---|
-/// | `status` | every ``CaptureActor/status()`` + registries | `StatusData` |
-/// | `subscribe` | registries + ``EventBus/currentRev()`` | `SnapshotData` (the transport registered the filter first) |
+/// | `status` | every ``CaptureActor/status()`` + registry | `StatusData` |
+/// | `subscribe` | registry + ``EventBus/currentRev()`` | `SnapshotData` (the transport registered the filter first) |
 /// | `meeting.*` | ``MeetingRegistry`` | the full meeting object (`meeting.list` → `MeetingListData`) |
-/// | `session.*`, `mark` | ``SessionRegistry`` | as v1 |
 /// | `segment.publish`, `job.publish` | the ``EventBus`` (notification-only) | `EmptyData` |
 /// | `sources.*`, `capture.*`, `flush` | ``CaptureActor``s | as v1 |
 ///
@@ -33,14 +31,9 @@ import Foundation
 /// clearly rather than leaving a half-built source.
 public actor ControlServer {
   private var captureActors: [SourceID: CaptureActor]
-  private let sessions: SessionRegistry
   /// The meeting lifecycle owner; `nil` (for callers that don't wire
   /// meetings) makes every `meeting.*` call fail clearly.
   private let meetings: MeetingRegistry?
-  /// Called after every successful `session.close`, with the closed
-  /// descriptor — the seam ``EarsDaemon`` hangs the browser-triggered
-  /// on-close transcribe pipeline off. `nil` does nothing.
-  private let onSessionClosed: (@Sendable (SessionDescriptor) async -> Void)?
   private let dataRoot: URL
   private let clock: any NowProviding
   /// The daemon's start instant, for the `status` reply's `uptime_s`.
@@ -52,18 +45,14 @@ public actor ControlServer {
 
   public init(
     captureActors: [SourceID: CaptureActor],
-    sessions: SessionRegistry,
     dataRoot: URL,
     startInstant: Instant,
     clock: any NowProviding = SystemClock(),
     bus: EventBus? = nil,
-    meetings: MeetingRegistry? = nil,
-    onSessionClosed: (@Sendable (SessionDescriptor) async -> Void)? = nil
+    meetings: MeetingRegistry? = nil
   ) {
     self.captureActors = captureActors
-    self.sessions = sessions
     self.meetings = meetings
-    self.onSessionClosed = onSessionClosed
     self.dataRoot = dataRoot
     self.startInstant = startInstant
     self.clock = clock
@@ -122,28 +111,6 @@ public actor ControlServer {
       }
       return ControlReply(result: MeetingListData(meetings: await meetings.list()))
 
-    case .sessionOpen(let params):
-      return await handleSessionOpen(params)
-    case .sessionClose(let id):
-      return await handleSessionClose(id: id)
-    case .sessionList:
-      let summaries = await sessions.list().map(SessionSummary.init)
-      return ControlReply(result: SessionListData(sessions: summaries))
-    case .sessionAddSource(let id, let source):
-      do {
-        _ = try await sessions.addSource(id: id, source: source)
-        return ControlReply(result: EmptyData())
-      } catch {
-        return ControlReply(error: wireError(for: error))
-      }
-    case .mark(let sources, let slug, let range):
-      do {
-        let descriptor = try await sessions.mark(sources: sources, slug: slug, range: range)
-        return ControlReply(result: SessionOpenData(id: descriptor.id))
-      } catch {
-        return ControlReply(error: wireError(for: error))
-      }
-
     case .segmentPublish(let params):
       // A pass-through to the live feed, not a new source of truth: no
       // validation beyond the wire shape, no persistence — the durable
@@ -185,13 +152,11 @@ public actor ControlServer {
   private func handleStatus() async -> ControlReply {
     let uptime = max(0, Int(clock.now().interval(since: startInstant)))
     let liveMeetings = (await meetings?.list() ?? []).filter { $0.state != .ended }
-    let openSessions = await sessions.list().filter { $0.state == .open }
     return ControlReply(
       result: StatusData(
         uptimeSeconds: uptime,
         sources: await sourceStatuses(),
-        meetings: liveMeetings,
-        sessions: openSessions.map(SessionSummary.init)))
+        meetings: liveMeetings))
   }
 
   /// Builds the `subscribe` snapshot. The revision is read *before* the
@@ -201,13 +166,11 @@ public actor ControlServer {
   private func handleSubscribe() async -> ControlReply {
     let rev = await bus?.currentRev() ?? 0
     let liveMeetings = (await meetings?.list() ?? []).filter { $0.state != .ended }
-    let openSessions = await sessions.list().filter { $0.state == .open }
     return ControlReply(
       result: SnapshotData(
         rev: rev,
         meetings: liveMeetings,
-        sources: await sourceStatuses(),
-        sessions: openSessions.map(SessionSummary.init)))
+        sources: await sourceStatuses()))
   }
 
   /// Every source's wire status, in a deterministic (id-sorted) order.
@@ -229,29 +192,6 @@ public actor ControlServer {
     }
     do {
       return ControlReply(result: try await operation(meetings))
-    } catch {
-      return ControlReply(error: wireError(for: error))
-    }
-  }
-
-  // MARK: - sessions
-
-  private func handleSessionOpen(_ params: SessionOpenParams) async -> ControlReply {
-    do {
-      let descriptor = try await sessions.open(
-        sources: params.sources, slug: params.slug, start: params.start, vocab: params.vocab,
-        trigger: params.trigger ?? .manual)
-      return ControlReply(result: SessionOpenData(id: descriptor.id))
-    } catch {
-      return ControlReply(error: wireError(for: error))
-    }
-  }
-
-  private func handleSessionClose(id: String) async -> ControlReply {
-    do {
-      let descriptor = try await sessions.close(id: id)
-      await onSessionClosed?(descriptor)
-      return ControlReply(result: EmptyData())
     } catch {
       return ControlReply(error: wireError(for: error))
     }
@@ -323,19 +263,6 @@ public actor ControlServer {
         return WireError(code: .invalidRequest, message: "source is already capturing")
       case .notPaused:
         return WireError(code: .invalidRequest, message: "source is not paused")
-      }
-    }
-    if let error = error as? SessionRegistryError {
-      switch error {
-      case .unknownSource(let id):
-        return WireError(code: .sourceNotFound, message: "unknown source '\(id.rawValue)'")
-      case .noSources:
-        return WireError(code: .invalidRequest, message: "at least one source is required")
-      case .sessionNotFound(let id):
-        return WireError(code: .sessionNotFound, message: "no such session '\(id)'")
-      case .sessionAlreadyClosed(let id):
-        return WireError(
-          code: .sessionAlreadyClosed, message: "session '\(id)' is already closed")
       }
     }
     if let error = error as? MeetingRegistryError {

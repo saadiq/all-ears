@@ -39,27 +39,9 @@ struct EarsEventTests {
     #expect(frame.rev == 43)
   }
 
-  @Test("decodes a session state event carrying the full summary")
-  func decodesSession() throws {
-    let json = """
-      {"event":"session","params":{"session":{"schema":1,"id":"2026-07-17T10-30-00Z_standup",
-       "slug":"standup","sources":["mic"],"start":"2026-07-17T10:30:00Z","state":"open",
-       "trigger":"manual"}},"rev":7}
-      """
-    let frame = try decode(json)
-    guard case .session(let summary) = frame.event else {
-      Issue.record("expected .session, got \(frame.event)")
-      return
-    }
-    #expect(summary.id == "2026-07-17T10-30-00Z_standup")
-    #expect(summary.state == .open)
-    #expect(frame.rev == 7)
-  }
-
   @Test("state kinds carry rev; telemetry kinds never do")
   func kindClasses() {
     #expect(EventKind.meeting.isState)
-    #expect(EventKind.session.isState)
     #expect(EventKind.source.isState)
     #expect(!EventKind.vad.isState)
     #expect(!EventKind.segment.isState)

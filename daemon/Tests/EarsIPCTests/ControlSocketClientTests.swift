@@ -70,20 +70,20 @@ struct ControlSocketClientTests {
     let client = ControlSocketClient(connection: connection)
     let held = Mutex<[(RequestID, String)]>([])
     let server = serveRequests(on: connection) { frame, connection in
-      guard case .call(let id, .sessionClose(let sessionID)) = frame else { return }
+      guard case .call(let id, .meetingEnd(let meetingID)) = frame else { return }
       let ready: [(RequestID, String)]? = held.withLock { pending in
-        pending.append((id, sessionID))
+        pending.append((id, meetingID))
         return pending.count == 2 ? pending.reversed() : nil
       }
-      for (heldID, heldSession) in ready ?? [] {
+      for (heldID, heldMeeting) in ready ?? [] {
         connection.feedLine(
           ControlResponseFrame<StatusData>.result(
-            id: heldID, StatusData(uptimeSeconds: Int(heldSession) ?? -1, sources: [])))
+            id: heldID, StatusData(uptimeSeconds: Int(heldMeeting) ?? -1, sources: [])))
       }
     }
 
-    async let first = client.send(.sessionClose(id: "1"), expecting: StatusData.self)
-    async let second = client.send(.sessionClose(id: "2"), expecting: StatusData.self)
+    async let first = client.send(.meetingEnd(meeting: "1"), expecting: StatusData.self)
+    async let second = client.send(.meetingEnd(meeting: "2"), expecting: StatusData.self)
     let (a, b) = try await (first, second)
 
     #expect(a.uptimeSeconds == 1)
@@ -127,7 +127,7 @@ struct ControlSocketClientTests {
       guard case .call(let id, .subscribe) = frame else { return }
       connection.feedLine(
         ControlResponseFrame<SnapshotData>.result(
-          id: id, SnapshotData(rev: 41, meetings: [], sources: [], sessions: [])))
+          id: id, SnapshotData(rev: 41, meetings: [], sources: [])))
     }
 
     let (snapshot, events) = try await client.subscribe(SubscribeParams())
@@ -157,7 +157,7 @@ struct ControlSocketClientTests {
       case .call(let id, .subscribe):
         connection.feedLine(
           ControlResponseFrame<SnapshotData>.result(
-            id: id, SnapshotData(rev: 0, meetings: [], sources: [], sessions: [])))
+            id: id, SnapshotData(rev: 0, meetings: [], sources: [])))
       case .call(let id, .status):
         connection.feedLine(
           ControlResponseFrame<StatusData>.result(

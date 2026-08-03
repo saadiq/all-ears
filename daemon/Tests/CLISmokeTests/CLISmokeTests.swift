@@ -603,29 +603,6 @@ struct CLISmokeTests {
     #expect(run.result.stdout.contains("\"sources\":[]"))
   }
 
-  @Test("ears session open fails clearly against a live earsd when no source is given")
-  func earsSessionOpenNoSources() throws {
-    let temp = TempDirectory()
-    let configPath = temp.write(
-      """
-      data_root = "\(temp.url.path)/data"
-
-      [earsd]
-      source = []
-      """,
-      named: "config.toml"
-    )
-
-    let run = try Self.withRunningDaemon(configPath: configPath) { socketPath in
-      try Self.runEars(
-        ["session", "open", "--slug", "standup", "--config", configPath],
-        environment: ["EARS_SOCKET_PATH": socketPath])
-    }
-    #expect(run.socketBecameReady)
-    #expect(run.result.exitCode != 0)
-    #expect(run.result.stderr.contains("at least one source is required"))
-  }
-
   @Test("ears status --verbose traces the socket resolution and request/reply exchange to stderr")
   func earsStatusVerboseTracesExchange() throws {
     let temp = TempDirectory()
@@ -654,8 +631,8 @@ struct CLISmokeTests {
     #expect(run.result.stderr.contains("ears[debug]: received result:"))
   }
 
-  @Test("ears session list returns an empty list from a fresh live earsd")
-  func earsSessionListAgainstLiveDaemon() throws {
+  @Test("ears meeting list returns an empty list from a fresh live earsd")
+  func earsMeetingListAgainstLiveDaemon() throws {
     let temp = TempDirectory()
     let configPath = temp.write(
       """
@@ -669,12 +646,12 @@ struct CLISmokeTests {
 
     let run = try Self.withRunningDaemon(configPath: configPath) { socketPath in
       try Self.runEars(
-        ["session", "list", "--config", configPath, "--json"],
+        ["meeting", "list", "--config", configPath, "--json"],
         environment: ["EARS_SOCKET_PATH": socketPath])
     }
     #expect(run.socketBecameReady)
     #expect(run.result.exitCode == 0)
-    #expect(run.result.stdout.contains("\"sessions\":[]"))
+    #expect(run.result.stdout.contains("\"meetings\":[]"))
   }
 
   @Test("ears status exits non-zero with a clear message when no daemon is reachable")

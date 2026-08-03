@@ -3,7 +3,6 @@
 ///
 /// ```jsonc
 /// {"event":"meeting","params":{"meeting":{…}},"rev":42}
-/// {"event":"session","params":{"session":{…}},"rev":43}
 /// {"event":"source","params":{"id":"mic","state":"paused"},"rev":44}
 /// {"event":"vad","params":{"source":"mic","state":"speech","t":"…"}}
 /// {"event":"segment","params":{"meeting":"…","speaker":"You","start":604.1,"end":611.9,"text":"…"}}
@@ -12,9 +11,6 @@
 public enum EarsEvent: Sendable, Hashable {
   /// A VAD state change on `source` at wall-clock instant `t` (telemetry).
   case vad(source: SourceID, state: VADState, t: Instant)
-  /// A session's lifecycle changed — carries the full summary so a
-  /// subscriber can keep its session set synced from events alone (state).
-  case session(SessionSummary)
   /// A transcribed segment republished by `transcribe --follow` (telemetry).
   case segment(SegmentPublishParams)
   /// A meeting changed — always the full object (state).
@@ -28,7 +24,6 @@ public enum EarsEvent: Sendable, Hashable {
   public var kind: EventKind {
     switch self {
     case .vad: .vad
-    case .session: .session
     case .segment: .segment
     case .meeting: .meeting
     case .source: .source
@@ -67,7 +62,7 @@ extension EventFrame: Codable {
 
   private enum ParamsKeys: String, CodingKey {
     case source, state, t, id
-    case session, speaker, start, end, text
+    case speaker, start, end, text
     case meeting
   }
 
@@ -82,9 +77,6 @@ extension EventFrame: Codable {
         source: try params.decode(SourceID.self, forKey: .source),
         state: try params.decode(VADState.self, forKey: .state),
         t: try params.decodeISO8601Instant(forKey: .t))
-    case .session:
-      let params = try container.nestedContainer(keyedBy: ParamsKeys.self, forKey: .params)
-      event = .session(try params.decode(SessionSummary.self, forKey: .session))
     case .segment:
       event = .segment(try container.decode(SegmentPublishParams.self, forKey: .params))
     case .meeting:
@@ -110,9 +102,6 @@ extension EventFrame: Codable {
       try params.encode(source, forKey: .source)
       try params.encode(state, forKey: .state)
       try params.encodeISO8601Instant(t, forKey: .t)
-    case .session(let summary):
-      var params = container.nestedContainer(keyedBy: ParamsKeys.self, forKey: .params)
-      try params.encode(summary, forKey: .session)
     case .segment(let segment):
       try container.encode(segment, forKey: .params)
     case .meeting(let meeting):

@@ -3,8 +3,7 @@ import EarsCore
 import Foundation
 
 /// Reads and writes a meeting's `meeting.toml` (schema 2), per the
-/// `meetings/<meeting-id>/meeting.toml` layout — the meeting sibling of
-/// ``SessionStore``, and thin file I/O only in exactly the same way: the
+/// `meetings/<meeting-id>/meeting.toml` layout — thin file I/O only: the
 /// field mapping is `MeetingDescriptorTOML` (`EarsConfig`), the serialization
 /// is `printableConfig(_:)`/`readConfigFileLayer(at:)`. Written atomically on
 /// every mutation so a crash never leaves a torn descriptor.

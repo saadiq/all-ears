@@ -74,7 +74,7 @@ public struct EarsDaemonConfiguration: Sendable {
   /// when it ends.
   /// Default `true`; no config key — tests inject `false` so a meeting end
   /// never spawns a real transcribe subprocess.
-  public var transcribeOnBrowserSessionClose: Bool
+  public var transcribeOnBrowserMeetingEnd: Bool
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; retained on the
   /// configuration so a future meeting-level `cleanup`/`summarize` chain can
@@ -96,7 +96,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     meetingIngestCloseGraceSeconds: Double = 120,
     browserMeetingLocalSources: [SourceID] = ["mic"],
-    transcribeOnBrowserSessionClose: Bool = true,
+    transcribeOnBrowserMeetingEnd: Bool = true,
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
     self.sources = sources
@@ -114,7 +114,7 @@ public struct EarsDaemonConfiguration: Sendable {
     self.controlWebSocket = controlWebSocket
     self.meetingIngestCloseGraceSeconds = meetingIngestCloseGraceSeconds
     self.browserMeetingLocalSources = browserMeetingLocalSources
-    self.transcribeOnBrowserSessionClose = transcribeOnBrowserSessionClose
+    self.transcribeOnBrowserMeetingEnd = transcribeOnBrowserMeetingEnd
   }
 }
 
@@ -148,7 +148,7 @@ public struct ControlWebSocketConfiguration: Sendable {
 }
 
 /// The top-level composition: wires one ``CaptureActor`` per configured
-/// source, a ``SessionRegistry``, a ``ControlServer`` serving the real control
+/// source, a ``MeetingRegistry``, a ``ControlServer`` serving the real control
 /// socket, an ``EventBus`` bridging both event producers to the socket's
 /// pub/sub fan-out, a ``PowerObserver``, and a ``ShutdownCoordinator`` into one
 /// runnable daemon — the object `earsd`'s `main` constructs and runs.
@@ -206,7 +206,7 @@ public actor EarsDaemon {
   /// loudly assert (config) on a mismatch.
   private var actorMeetings: [SourceID: String] = [:]
   /// The producer→subscriber bridge for live-feed events: every
-  /// ``CaptureActor`` and the ``SessionRegistry`` publish into it from
+  /// ``CaptureActor`` and the ``MeetingRegistry`` publish into it from
   /// construction on, and ``start()`` attaches the socket server's fan-out
   /// once the listener is bound (see ``EventBus``'s lifetime rationale).
   private let eventBus: EventBus
@@ -417,25 +417,11 @@ public actor EarsDaemon {
   /// daemon-fatal condition, unlike one source's permission denial.
   public func start() async throws {
 
-    // `knownSourceIDs` is a *live* lookup back into this actor, not a
-    // snapshot of `captureActors`: a `browser:<label>` source built by a
-    // later `ingest.open` (see `openIngestSource(label:format:)`) must be
-    // nameable by a session opened at any point afterwards. `[weak self]`
-    // because this daemon retains the registry (via `controlServer`), and a
-    // strong capture here would cycle; a deallocated daemon has no sources.
-    let sessions = SessionRegistry(
-      dataRoot: configuration.dataRoot,
-      knownSourceIDs: { [weak self] in
-        guard let self else { return [] }
-        return await self.currentSourceIDs()
-      },
-      clock: clock,
-      eventSink: { [eventBus] event in await eventBus.publish(event) })
     // The daemon-owned meeting lifecycle registry, serving the `meeting.*`
     // verbs on both control transports. Meeting end fires the meeting-level
     // auto-transcribe (`transcribe --meeting <id>`).
     let onMeetingEnded: MeetingRegistry.EndedHook?
-    if configuration.transcribeOnBrowserSessionClose {
+    if configuration.transcribeOnBrowserMeetingEnd {
       let pipeline = OnClosePipelineRunner(log: log)
       onMeetingEnded = { [weak self] meeting in
         guard meeting.trigger == .browserExtension else { return }
@@ -479,7 +465,6 @@ public actor EarsDaemon {
 
     let controlServer = ControlServer(
       captureActors: captureActors,
-      sessions: sessions,
       dataRoot: configuration.dataRoot,
       startInstant: clock.now(),
       clock: clock,
@@ -520,7 +505,7 @@ public actor EarsDaemon {
     let controlWebSocketServer = self.controlWebSocketServer
 
     // Only now does a pub/sub consumer exist: route every event published by
-    // the capture actors / session registry into the socket's fan-out.
+    // the capture actors / meeting registry into the socket's fan-out.
     // Events published before this line (during source startup) were dropped
     // by design — no subscriber could have been connected yet anyway.
     await eventBus.attach { frame in
@@ -689,10 +674,9 @@ public actor EarsDaemon {
   ///
   /// Visibility of a dynamically-created source elsewhere in the daemon:
   /// `ControlServer`'s map is kept in sync via `registerDynamicSource`
-  /// (`status`/`sources.list`), and `SessionRegistry.knownSourceIDs` is a
-  /// live lookup back into this actor (see `start()`), so a session opened
-  /// at any point can name a browser source created by a later
-  /// `ingest.open`. Known remaining gap: `PowerObserver` still holds the
+  /// (`status`/`sources.list`), and `MeetingRegistry.knownSourceIDs` is a
+  /// live lookup back into this actor (see `start()`), so a meeting can
+  /// name a browser source created by a later `ingest.open`. Known remaining gap: `PowerObserver` still holds the
   /// `captureActors` *snapshot* it was built with at `start()`, so a
   /// dynamic source created afterwards is not paused/resumed on sleep/wake
   /// — a documented follow-up (Phase 6 scoped it out as separable), not
@@ -956,8 +940,7 @@ public actor EarsDaemon {
   /// The ids of every source this daemon currently knows — the config-declared
   /// sources (whether or not they're capturing right now) plus any live
   /// `browser:<label>` sources built by `ingest.open` — read live for
-  /// ``SessionRegistry``/``MeetingRegistry``'s `knownSourceIDs` validation
-  /// seam. Config sources stay "known" while idle so a meeting can still fold
+  /// ``MeetingRegistry``'s `knownSourceIDs` validation seam. Config sources stay "known" while idle so a meeting can still fold
   /// in `local_sources` (the mic) before any actor exists.
   private func currentSourceIDs() -> Set<SourceID> {
     Set(configuredDescriptors.keys).union(captureActors.keys)

@@ -2,7 +2,7 @@ import Foundation
 
 /// ``Instant`` ↔ filename-safe ISO-8601 string conversion, shared by chunk
 /// filenames (`docs/data-formats.md`'s `2026-07-17T10-30-00Z.m4a`) and
-/// session directory names (`2026-07-17T10-30-00Z_standup`).
+/// other timestamped directory names (`2026-07-17T10-30-00Z_standup`).
 ///
 /// This is deliberately a sibling of ``IndexTimestampCodec``, not a reuse of
 /// it, because the two serialise different literal formats for different
@@ -15,7 +15,7 @@ import Foundation
 /// - `FilenameTimestampCodec` renders path components: colons are replaced
 ///   with `-` (`:` is awkward/unsafe in filenames), and whole-second
 ///   precision only, matching every literal example in `docs/data-formats.md`
-///   — chunks are fixed-duration (default 30s) so sub-second chunk/session
+///   — chunks are fixed-duration (default 30s) so sub-second chunk
 ///   start times don't occur in practice, and encoding always truncates
 ///   rather than rounding, so the same instant a caller wrote a chunk file
 ///   with is the same string it looks that file up by.
@@ -35,7 +35,7 @@ public enum FilenameTimestampCodec {
 
   /// Parses a filename-safe timestamp of the exact form ``string(for:)``
   /// produces. Returns `nil` if `string` is not exactly that form — in
-  /// particular, a session directory name's trailing `_<slug>` is not
+  /// particular, a timestamped directory name's trailing `_<slug>` is not
   /// stripped here; callers that need the timestamp prefix of a longer
   /// string are expected to slice it out first.
   ///

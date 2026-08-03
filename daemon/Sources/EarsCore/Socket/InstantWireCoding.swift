@@ -2,7 +2,7 @@
 /// types.
 ///
 /// Several socket payloads (``SourceStatus``, ``EarsEvent/vad(source:state:t:)``,
-/// ``SessionSummary``, the `mark`/`session.open` requests) each carry one or
+/// ``Meeting``, the `meeting.attendee` request) each carry one or
 /// more `Instant` fields that must render as ISO-8601 strings on the wire —
 /// `Instant`'s own `Codable` is a plain-`Double` seconds-since-epoch form by
 /// design (see that type's doc comment), so callers that need the string

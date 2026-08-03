@@ -5,8 +5,8 @@ import EarsDataStore
 import EarsIPC
 import Foundation
 
-/// Control client for `earsd`: source status, meeting and session lifecycle,
-/// and the live event feed, over the v2 control socket. See
+/// Control client for `earsd`: source status, meeting lifecycle, and the
+/// live event feed, over the v2 control socket. See
 /// `docs/specs/control-protocol.md`.
 ///
 /// The root is a pure dispatcher — it declares no flags of its own, so no
@@ -22,7 +22,7 @@ struct Ears: AsyncParsableCommand {
     abstract: "Control client for the earsd capture daemon.",
     subcommands: [
       ConfigCommand.self, StatusCommand.self, SourcesCommand.self, CaptureCommand.self,
-      MeetingCommand.self, SessionCommand.self, MarkCommand.self, WatchCommand.self,
+      MeetingCommand.self, WatchCommand.self,
       FlushCommand.self,
     ]
   )
@@ -156,7 +156,7 @@ struct ConfigPathCommand: AsyncParsableCommand {
 struct StatusCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "status",
-    abstract: "Daemon + per-source state, buffer occupancy, active meetings and sessions.")
+    abstract: "Daemon + per-source state, buffer occupancy, active meetings.")
 
   @OptionGroup var options: ClientOptions
 
@@ -366,7 +366,7 @@ struct MeetingStartCommand: AsyncParsableCommand {
 struct MeetingEndCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "end",
-    abstract: "End a meeting: closes the open mark and materializes its sessions.")
+    abstract: "End a meeting: closes the open mark and finalizes the meeting.")
 
   @OptionGroup var options: ClientOptions
   @Argument(help: "Meeting id.") var meeting: String
@@ -465,90 +465,6 @@ struct MeetingListCommand: AsyncParsableCommand {
   }
 }
 
-// MARK: - session open / close / list
-
-struct SessionCommand: AsyncParsableCommand {
-  static let configuration = CommandConfiguration(
-    commandName: "session",
-    subcommands: [SessionOpenCommand.self, SessionCloseCommand.self, SessionListCommand.self]
-  )
-}
-
-struct SessionOpenCommand: AsyncParsableCommand {
-  static let configuration = CommandConfiguration(
-    commandName: "open", abstract: "Open a session: {sources, slug, start?, vocab?} -> session id.")
-
-  @OptionGroup var options: ClientOptions
-  @Option(name: .customLong("slug"), help: "Session slug.") var slug: String
-  @Option(name: .customLong("source"), help: "Source id; repeatable.") var sources: [String] = []
-  @Option(name: .customLong("vocab"), help: "Optional per-session vocabulary path.")
-  var vocab: String?
-
-  func run() async throws {
-    let params = SessionOpenParams(
-      sources: sources.map { SourceID($0) }, slug: slug, vocab: vocab)
-    try await runSimpleCommand(
-      .sessionOpen(params), expecting: SessionOpenData.self, options: options,
-      humanSuccess: OutputFormatting.humanSessionOpen)
-  }
-}
-
-struct SessionCloseCommand: AsyncParsableCommand {
-  static let configuration = CommandConfiguration(
-    commandName: "close", abstract: "Close a session by id.")
-
-  @OptionGroup var options: ClientOptions
-  @Argument(help: "Session id.") var id: String
-
-  func run() async throws {
-    try await runSimpleCommand(
-      .sessionClose(id: id), expecting: EmptyData.self, options: options,
-      humanSuccess: OutputFormatting.humanEmpty)
-  }
-}
-
-struct SessionListCommand: AsyncParsableCommand {
-  static let configuration = CommandConfiguration(
-    commandName: "list", abstract: "Open/recent sessions.")
-
-  @OptionGroup var options: ClientOptions
-
-  func run() async throws {
-    try await runSimpleCommand(
-      .sessionList, expecting: SessionListData.self, options: options,
-      humanSuccess: OutputFormatting.humanSessionList)
-  }
-}
-
-// MARK: - mark
-
-struct MarkCommand: AsyncParsableCommand {
-  static let configuration = CommandConfiguration(
-    commandName: "mark",
-    abstract: "Retroactively define a range (e.g. \"last 30m\") as a session.")
-
-  @OptionGroup var options: ClientOptions
-  @Option(name: .customLong("last"), help: "Duration ending now, e.g. 30m, 2h.") var last: String
-  @Option(name: .customLong("slug"), help: "Session slug.") var slug: String
-  @Option(name: .customLong("source"), help: "Source id; repeatable.") var sources: [String] = []
-
-  func run() async throws {
-    let seconds: Double
-    switch DurationParsing.seconds(from: last) {
-    case .success(let value):
-      seconds = value
-    case .failure(let error):
-      ControlClientRuntime.writeStderr("error: \(error)")
-      throw ExitCode(1)
-    }
-    options.debug.log("parsed --last \(last) as \(seconds)s")
-    try await runSimpleCommand(
-      .mark(sources: sources.map { SourceID($0) }, slug: slug, range: .lastSeconds(seconds)),
-      expecting: SessionOpenData.self, options: options,
-      humanSuccess: OutputFormatting.humanSessionOpen)
-  }
-}
-
 // MARK: - watch
 
 struct WatchCommand: AsyncParsableCommand {
@@ -601,7 +517,6 @@ struct WatchCommand: AsyncParsableCommand {
       print("snapshot rev=\(snapshot.rev)")
       print(OutputFormatting.humanMeetings(snapshot.meetings))
       print(OutputFormatting.humanSourcesList(SourcesListData(sources: snapshot.sources)))
-      print(OutputFormatting.humanSessionList(SessionListData(sessions: snapshot.sessions)))
     }
 
     var eventCount = 0

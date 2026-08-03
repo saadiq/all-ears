@@ -422,7 +422,6 @@ describe("MeetingTracker (v2 signal forwarder)", () => {
       rev: 50,
       meetings: [meetingWire({ state: "paused" })],
       sources: [],
-      sessions: [],
     };
     control.startResult = meetingWire({ state: "paused" });
     tracker.onReady(snapshot, true);

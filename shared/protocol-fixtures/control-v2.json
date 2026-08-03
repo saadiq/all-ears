@@ -67,22 +67,6 @@
       }
     },
     {
-      "name": "session.open",
-      "frame": {
-        "id": 10,
-        "method": "session.open",
-        "params": { "sources": ["mic"], "slug": "standup", "trigger": "manual" }
-      }
-    },
-    {
-      "name": "mark-last-seconds",
-      "frame": {
-        "id": 11,
-        "method": "mark",
-        "params": { "sources": ["mic"], "slug": "hallway-chat", "last_seconds": 1800 }
-      }
-    },
-    {
       "name": "job.publish-running",
       "frame": {
         "id": 12,
@@ -153,8 +137,7 @@
           "meetings": [],
           "sources": [
             { "id": "mic", "state": "capturing", "codec": "aac", "bytes_used": 0 }
-          ],
-          "sessions": []
+          ]
         }
       }
     },

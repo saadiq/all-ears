@@ -83,7 +83,7 @@ let package = Package(
       ]
     ),
 
-    // Dual-rate chunk encoding, atomic writes, and index/session persistence
+    // Dual-rate chunk encoding, atomic writes, and index/meeting persistence
     // for captured audio, per `docs/architecture.md`.
     .target(
       name: "EarsDataStore",
@@ -107,7 +107,7 @@ let package = Package(
     ),
 
     // `earsd`'s real orchestration (`CaptureActor`, `ControlServer`,
-    // `SessionStore`, per `docs/architecture.md`), kept as a library --
+    // `MeetingRegistry`, per `docs/architecture.md`), kept as a library --
     // not inside the `earsd` executable target -- specifically so it is
     // `@testable import`-able without spawning a process, matching how
     // `EarsCLISupport` already keeps business logic out of the executable
@@ -256,7 +256,7 @@ let package = Package(
         "EarsCLISupport",
         // For AtomicFileIO/DataStoreLayout (writing `.clean.md` the same
         // atomic way `transcribe` writes its output) and for reading a
-        // source's/session's on-disk paths.
+        // source's/meeting's on-disk paths.
         "EarsDataStore",
         // For CommandLLMBackend, the real LLMBackend `CleanupPipeline`
         // wires in.

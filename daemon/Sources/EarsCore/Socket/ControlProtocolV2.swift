@@ -18,9 +18,8 @@ public enum Capability: String, Sendable, Hashable, Codable, CaseIterable {
   case observe
   /// The `meeting.*` lifecycle verbs.
   case meetings
-  /// Session lifecycle (`session.*`, `mark`) and the notification-only
-  /// publishes (`segment.publish`, `job.publish`).
-  case sessions
+  /// The notification-only publishes (`segment.publish`, `job.publish`).
+  case publish
   /// `sources.list` / `sources.enable` / `sources.disable`.
   case sources
   /// Runtime source mutation and capture control: `sources.add`/`remove`,
@@ -44,8 +43,6 @@ public enum ControlErrorCode: String, Sendable, Hashable, Codable, CaseIterable 
   case notPermitted = "not_permitted"
   case meetingNotFound = "meeting_not_found"
   case meetingEnded = "meeting_ended"
-  case sessionNotFound = "session_not_found"
-  case sessionAlreadyClosed = "session_already_closed"
   case sourceNotFound = "source_not_found"
   /// A failed `if_rev` compare-and-set (`meeting.rename`).
   case conflict

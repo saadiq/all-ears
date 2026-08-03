@@ -76,7 +76,7 @@ export type MainMessage =
   // Fired once per call (not per participant): the platform's own meeting id
   // resolved (Meet's spaces/<space> segment — see identity/meet-meeting-id.ts),
   // and the call ended (capture toggled off / teardown). May arrive after
-  // capture starts — sessions never gate capture.
+  // capture starts — meeting bookkeeping never gates capture.
   | { kind: "meeting-started"; platform: Platform; externalMeetingId: string }
   | { kind: "meeting-ended"; platform: Platform; externalMeetingId: string }
   // Debug logging only: a batch of the MAIN-world hook's tapped console
@@ -275,7 +275,6 @@ export interface SnapshotWire {
   rev: number;
   meetings: MeetingWire[];
   sources: Array<{ id: string; state: string }>;
-  sessions: Array<Record<string, unknown>>;
 }
 
 /** `meeting.attendee` upsert params (minus the meeting id, which the

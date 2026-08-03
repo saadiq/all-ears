@@ -13,13 +13,10 @@ public struct SnapshotData: Sendable, Hashable, Codable {
   /// Active/paused (and recently ended) meetings.
   public var meetings: [Meeting]
   public var sources: [SourceStatus]
-  /// Open sessions.
-  public var sessions: [SessionSummary]
 
-  public init(rev: Int, meetings: [Meeting], sources: [SourceStatus], sessions: [SessionSummary]) {
+  public init(rev: Int, meetings: [Meeting], sources: [SourceStatus]) {
     self.rev = rev
     self.meetings = meetings
     self.sources = sources
-    self.sessions = sessions
   }
 }

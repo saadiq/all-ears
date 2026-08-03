@@ -18,7 +18,7 @@ maintainability, never for transition safety. See [Implementation order](#implem
 One transport-agnostic contract that lets any frontend — the `ears` CLI, the browser extension,
 a future menu-bar app, the extension popup, several of them at once — drive and observe the
 daemon: sources, capture, **meetings** (start/end, pause/resume-as-marks, attendees, title),
-sessions, and the live feed. Identical frames over the Unix socket and the loopback control
+and the live feed. Identical frames over the Unix socket and the loopback control
 WebSocket; privilege differs by transport, not by dialect.
 
 ## Why v2 (design rationale)
@@ -82,7 +82,7 @@ JSON, one message per line (Unix socket, NDJSON) or per text frame (WebSocket). 
   "protocol": 2,
   "daemon": "earsd 0.9.0",
   "boot_id": "b3f1…",                    // fresh per daemon start; revs are scoped to it
-  "capabilities": ["observe", "meetings", "sessions", "sources", "admin"]
+  "capabilities": ["observe", "meetings", "publish", "sources", "admin"]
 }}
 ```
 
@@ -98,8 +98,8 @@ JSON, one message per line (Unix socket, NDJSON) or per text frame (WebSocket). 
 
 ### Meeting
 
-The daemon-owned lifecycle entity — what v1's client-side meeting tracker becomes. Layered
-*above* sessions; owning marks, roster, and title. Persisted as
+The daemon-owned lifecycle entity — what v1's client-side meeting tracker becomes. Owns
+marks, roster, and title. Persisted as
 `meetings/<uuid>/meeting.toml` (+ `events.jsonl`, see [Disk artifacts](#disk-artifacts)).
 
 ```jsonc
@@ -129,7 +129,7 @@ Semantics:
 
 - **Intervals are marks, never capture control.** Pausing a meeting closes the open interval;
   resuming opens a new one. The audio store, capture engines, and ingest streams are untouched —
-  a session/meeting is metadata over the buffer, exactly as v1 sessions are. (Source-level
+  a meeting is metadata over the buffer. (Source-level
   `capture.pause` still exists, unchanged, for actually stopping a source.)
 - **`meeting.start` is idempotent on `identity`.** Re-declaring an active meeting returns its
   current state. This is the recovery path for both service-worker eviction and daemon restart:
@@ -143,11 +143,9 @@ Semantics:
   extension's DOM layer today). `source` links an attendee to their per-participant audio source,
   which downstream feeds the transcript's speaker-name map (`[speakers]` in
   [data-formats](../data-formats.md#speaker-attribution)).
-- **On `meeting.end`,** the daemon closes the open interval, **materializes one closed
-  `SessionDescriptor` per interval** (slug = meeting UUID, trigger preserved), and **writes the
-  roster into each materialized session's `[speakers]` map** (attendee `source` →
-  `display_name`), so real names flow into transcripts with no manual step. Auto-transcription
-  triggers fire off meeting end.
+- **On `meeting.end`,** the daemon closes the open interval and finalizes the meeting record
+  (`meeting.toml` holds the intervals and roster that transcription reads directly — no
+  per-interval descriptor is materialized). Auto-transcription triggers fire off meeting end.
 
 ### Transcription output
 
@@ -158,12 +156,11 @@ skipped exactly like silence), and writes a single transcript whose frontmatter 
 is what auto-triggers and users invoke; meetings are the only transcription target. This is the one deliberate change to the pipeline
 contract; `cleanup` and `summarize` are untouched.
 
-### Sessions and sources
+### Sources
 
-Unchanged from v1 ([capture-daemon.md](capture-daemon.md), [data-formats](../data-formats.md)).
-Sessions remain the transcription work unit and the CLI's manual marking primitive
-(`session.open/close`, `mark`). Sources remain the capture unit with runtime states
-`capturing|paused|disabled|error`.
+Sources remain the capture unit with runtime states `capturing|paused|disabled|error`.
+The v1 session surface (`session.*`, `mark`) has been deleted (#44) — meetings are the
+only transcription work unit.
 
 ## Methods
 
@@ -173,19 +170,18 @@ the verb is retained.
 | Capability | Method | Params → result |
 |---|---|---|
 | — | `hello` | see [Handshake](#handshake) |
-| `observe` | `status` | → daemon + per-source state, buffer occupancy, active meetings/sessions |
+| `observe` | `status` | → daemon + per-source state, buffer occupancy, active meetings |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
 | `meetings` | `meeting.start` | `{platform?, external_id?, title?}` → full meeting object. Idempotent on identity; without identity creates a manual meeting |
-| `meetings` | `meeting.end` | `{meeting}` → final meeting object. Closes open interval, materializes sessions |
+| `meetings` | `meeting.end` | `{meeting}` → final meeting object. Closes the open interval |
 | `meetings` | `meeting.pause` | `{meeting}` → meeting. Closes open interval; no-op success if already paused |
 | `meetings` | `meeting.resume` | `{meeting}` → meeting. Opens a new interval; no-op success if active |
 | `meetings` | `meeting.rename` | `{meeting, title, if_rev?}` → meeting. `if_rev` mismatch → `conflict` |
 | `meetings` | `meeting.attendee` | `{meeting, id, display_name?, joined?, left?, source?}` → meeting. Upsert |
 | `meetings` | `meeting.list` | `{}` → active + recent meetings (closed history is read from disk, not the socket) |
 | `meetings` | `meeting.get` | `{meeting}` → meeting |
-| `sessions` | `session.open` / `session.close` / `session.list` / `session.add_source` / `mark` | as v1 |
-| `sessions` | `segment.publish` | as v1 (notification-only republish from `transcribe --follow`) |
-| `sessions` | `job.publish` | `{job, kind: "transcribe", meeting?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing |
+| `publish` | `segment.publish` | as v1 (notification-only republish from `transcribe --follow`) |
+| `publish` | `job.publish` | `{job, kind: "transcribe", meeting?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing |
 | `sources` | `sources.list` / `sources.enable` / `sources.disable` | as v1 |
 | `admin` | `sources.add` / `sources.remove` / `capture.pause` / `capture.resume` / `flush` | as v1 |
 
@@ -205,8 +201,7 @@ plus one counter.
 {"id": 1, "result": {
   "rev": 41,
   "meetings": [ {…active/paused meetings…} ],
-  "sources":  [ {"id": "mic", "state": "capturing"}, … ],
-  "sessions": [ {…open sessions…} ]
+  "sources":  [ {"id": "mic", "state": "capturing"}, … ]
 }}
 // <-- then notifications: state events revision-tagged, telemetry un-revved
 {"event": "meeting", "params": {"meeting": {…}}, "rev": 42}
@@ -220,7 +215,7 @@ Client rule: apply a state notification iff `rev == last_rev + 1`; on a gap, res
 snapshot). On reconnect: `hello` → compare `boot_id` → `subscribe`. An MV3 service worker can
 therefore be fully stateless: everything it needs to render or resume comes back in one snapshot.
 
-- **Two event classes.** *State* events (`meeting`, `session`, `source`) mutate the synced state,
+- **Two event classes.** *State* events (`meeting`, `source`) mutate the synced state,
   carry `rev`, and are **always delivered** to every subscriber — they're low-frequency, and
   unconditional delivery is what keeps `rev` contiguous. *Telemetry* events (`vad`, `segment`,
   `job`) are fire-and-forget, carry **no** `rev`, never participate in gap detection, and are the
@@ -235,8 +230,8 @@ therefore be fully stateless: everything it needs to render or resume comes back
 Stable codes; clients switch on `code`, never on `message`:
 
 `hello_required`, `unsupported_protocol`, `invalid_request`, `unknown_method`, `not_permitted`,
-`meeting_not_found`, `meeting_ended`, `session_not_found`, `session_already_closed`,
-`source_not_found`, `conflict` (failed `if_rev`), `internal`.
+`meeting_not_found`, `meeting_ended`, `source_not_found`, `conflict` (failed `if_rev`),
+`internal`.
 
 ## Transports & privilege
 
@@ -245,13 +240,13 @@ advertised in `hello.result.capabilities`:
 
 | Transport | Capabilities |
 |---|---|
-| Unix domain socket | `observe`, `meetings`, `sessions`, `sources`, `admin` (full) |
+| Unix domain socket | `observe`, `meetings`, `publish`, `sources`, `admin` (full) |
 | `ws://127.0.0.1:<port>/control` | `observe`, `meetings` |
 | `ws://127.0.0.1:<port>/ingest` | none of the above — v1 ingest contract, unchanged |
 
 - The Unix socket remains the privileged plane (filesystem-permission-gated). The control
   WebSocket keeps loopback-only binding and the fail-closed Origin allowlist, and now *also*
-  can't reach source/session/admin verbs even from an allowed origin — the extension only ever
+  can't reach source/publish/admin verbs even from an allowed origin — the extension only ever
   needed meeting verbs plus observation.
 - Residual risk (unchanged from v1): any local process can present an allowed Origin to the WS.
   A user-configured bearer token remains a documented future option; single-local-user remains

@@ -22,11 +22,10 @@ import type { PortMessage } from "../lib/protocol";
 // accepts the "pcm" port from the isolated relay, decodes each frame, and
 // hands it to the transport, which lazily ingest.opens a stream per
 // participant and streams binary PCM. The control socket
-// (ws://127.0.0.1:<port>/control) carries meeting/session commands: the
+// (ws://127.0.0.1:<port>/control) carries meeting commands: the
 // MeetingTracker resolves each started meeting to a daemon-owned meeting UUID
-// and opens/closes daemon sessions around it (including the popup's
-// pause-transcription toggle — capture is never touched, sessions are
-// metadata over the ring buffer).
+// and drives its lifecycle (including the popup's pause-transcription toggle
+// — capture is never touched, meetings are metadata over the ring buffer).
 //
 // Chrome runs this as a suspendable MV3 service worker; Firefox as a
 // persistent background page. Everything here is written for the weaker
@@ -287,7 +286,7 @@ export default defineBackground(() => {
     port.onDisconnect.addListener(() => {
       // Tab closed / navigated away mid-call: close its participants' streams
       // now rather than leaking them on earsd until the socket reconnects —
-      // and end its meetings (which closes their daemon sessions).
+      // and end its meetings.
       const orphaned = tracker.portDisconnected(portId);
       for (const id of orphaned) {
         socket.participantLeft(id);

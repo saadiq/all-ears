@@ -10,7 +10,7 @@ import Testing
 @testable import EarsDaemonKit
 
 /// Integration tests for ``EarsDaemon``, the top-level composition that wires
-/// ``CaptureActor``/``SessionRegistry``/``ControlServer``/``PowerObserver``/
+/// ``CaptureActor``/``MeetingRegistry``/``ControlServer``/``PowerObserver``/
 /// ``ShutdownCoordinator`` into one runnable daemon. Every source is backed by
 /// a ``SyntheticCaptureBackend`` (or a scripted failure) via the
 /// ``CaptureBackendFactory`` seam, so nothing here touches Core Audio or TCC.
@@ -342,58 +342,6 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
-  @Test("a subscribed client receives session open/close events end to end")
-  func endToEndSessionEvents() async throws {
-    let dataRoot = try makeDataRoot()
-    let socketPath = tempSocketPath()
-    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
-
-    let configuration = EarsDaemonConfiguration(
-      sources: [makeDescriptor(id: "mic", sourceClass: .mic)],
-      dataRoot: dataRoot,
-      socketPath: socketPath
-    )
-
-    // An empty capture script: the mic source starts and idles, so the only
-    // live-feed traffic is the session lifecycle this test drives.
-    let daemon = try EarsDaemon(
-      configuration: configuration,
-      backendFactory: { descriptor in
-        SyntheticCaptureBackend(source: descriptor.id, buffers: [])
-      },
-      clock: clock
-    )
-    try await daemon.start()
-
-    let watcher = try await ControlSocketClient.connect(toPath: socketPath)
-    _ = try await watcher.hello(client: "test/0")
-    let (_, events) = try await watcher.subscribe(SubscribeParams())
-    // The subscription is registered before the snapshot reply, but wait for
-    // the server-side count anyway so the lifecycle below can't outrun it.
-    while await daemon.subscriberCountForTesting() == 0 { await Task.yield() }
-
-    let controller = try await ControlSocketClient.connect(toPath: socketPath)
-    _ = try await controller.hello(client: "test/0")
-    let opened = try await controller.send(
-      .sessionOpen(SessionOpenParams(sources: ["mic"], slug: "standup")),
-      expecting: SessionOpenData.self)
-    _ = try await controller.send(.sessionClose(id: opened.id), expecting: EmptyData.self)
-    await controller.close()
-
-    var received: [SessionSummary] = []
-    for await frame in events {
-      guard case .session(let summary) = frame.event else { continue }
-      #expect(frame.rev != nil)  // session events are revision-tagged state
-      received.append(summary)
-      if received.count == 2 { break }
-    }
-    #expect(received.map(\.id) == [opened.id, opened.id])
-    #expect(received.map(\.state) == [.open, .closed])
-
-    await watcher.close()
-    await daemon.stop()
-  }
-
   // MARK: - Dynamic browser (ingest) sources
 
   @Test("openIngestSource builds a dynamic browser source that writes real PCM to disk")
@@ -477,16 +425,16 @@ struct EarsDaemonTests {
     // fixed-duration 30s+ in real capture, so sub-second start times never
     // collide in practice — see that type's doc comment). ChunkEncoder's
     // timeline is buffer-duration-derived, not clock-derived, so the two
-    // sessions' chunks must be pushed far enough apart in accumulated
+    // streams' chunks must be pushed far enough apart in accumulated
     // duration to land in different whole seconds and write distinct files,
-    // or the second session's flush silently overwrites the first's file.
+    // or the second stream's flush silently overwrites the first's file.
     let samples = [Float](repeating: 0.25, count: 16000)
 
     let firstStreamID = try await daemon.openIngestSource(
       label: label, format: format, meeting: identity)
     await daemon.pushIngestAudio(streamID: firstStreamID, samples: samples, sampleRate: 16000)
     await daemon.closeIngestSource(streamID: firstStreamID)
-    let bytesAfterFirstSession = try #require(await daemon.statusForTesting()[label]?.bytesUsed)
+    let bytesAfterFirstStream = try #require(await daemon.statusForTesting()[label]?.bytesUsed)
 
     // Same label, a later "join": must reuse the existing CaptureActor, not
     // build a second one — a fresh stream_id each time, same source.
@@ -495,9 +443,9 @@ struct EarsDaemonTests {
     #expect(secondStreamID != firstStreamID)
     await daemon.pushIngestAudio(streamID: secondStreamID, samples: samples, sampleRate: 16000)
     await daemon.closeIngestSource(streamID: secondStreamID)
-    let bytesAfterSecondSession = try #require(await daemon.statusForTesting()[label]?.bytesUsed)
+    let bytesAfterSecondStream = try #require(await daemon.statusForTesting()[label]?.bytesUsed)
 
-    #expect(bytesAfterSecondSession > bytesAfterFirstSession)
+    #expect(bytesAfterSecondStream > bytesAfterFirstStream)
     #expect(await daemon.statusForTesting().keys.filter { $0 == label }.count == 1)
 
     await daemon.stop()
@@ -576,55 +524,6 @@ struct EarsDaemonTests {
     #expect(field(secondFlush, "frames") == .int(3))
     #expect(field(secondFlush, "frames_lost") == nil)
 
-    await daemon.stop()
-  }
-
-  @Test(
-    "a session opened after daemon start can name a browser source created by a later ingest.open")
-  func sessionCanReferenceDynamicIngestSource() async throws {
-    let dataRoot = try makeDataRoot()
-    let socketPath = tempSocketPath()
-    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
-
-    let configuration = EarsDaemonConfiguration(
-      sources: [],
-      dataRoot: dataRoot,
-      socketPath: socketPath)
-
-    let daemon = try EarsDaemon(
-      configuration: configuration,
-      backendFactory: { descriptor in SyntheticCaptureBackend(source: descriptor.id, buffers: []) },
-      clock: clock)
-    try await daemon.start()
-
-    let client = try await ControlSocketClient.connect(toPath: socketPath)
-    _ = try await client.hello(client: "test/0")
-
-    // Before the source's first ingest.open, naming it is (correctly) an
-    // unknown-source failure.
-    await #expect(throws: WireError.self) {
-      _ = try await client.send(
-        .sessionOpen(SessionOpenParams(sources: ["browser:meet:jane-a1b2"], slug: "call")),
-        expecting: SessionOpenData.self)
-    }
-
-    // The source joins mid-call. SessionRegistry's knownSourceIDs is a live
-    // lookup into the daemon's captureActors — with the pre-fix snapshot,
-    // this session.open threw unknownSource.
-    _ = try await daemon.startMeetingForTesting(
-      MeetingStartParams(
-        platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
-    let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
-    _ = try await daemon.openIngestSource(
-      label: "browser:meet:jane-a1b2", format: format,
-      meeting: MeetingIdentity(platform: "meet", externalID: "abc"))
-
-    let opened = try await client.send(
-      .sessionOpen(SessionOpenParams(sources: ["browser:meet:jane-a1b2"], slug: "call")),
-      expecting: SessionOpenData.self)
-    #expect(opened.id.hasSuffix("_call"))
-
-    await client.close()
     await daemon.stop()
   }
 
@@ -824,7 +723,7 @@ struct EarsDaemonTests {
       socketPath: tempSocketPath(),
       // Keep meeting-end from spawning a real transcribe subprocess when the
       // first meeting is superseded — this test is about capture directories.
-      transcribeOnBrowserSessionClose: false)
+      transcribeOnBrowserMeetingEnd: false)
 
     let daemon = try EarsDaemon(
       configuration: configuration,
@@ -896,7 +795,7 @@ struct EarsDaemonTests {
       sources: [],
       dataRoot: dataRoot,
       socketPath: socketPath,
-      transcribeOnBrowserSessionClose: false)
+      transcribeOnBrowserMeetingEnd: false)
 
     let daemon = try EarsDaemon(
       configuration: configuration,
