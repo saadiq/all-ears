@@ -122,5 +122,46 @@ struct TranscribeRunSummarySmokeTests {
 
     // The premature `status=ok` this fix removes must never appear.
     #expect(!summaries.contains { ($0["status"] as? String) == "ok" })
+
+    // A batch run writes into the configured output root, so `run.start`
+    // reports it (contrast with the `--file` run below, which omits it).
+    let start = try #require(objects.first { ($0["event"] as? String) == "run.start" })
+    #expect(start["output_root"] != nil)
+  }
+
+  @Test(
+    "a --file run's run.start omits output_root — the transcript lands next to the input, never under the configured output root"
+  )
+  func fileRunStartOmitsOutputRoot() throws {
+    let temp = TempDirectory()
+    let logPath = temp.url.appendingPathComponent("transcribe.jsonl").path
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+      output_root = "\(temp.url.path)/transcripts"
+      """,
+      named: "config.toml")
+
+    // A missing input fails fast before the ASR model loads, but *after*
+    // `run.start` — exactly what this test needs to inspect its fields.
+    let missing = temp.url.appendingPathComponent("missing.m4a").path
+    let result = try Self.runTranscribe([
+      "--config", configPath, "--log-file", logPath, "--file", missing,
+    ])
+
+    #expect(result.exitCode != 0)
+
+    let objects = try logObjects(atPath: logPath)
+    let start = try #require(objects.first { ($0["event"] as? String) == "run.start" })
+    // `--file` writes beside its input; advertising the configured
+    // `output_root` here is what misled about where the transcript would land.
+    #expect(start["output_root"] == nil)
+    #expect(start["data_root"] != nil)
+
+    // The failure still reaches the structured summary as usual.
+    let summary = try #require(objects.first { ($0["event"] as? String) == "run.summary" })
+    #expect(summary["status"] as? String == "error")
+    let errorField = try #require(summary["error"] as? String)
+    #expect(errorField.contains("no such file"))
   }
 }

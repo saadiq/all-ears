@@ -155,7 +155,8 @@ enum TranscribeRuntime {
         diarizerLoadOptions: LoadOptions(
           modelIdentifier: diarizeModel.isEmpty ? nil : diarizeModel,
           compute: diarizeCompute),
-        onError: { diagnostics.recordError($0) }))
+        onError: { diagnostics.recordError($0) },
+        onSummary: { diagnostics.recordSummary($0) }))
     return diagnostics.outcome(exitCode: code)
   }
 

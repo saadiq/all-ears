@@ -19,6 +19,9 @@ import Foundation
 /// (two files two minutes apart are two recordings, not two mics of one
 /// meeting), written next to the input as `<name>.transcript.md` plus the
 /// `.transcript.json` sidecar -- or to `--out` when exactly one file is given.
+/// Because `output_root` is never consulted, a `--file` run's `run.start`
+/// record omits that field (see ``Transcribe``) and the structured
+/// `run.summary` names each transcript's real destination instead.
 enum TranscribeFilePipeline {
   struct Inputs: Sendable {
     var files: [String]
@@ -83,14 +86,36 @@ enum TranscribeFilePipeline {
       }
     }
 
+    var summaries: [FileSummary] = []
     for path in inputs.files {
-      let code = transcribeFile(
+      let (code, summary) = transcribeFile(
         path: path, out: inputs.out, targetSampleRate: targetSampleRate,
         transcriber: transcriber, modelInfo: modelInfo, diarizer: diarizer,
         fileReader: fileReader, dependencies: dependencies)
       guard code == 0 else { return code }
+      if let summary { summaries.append(summary) }
     }
+
+    // The structured `run.summary` carries where the transcripts actually
+    // landed — beside their inputs, a path `run.start`'s config fields can't
+    // name — plus the totals the batch pipeline's summary carries.
+    dependencies.onSummary?([
+      LogField("files", .int(summaries.count)),
+      LogField("segments", .int(summaries.reduce(0) { $0 + $1.segments })),
+      LogField("words", .int(summaries.reduce(0) { $0 + $1.words })),
+      LogField("speech_seconds", .double(summaries.reduce(0) { $0 + $1.speechSeconds })),
+      LogField("output", .string(summaries.map(\.outputPath).joined(separator: ", "))),
+    ])
     return 0
+  }
+
+  /// One file's headline counts and destination, folded into the structured
+  /// `run.summary` after every file has transcribed.
+  private struct FileSummary {
+    var segments: Int
+    var words: Int
+    var speechSeconds: Double
+    var outputPath: String
   }
 
   private static func transcribeFile(
@@ -102,7 +127,7 @@ enum TranscribeFilePipeline {
     diarizer: (any Diarizer)?,
     fileReader: FileAudioReader,
     dependencies: TranscribePipeline.Dependencies
-  ) -> Int32 {
+  ) -> (code: Int32, summary: FileSummary?) {
     let fileURL = URL(fileURLWithPath: path)
     // A file has no capture time; anchor its synthetic timeline at zero and
     // place every slice-relative segment back onto it against the same anchor,
@@ -115,7 +140,7 @@ enum TranscribeFilePipeline {
         fileURL: fileURL, targetSampleRate: targetSampleRate, anchor: anchor)
     } catch {
       dependencies.writeStderr("error: failed to read audio from '\(path)': \(error)")
-      return 1
+      return (1, nil)
     }
 
     let sourceID = SourceID(fileURL.deletingPathExtension().lastPathComponent)
@@ -131,7 +156,7 @@ enum TranscribeFilePipeline {
         }
       } catch {
         dependencies.writeStderr("error: transcription failed for '\(path)': \(error)")
-        return 1
+        return (1, nil)
       }
     }
 
@@ -177,14 +202,21 @@ enum TranscribeFilePipeline {
       }
     } catch {
       dependencies.writeStderr("error: failed to write transcript for '\(path)': \(error)")
-      return 1
+      return (1, nil)
     }
 
     dependencies.log(
       "run.summary: file=\(fileURL.lastPathComponent) segments=\(document.segments.count) "
         + "words=\(document.frontmatter.wordCount) speech_seconds=\(speechSeconds) "
         + "output=\(paths.markdown.path)")
-    return 0
+    return (
+      0,
+      FileSummary(
+        segments: document.segments.count,
+        words: document.frontmatter.wordCount,
+        speechSeconds: speechSeconds,
+        outputPath: paths.markdown.path)
+    )
   }
 
   /// Where a file's transcript lands: `--out` verbatim (single-file only, the
