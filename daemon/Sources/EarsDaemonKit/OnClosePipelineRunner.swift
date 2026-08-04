@@ -12,16 +12,16 @@ import Synchronization
 /// day one".
 ///
 /// stdout carries the stage's machine-readable output-path contract: a
-/// successful `transcribe`/`cleanup` run's final stdout line is the path of
-/// the file it wrote, which the stage chain feeds to the next stage.
+/// successful `transcribe`/`cleanup` run's stdout is exactly one line — the
+/// path of the file it wrote, which the stage chain feeds to the next stage.
 public struct SpawnOutcome: Sendable, Equatable {
   public var exitCode: Int32
   /// The child's stderr, verbatim. Callers bound it before logging via
-  /// ``OnClosePipelineRunner/boundedStderr(_:)`` so a runaway child can't flood
-  /// the daemon log.
+  /// ``OnClosePipelineRunner/boundedCapture(_:)`` so a runaway child can't
+  /// flood the daemon log.
   public var stderr: String
-  /// The child's stdout, verbatim (the output-path contract lives in its
-  /// final non-empty line — see ``OnClosePipelineRunner/finalStdoutLine(_:)``).
+  /// The child's stdout, verbatim (the output-path contract requires it to be
+  /// exactly one line — see ``OnClosePipelineRunner/strictResultLine(_:)``).
   public var stdout: String
 
   public init(exitCode: Int32, stderr: String = "", stdout: String = "") {
@@ -80,8 +80,12 @@ public enum OnEndStage: String, Sendable, Hashable, CaseIterable {
 ///     summarize <path> --all-presets
 ///
 /// Output paths flow between stages via the stdout contract (each
-/// path-producing stage prints its output path as its final stdout line), so
+/// path-producing stage prints its output path as its *only* stdout line), so
 /// the daemon never re-derives `transcribe`'s `OutputPathResolution` logic.
+/// The parse side is strict: anything other than exactly one line is a
+/// contract violation that fails the stage, and the parsed path must exist on
+/// disk before it feeds the next stage — a lie or stale path dies at this
+/// seam, not two stages later.
 ///
 /// The chain stops loudly on the first failure. A `cleanup`/`summarize`
 /// failure never un-succeeds the transcribe: the raw transcript is the
@@ -149,8 +153,11 @@ public struct OnClosePipelineRunner: Sendable {
   }
 
   /// Spawns a path-producing stage and returns its printed output path, or
-  /// `nil` on failure. Exit 0 with no path line is a failure too — a silent
-  /// success the chain can't build on is treated exactly like a crash, loudly.
+  /// `nil` on failure. Exit 0 with anything but exactly one path line is a
+  /// failure too — a silent or polluted success the chain can't build on is
+  /// treated exactly like a crash, loudly. So is a printed path with no file
+  /// behind it: the existence check kills a lie or stale path at this seam
+  /// instead of letting it corrupt a later stage.
   private func runPathStage(
     _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
   ) async -> String? {
@@ -158,10 +165,20 @@ public struct OnClosePipelineRunner: Sendable {
       let outcome = await spawn(
         stage, arguments: arguments, sessionID: sessionID, context: context)
     else { return nil }
-    guard let path = Self.finalStdoutLine(outcome.stdout) else {
+    let path: String
+    switch Self.strictResultLine(outcome.stdout) {
+    case .success(let line):
+      path = line
+    case .failure(let violation):
       log(
-        "\(context) on_end: \(stage.rawValue) exited 0 but printed no output path "
-          + "for session '\(sessionID)' — treating as failure (stdout contract)")
+        "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
+          + "session '\(sessionID)': \(violation.message)")
+      return nil
+    }
+    guard FileManager.default.fileExists(atPath: path) else {
+      log(
+        "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
+          + "session '\(sessionID)': printed output path '\(path)' does not exist")
       return nil
     }
     return path
@@ -188,39 +205,65 @@ public struct OnClosePipelineRunner: Sendable {
     return outcome
   }
 
-  /// The stdout output-path contract's parse side: the last non-empty,
-  /// trimmed line of a stage's captured stdout, or `nil` when there is none.
-  /// Exposed (not private) so the contract is unit-testable directly.
-  static func finalStdoutLine(_ stdout: String) -> String? {
-    let line =
+  /// A stage's breach of the stdout output-path contract. Carries a
+  /// ready-to-log description of what the stage actually printed, with the
+  /// offending stdout bounded the same way stderr is (``boundedCapture(_:)``).
+  struct ContractViolation: Error, Equatable {
+    var message: String
+  }
+
+  /// The stdout output-path contract's parse side, strict: the stage's stdout
+  /// must be exactly one non-empty trimmed line — the output path. Zero lines
+  /// or more than one is a ``ContractViolation``: pollution above (or below)
+  /// the path line must fail the stage at this seam, never parse
+  /// "successfully" via a last-line rule and corrupt silently. Exposed (not
+  /// private) so the contract is unit-testable directly.
+  static func strictResultLine(_ stdout: String) -> Result<String, ContractViolation> {
+    let lines =
       stdout
       .split(separator: "\n", omittingEmptySubsequences: true)
       .map { $0.trimmingCharacters(in: .whitespaces) }
-      .last { !$0.isEmpty }
-    return line
+      .filter { !$0.isEmpty }
+    guard lines.count == 1 else {
+      return .failure(
+        ContractViolation(
+          message:
+            "stdout contract violated: expected exactly one line, got \(lines.count); "
+            + stdoutNote(stdout)))
+    }
+    return .success(lines[0])
   }
 
-  /// The largest slice of a child's stderr the daemon log carries, in bytes:
-  /// enough for a real Swift error and some context, bounded so a runaway child
-  /// can't flood the log (issue #21's "captured stderr (bounded)").
-  static let maxStderrLogBytes = 4096
+  /// The largest slice of a child's captured output (stderr or stdout) the
+  /// daemon log carries, in bytes: enough for a real Swift error and some
+  /// context, bounded so a runaway child can't flood the log (issue #21's
+  /// "captured stderr (bounded)").
+  static let maxCaptureLogBytes = 4096
 
   /// A one-line, log-safe rendering of a child's stderr for a failure notice:
   /// `"no stderr captured"` when empty, else `stderr: <text>` with the text
-  /// trimmed and bounded to ``maxStderrLogBytes`` (keeping the *tail* — the
+  /// trimmed and bounded to ``maxCaptureLogBytes`` (keeping the *tail* — the
   /// `error: …` line a failing stage writes last).
   static func stderrNote(_ stderr: String) -> String {
-    let bounded = boundedStderr(stderr)
+    let bounded = boundedCapture(stderr)
     return bounded.isEmpty ? "no stderr captured" : "stderr: \(bounded)"
   }
 
-  /// Trims and length-bounds captured stderr for logging, keeping the tail and
-  /// marking any elision. Exposed (not private) so the failure-logging contract
-  /// is unit-testable without spawning a real child.
-  static func boundedStderr(_ stderr: String) -> String {
-    let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.utf8.count > maxStderrLogBytes else { return trimmed }
-    let tail = String(decoding: trimmed.utf8.suffix(maxStderrLogBytes), as: UTF8.self)
+  /// ``stderrNote(_:)``'s stdout twin, for contract-violation notices:
+  /// `"no stdout captured"` when empty, else `stdout: <text>`, bounded the
+  /// same way.
+  static func stdoutNote(_ stdout: String) -> String {
+    let bounded = boundedCapture(stdout)
+    return bounded.isEmpty ? "no stdout captured" : "stdout: \(bounded)"
+  }
+
+  /// Trims and length-bounds a captured child output for logging, keeping the
+  /// tail and marking any elision. Exposed (not private) so the
+  /// failure-logging contract is unit-testable without spawning a real child.
+  static func boundedCapture(_ captured: String) -> String {
+    let trimmed = captured.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.utf8.count > maxCaptureLogBytes else { return trimmed }
+    let tail = String(decoding: trimmed.utf8.suffix(maxCaptureLogBytes), as: UTF8.self)
     return "…(truncated) " + tail
   }
 
