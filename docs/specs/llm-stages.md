@@ -64,17 +64,20 @@ The daemon runs this chain itself when a browser session ends (`[earsd.sessions]
 
 ### Output-path contract (stdout)
 
-The daemon chains stages without re-deriving each stage's output-path logic: a path-producing stage prints its primary output path as the **final non-empty line of stdout** on success. `transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path; `summarize` writes one file per preset and prints no path (its result surface is the `--json` envelope below). Batch stdout carries nothing else, so the contract is also script-friendly: `` cleanup "$(transcribe --session "$SESSION_ID")" ``. A stage that exits 0 without printing a path is treated by the daemon as a failure.
+Two result surfaces share one rule: **empty stdout means no result.** Plain mode is the frozen surface for humans and `$(…)` scripts; the `--json` envelope is the versioned surface for machines. The daemon's session-end chain speaks only the envelope — it spawns every stage with `--json` (see [capture-daemon](capture-daemon.md#session-end-pipeline)).
 
-**The promise, frozen (issue #62):** On exit 0 in default mode, stdout is exactly one line: the absolute path of the primary output. All other output goes to stderr. This will not change.
+**The plain promise, frozen (issue #62):** On exit 0 in default mode, stdout is exactly one line: the absolute path of the primary output. All other output goes to stderr. This will not change.
 
-Failure ⇒ empty stdout: a run that exits non-zero writes **nothing** to stdout, in default and `--verbose` mode alike. `--verbose` (shorthand for `--log-level debug`) only widens what reaches stderr and the log file — it never changes stdout. Enforced structurally by `EarsCLISupport.ResultChannel`'s fd swap, stated verbatim in each stage binary's `--help`, and pinned end to end by `Tests/CLISmokeTests/PlainModeContractSmokeTests.swift`.
+`transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path. `summarize` writes one file per preset and currently prints no path — its result surface is the `--json` envelope below; a plain result line for the single-preset case is deferred until something needs it. Script use: `` cleanup "$(transcribe --session "$SESSION_ID")" ``.
 
-Rejected alternatives, recorded so they stay rejected:
+Failure ⇒ empty stdout: a run that exits non-zero writes **nothing** to stdout, in default and `--verbose` mode alike. `--verbose` (shorthand for `--log-level debug`) only widens what reaches stderr and the log file — it never changes stdout. Enforced structurally by `EarsCLISupport.ResultChannel`'s fd swap (the process's real stdout descriptor is reserved for the result; every other write in the process lands on stderr — `--follow`'s segment stream routes through the saved descriptor deliberately), stated verbatim in each stage binary's `--help` (`EarsCLISupport.PlainModeContract`), and pinned end to end by `Tests/CLISmokeTests/PlainModeContractSmokeTests.swift`.
 
-- **No second stdout line, ever.** It would break every `$(…)` consumer and the daemon's strict one-line parse in the same release.
-- **No TTY detection for the data format.** Stdout is the same one line piped or interactive; a format that changes shape depending on who is watching cannot be scripted against.
-- **No `key=value` mode.** Anything richer than the one path line is the `--json` surface's job, on its own flag — never a mutation of plain mode.
+Rejected designs, recorded so they stay rejected:
+
+- **No last-line parsing.** "The path is the final stdout line" (or the last non-empty one) turns any stray print into silent corruption — the consumer reads a plausible wrong string instead of failing.
+- **No second stdout line, ever.** It would break every `$(…)` consumer and any strict one-line parse in the same release.
+- **No TTY detection for the data format.** `cmd > file` must equal what the terminal showed; a shape that depends on who is watching cannot be scripted against.
+- **No `key=value` mode.** Anything richer than the one path line needs escaping and multiline-injection gymnastics on stdout — that is the `--json` surface's job, on its own flag, never a mutation of plain mode.
 
 ### Result envelopes (`--json`)
 
@@ -88,10 +91,35 @@ On `transcribe`, `--json` reuses the existing flag: under `--follow` it still me
 {"schema":"allears.transcribe/v1","ok":true,"output":"/abs/….transcript.md","outputs":["/abs/….transcript.md","/abs/….transcript.json"],"warnings":[],"stats":{"duration_s":412,"segments":87,"words":1042}}
 ```
 
-**Failure (non-zero exit):** stdout stays **byte-empty** — "empty stdout ⇒ no result" holds in both modes — and the **last line of stderr** is an error envelope with the same `schema` field, `ok: false`, `exit_class` (the exit-code taxonomy label from issue #61 — `EarsCLISupport.ExitClass`), and `message`. Usage rejections that stop the invocation before a run starts (ArgumentParser validation) keep their plain usage error: stdout is still empty, but no envelope is emitted for a run that never began.
+**Failure (non-zero exit):** stdout stays **byte-empty** — "empty stdout ⇒ no result" holds in both modes — and the **last line of stderr** is an error envelope with the same `schema` field, `ok: false`, `exit_class` (the taxonomy label below), and `message`. Usage rejections that stop the invocation before a run starts (ArgumentParser validation) keep their plain usage error: stdout is still empty, but no envelope is emitted for a run that never began.
 
 **`output` semantics:** present when exactly one primary artifact exists — `transcribe`: the `.transcript.md`; `cleanup`: the `.clean.md`; `summarize` single preset: that summary file. A multi-preset `summarize` run has no single primary artifact, so `output` is absent and `outputs[]` carries per-preset entries `{preset, path, ok}` — which also makes partial success ("2 of 3 presets") expressible: presets run independently, each outcome is reported, and the exit is 0 only when all presets succeeded (a failed run's stderr envelope still carries `outputs[]`, naming what was written).
 
-**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`; `summarize`: `presets`). Additive keys are free later; the schemas deliberately leave `additionalProperties` permissive, so consumers must ignore unknown keys.
+**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`; `summarize`: `presets`).
 
-The cross-repo contract is one JSON Schema per stage checked into `shared/stage-envelopes/<tool>.v1.schema.json` (the same home pattern as `shared/protocol-fixtures/`), with example fixtures beside them that the Swift suite decodes and round-trips. The envelope structs are `Codable` types owned by each tool; the daemon gets its own decoder in the consumer issue. Pinned end to end by `Tests/CLISmokeTests/JSONEnvelopeContractSmokeTests.swift` across every stage, success and failure, with and without `--verbose`.
+**Versioning.** The `schema` field, `allears.<tool>/v<major>`, carries only the major:
+
+- Additive keys are non-breaking. The schemas deliberately leave `additionalProperties` permissive, so consumers must ignore unknown keys — that *is* the minor-version policy, and the daemon's decoder ignores them by construction.
+- Removing or renaming a key, or changing a key's meaning, bumps the major in `schema`.
+- A consumer fails a stage only on a major mismatch, naming both identifiers — expected and received — so the log states exactly which side moved.
+
+The cross-repo contract is one JSON Schema per stage checked into `shared/stage-envelopes/<tool>.v1.schema.json` (the same home pattern as `shared/protocol-fixtures/`), with example fixtures beside them that the Swift suite decodes and round-trips (`StageEnvelopeFixtureTests`). The envelope structs are `Codable` types owned by each tool; the daemon decodes with its own `EarsDaemonKit.StageResultEnvelope`. Pinned end to end by `Tests/CLISmokeTests/JSONEnvelopeContractSmokeTests.swift` across every stage, success and failure, with and without `--verbose`.
+
+### Exit codes
+
+One taxonomy across all three stages (`EarsCLISupport.ExitClass`, issue #61), documented in each binary's `--help` epilogue. Codes carry the failure's *class*, never data states; anything an operator needs beyond the class goes to stderr and the structured log. The daemon logs the class label next to the raw code (`cleanup failed (exit 5, retryable-upstream)`) and labels any code outside the taxonomy `unclassified` rather than guessing.
+
+| Code | Class | Meaning |
+|-----:|-------|---------|
+| 0 | `success` | The run succeeded. |
+| 3 | `input-missing` | The named input doesn't resolve: unknown `--session` id, unreadable or unparseable input file. |
+| 4 | `stage-failed` | The stage itself failed: model error, output write failure, unusable config, every cleanup candidate rejected. |
+| 5 | `retryable-upstream` | A retry-worthy upstream outage: LLM command timeout or network-shaped failure. |
+| 64 | `usage` | Invalid arguments or flag combinations — swift-argument-parser's default (`EX_USAGE`), adopted rather than overridden so hand-rolled guards and ArgumentParser's own validation exits agree on one code. |
+
+### Held in reserve (phase 3)
+
+Two channels are designed but deliberately unbuilt, with their trigger conditions recorded so they are recognised when they arrive:
+
+- **`--out-manifest PATH`** — the same result envelope written to a file (atomic temp + rename), written even on failure with `ok: false`. Build it when crash-recoverable state needs to *drive daemon behavior* — a retry policy resuming from a stage that died mid-run, or per-preset partial success steering a re-run — rather than be logged. Until then, the stdout envelope plus the exit code carry everything the daemon acts on.
+- **JSONL progress events on stderr** — deferred until something consumes progress. The extension badge, the one live consumer today, already gets progress via the daemon's `job.publish` feed.
