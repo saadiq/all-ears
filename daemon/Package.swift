@@ -325,8 +325,14 @@ let package = Package(
       // (`PlainModeContractSmokeTests`) `SessionStore.write`, so its
       // transcribe success fixture is a real schema-3 `session.toml` written
       // by the same code the daemon uses, never a hand-rolled lookalike.
+      // `EarsIPC` gives the on-end chain smoke test (`OnEndChainSmokeTests`)
+      // a real `ControlSocketClient`: the daemon's session-end hook only
+      // fires for browser-triggered sessions, and `ears` deliberately has no
+      // flag for that trigger, so the test drives `session.start` over the
+      // live socket itself.
       dependencies: [
-        "EarsCore", "EarsDataStore", "earsd", "ears", "transcribe", "cleanup", "summarize",
+        "EarsCore", "EarsDataStore", "EarsIPC", "earsd", "ears", "transcribe", "cleanup",
+        "summarize",
       ]
     ),
     .testTarget(
