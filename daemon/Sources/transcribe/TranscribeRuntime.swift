@@ -95,6 +95,10 @@ enum TranscribeRuntime {
       spans: spans)
     // The result-line contract's only route to the real stdout.
     dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+    // Test-only: `ALLEARS_TRANSCRIBE_BACKEND=null` swaps the ASR backend for
+    // a NullTranscriber so smoke tests can drive a real successful run — see
+    // NullTranscriberOverride.swift. A no-op unless a harness set the var.
+    applyNullTranscriberOverrideIfRequested(&dependencies)
 
     let code = await TranscribePipeline.run(
       inputs: inputs,
