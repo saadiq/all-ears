@@ -24,6 +24,11 @@ enum TranscribeRuntime {
     diagnostics: RunDiagnostics = RunDiagnostics(),
     spans: StageSpans? = nil
   ) async -> RunOutcome {
+    // Guard the stdout path contract before anything else runs: after this,
+    // only `resultChannel.emitResult` can reach the real stdout — a stray
+    // `print` (ours or a dependency's) lands on stderr instead of forging a
+    // plausible-looking result line.
+    let resultChannel = ResultChannel.activate()
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
     let loadInputs: ConfigLoadInputs
@@ -76,23 +81,27 @@ enum TranscribeRuntime {
       configuredSocketPath.isEmpty
       ? DefaultSocketPath.resolve(dataRoot: dataRootPath) : configuredSocketPath
 
+    var dependencies = TranscribePipeline.Dependencies.production(
+      loadOptions: LoadOptions(
+        modelIdentifier: modelIdentifier.isEmpty ? nil : modelIdentifier,
+        compute: compute),
+      diarizeBackendName: diarizeBackend,
+      diarizerLoadOptions: LoadOptions(
+        modelIdentifier: diarizeModel.isEmpty ? nil : diarizeModel,
+        compute: diarizeCompute),
+      onError: { diagnostics.recordError($0) },
+      onSummary: { diagnostics.recordSummary($0) },
+      spans: spans)
+    // The result-line contract's only route to the real stdout.
+    dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+
     let code = await TranscribePipeline.run(
       inputs: inputs,
       dataRoot: URL(fileURLWithPath: dataRootPath),
       outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath),
       backendName: backendName,
       socketPath: socketPath,
-      dependencies: .production(
-        loadOptions: LoadOptions(
-          modelIdentifier: modelIdentifier.isEmpty ? nil : modelIdentifier,
-          compute: compute),
-        diarizeBackendName: diarizeBackend,
-        diarizerLoadOptions: LoadOptions(
-          modelIdentifier: diarizeModel.isEmpty ? nil : diarizeModel,
-          compute: diarizeCompute),
-        onError: { diagnostics.recordError($0) },
-        onSummary: { diagnostics.recordSummary($0) },
-        spans: spans)
+      dependencies: dependencies
     )
     return diagnostics.outcome(exitCode: code)
   }
@@ -106,6 +115,10 @@ enum TranscribeRuntime {
     arguments: EarsCLI.Arguments, inputs: TranscribeFilePipeline.Inputs,
     diagnostics: RunDiagnostics = RunDiagnostics()
   ) async -> RunOutcome {
+    // A `--file` run emits no result line, but batch stdout still carries
+    // nothing else — activate the channel so a stray dependency `print`
+    // lands on stderr instead of stdout.
+    _ = ResultChannel.activate()
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
     let loadInputs: ConfigLoadInputs

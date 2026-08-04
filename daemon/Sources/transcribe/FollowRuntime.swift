@@ -23,6 +23,11 @@ enum FollowRuntime {
     arguments: EarsCLI.Arguments, inputs: TranscribeFollowPipeline.Inputs,
     diagnostics: RunDiagnostics = RunDiagnostics()
   ) async -> RunOutcome {
+    // Follow keeps its streaming stdout contract (one finalised-segment line
+    // per commit), but routes it through the saved real-stdout descriptor:
+    // after activation a stray `print` (ours or FluidAudio's) lands on
+    // stderr instead of interleaving with the segment stream.
+    let resultChannel = ResultChannel.activate()
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
     let loadInputs: ConfigLoadInputs
@@ -91,6 +96,7 @@ enum FollowRuntime {
           compute: compute),
         publisher: publisher,
         isStopped: { stopRequested.withLock { $0 } },
+        emitLine: { line in resultChannel.emitResult(line) },
         onError: { diagnostics.recordError($0) })
     )
     await publisher.shutdown()

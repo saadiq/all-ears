@@ -114,6 +114,47 @@ struct CleanupPipelineTests {
         == directory.appendingPathComponent("standup.clean.md").path)
   }
 
+  @Test("the emitted stdout path is absolute and standardized, not --out's raw spelling")
+  func stdoutPathIsAbsoluteAndStandardized() async throws {
+    let directory = Self.makeTempDirectory("stdout-path")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 0, end: 3, text: "hello there how are you"))
+      ])
+
+    // The relative-spelling case (a relative `--out`): Foundation resolves a
+    // relative `fileURLWithPath` against cwd at URL creation, so what actually
+    // survives to the emitter is the un-normalized dot component — the daemon
+    // parsing the emitted line must get the standardized absolute path, not
+    // the argument's raw spelling.
+    let out = directory.path + "/./cleaned/standup.clean.md"
+    let stdoutLines = Mutex<[String]>([])
+    let (deps, _) = Self.dependencies(
+      llmResults: [
+        .success(LLMCompletionResult(text: "Hello there, how are you?"))
+      ],
+      writeStdout: { line in stdoutLines.withLock { $0.append(line) } })
+
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: out, systemPrompt: nil, vocabulary: []),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let emitted = try #require(stdoutLines.withLock { $0 }.last)
+    #expect(emitted.hasPrefix("/"))
+    #expect(!emitted.contains("/./"))
+    #expect(
+      emitted
+        == directory.appendingPathComponent("cleaned")
+        .appendingPathComponent("standup.clean.md").path)
+  }
+
   @Test("falls back to the original text when the LLM candidate fails validation")
   func fallsBackOnInvalidCandidate() async throws {
     let directory = Self.makeTempDirectory("fallback")
