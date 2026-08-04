@@ -23,9 +23,10 @@ import EarsCLISupport
 struct Transcribe: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "transcribe",
-    // The shared exit-code taxonomy (issue #61), documented where an
-    // operator will actually look for it.
-    discussion: ExitClass.helpEpilogue
+    // The frozen plain-mode stdout contract (issue #62) and the shared
+    // exit-code taxonomy (issue #61), documented where an operator will
+    // actually look for them.
+    discussion: PlainModeContract.helpEpilogue + "\n\n" + ExitClass.helpEpilogue
   )
 
   @Option(name: .customLong("config"), help: "Path to a TOML config file.")
@@ -48,6 +49,13 @@ struct Transcribe: AsyncParsableCommand {
 
   @Option(name: .customLong("log-file"), help: "Override the JSON Lines log file path.")
   var logFile: String?
+
+  @Flag(
+    name: [.customShort("v"), .customLong("verbose")],
+    help:
+      "Verbose diagnostics (shorthand for --log-level debug). Diagnostics go to stderr only; stdout keeps the plain-mode contract."
+  )
+  var verbose = false
 
   @Option(
     name: .customLong("set"),
@@ -105,7 +113,11 @@ struct Transcribe: AsyncParsableCommand {
       config: config,
       printConfig: printConfig,
       configPath: configPath,
-      logLevel: logLevel,
+      // `--verbose` is shorthand for `--log-level debug`; an explicit
+      // `--log-level` wins so the two spellings never fight. It only widens
+      // what reaches stderr and the log file — stdout is untouched, per the
+      // plain-mode contract (issue #62).
+      logLevel: logLevel ?? (verbose ? "debug" : nil),
       logFile: logFile,
       set: set,
       setString: setString

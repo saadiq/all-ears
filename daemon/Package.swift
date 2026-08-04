@@ -247,6 +247,12 @@ let package = Package(
         // (SegmentEventPublisher), best-effort per the notification-only
         // rule in docs/specs/transcribe.md.
         "EarsIPC",
+        // For NullTranscriberOverride's `ALLEARS_TRANSCRIBE_BACKEND=null`
+        // test-only escape hatch (`NullTranscriber`) — gated behind an env
+        // var `transcribe`'s own normal invocation never sets, mirroring
+        // `earsd`'s `RealCaptureBackendFactory` seam and its rationale for
+        // depending on this plain (non-test) library target.
+        "EarsCoreTestSupport",
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
       ]
     ),
@@ -315,7 +321,13 @@ let package = Package(
       // `cleanup`/`summarize` so the shared exit-code taxonomy (issue #61) is
       // asserted against every real stage binary the daemon spawns — see
       // `ExitTaxonomySmokeTests`.
-      dependencies: ["EarsCore", "earsd", "ears", "transcribe", "cleanup", "summarize"]
+      // `EarsDataStore` gives the plain-mode contract harness
+      // (`PlainModeContractSmokeTests`) `SessionStore.write`, so its
+      // transcribe success fixture is a real schema-3 `session.toml` written
+      // by the same code the daemon uses, never a hand-rolled lookalike.
+      dependencies: [
+        "EarsCore", "EarsDataStore", "earsd", "ears", "transcribe", "cleanup", "summarize",
+      ]
     ),
     .testTarget(
       name: "EarsIPCTests",

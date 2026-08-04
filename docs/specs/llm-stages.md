@@ -64,4 +64,14 @@ The daemon runs this chain itself when a browser session ends (`[earsd.sessions]
 
 ### Output-path contract (stdout)
 
-The daemon chains stages without re-deriving each stage's output-path logic: a path-producing stage prints its primary output path as the **final non-empty line of stdout** on success. `transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path; `summarize` writes one file per preset and prints no path. Batch stdout carries nothing else, so the contract is also script-friendly: `` cleanup "$(transcribe --session "$SESSION_ID")" ``. A stage that exits 0 without printing a path is treated by the daemon as a failure.
+The daemon chains stages without re-deriving each stage's output-path logic: a path-producing stage prints its primary output path as the **final non-empty line of stdout** on success. `transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path; `summarize` writes one file per preset and prints no path (its result surface is deferred to the `--json` issue). Batch stdout carries nothing else, so the contract is also script-friendly: `` cleanup "$(transcribe --session "$SESSION_ID")" ``. A stage that exits 0 without printing a path is treated by the daemon as a failure.
+
+**The promise, frozen (issue #62):** On exit 0 in default mode, stdout is exactly one line: the absolute path of the primary output. All other output goes to stderr. This will not change.
+
+Failure ⇒ empty stdout: a run that exits non-zero writes **nothing** to stdout, in default and `--verbose` mode alike. `--verbose` (shorthand for `--log-level debug`) only widens what reaches stderr and the log file — it never changes stdout. Enforced structurally by `EarsCLISupport.ResultChannel`'s fd swap, stated verbatim in each stage binary's `--help`, and pinned end to end by `Tests/CLISmokeTests/PlainModeContractSmokeTests.swift`.
+
+Rejected alternatives, recorded so they stay rejected:
+
+- **No second stdout line, ever.** It would break every `$(…)` consumer and the daemon's strict one-line parse in the same release.
+- **No TTY detection for the data format.** Stdout is the same one line piped or interactive; a format that changes shape depending on who is watching cannot be scripted against.
+- **No `key=value` mode.** Anything richer than the one path line is the `--json` surface's job, on its own flag — never a mutation of plain mode.
