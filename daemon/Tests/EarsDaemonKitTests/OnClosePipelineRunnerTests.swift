@@ -150,7 +150,8 @@ struct OnClosePipelineRunnerTests {
 
     #expect(!transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe"])
-    let failure = try #require(logs.snapshot().first { $0.contains("transcribe failed (exit 1)") })
+    let failure = try #require(
+      logs.snapshot().first { $0.contains("transcribe failed (exit 1, unclassified)") })
     // Keyed by session id, and carries the child's real error message.
     #expect(failure.contains("session 'b7acc61f'"))
     #expect(failure.contains("stderr: error: unknown source 'mic'"))
@@ -235,8 +236,46 @@ struct OnClosePipelineRunnerTests {
 
     #expect(transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe", "cleanup"])
-    let failure = try #require(logs.snapshot().first { $0.contains("cleanup failed (exit 1)") })
+    let failure = try #require(
+      logs.snapshot().first { $0.contains("cleanup failed (exit 1, unclassified)") })
     #expect(failure.contains("stderr: error: no [llm] command resolved"))
+  }
+
+  @Test("a failure log line names the exit class, so retry-worthiness is readable from the log")
+  func failureLogCarriesExitClassLabel() async throws {
+    let directory = try Self.makeTempDirectory("exit-class")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      Self.pathOutcome(transcript),
+      SpawnOutcome(exitCode: 5, stderr: "error: LLM backend call timed out"),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    _ = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe, .cleanup], context: "session-end")
+
+    // The exit-code taxonomy's class label (issue #61) rides in the failure
+    // line, so a future retry policy — and a human reading the log — can tell
+    // a retryable upstream outage from a hard stage failure at a glance.
+    #expect(
+      logs.snapshot().contains { $0.contains("cleanup failed (exit 5, retryable-upstream)") },
+      "expected the failure line to carry the class label; got: \(logs.snapshot())")
+  }
+
+  @Test("an exit code outside the taxonomy is logged as unclassified")
+  func unknownExitCodeLogsUnclassified() async throws {
+    let logs = LogCollector()
+    let runner = ScriptedRunner([SpawnOutcome(exitCode: 87, stderr: "error: kaboom")])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    _ = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(
+      logs.snapshot().contains { $0.contains("transcribe failed (exit 87, unclassified)") },
+      "expected an unknown code to be labeled unclassified; got: \(logs.snapshot())")
   }
 
   @Test("a failed summarize is logged but the chain result stays true")
@@ -260,7 +299,7 @@ struct OnClosePipelineRunnerTests {
     // A failure with blank stderr says so rather than logging an empty tail.
     #expect(
       logs.snapshot().contains {
-        $0.contains("summarize failed (exit 2)") && $0.contains("no stderr captured")
+        $0.contains("summarize failed (exit 2, unclassified)") && $0.contains("no stderr captured")
       })
   }
 

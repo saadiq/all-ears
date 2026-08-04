@@ -147,6 +147,9 @@ public enum EarsCLI {
       return 0
     }
 
+    // Failures below exit with their taxonomy class (issue #61): a malformed
+    // `--set` is a usage error, an unloadable/invalid config file is an
+    // unusable-config stage failure.
     let inputs: ConfigLoadInputs
     switch resolveLoadInputs(
       arguments, environment: environment, homeDirectory: homeDirectory)
@@ -155,7 +158,7 @@ public enum EarsCLI {
       inputs = value
     case .failure(let error):
       writeStderr(error.message)
-      return 1
+      return ExitClass.usage.code
     }
 
     let loaded: LoadedConfig
@@ -164,7 +167,7 @@ public enum EarsCLI {
       loaded = value
     case .failure(let error):
       writeStderr(describe(error))
-      return 1
+      return ExitClass.stageFailed.code
     }
 
     if arguments.printConfig {
@@ -177,7 +180,7 @@ public enum EarsCLI {
         tool: tool, version: version, loaded: loaded, usesOutputRoot: usesOutputRoot, work: work)
     } catch {
       writeStderr("error: \(tool) failed to start: \(error)")
-      return 1
+      return ExitClass.stageFailed.code
     }
   }
 

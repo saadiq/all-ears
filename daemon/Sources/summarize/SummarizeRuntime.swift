@@ -39,7 +39,7 @@ enum SummarizeRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
-      return RunOutcome(exitCode: 1, error: error.message)
+      return RunOutcome(class: .usage, error: error.message)
     }
 
     let loaded: LoadedConfig
@@ -52,7 +52,8 @@ enum SummarizeRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      // Unusable config is a stage failure (exit-code taxonomy, issue #61).
+      return RunOutcome(class: .stageFailed, error: message)
     }
 
     let root = loaded.value
@@ -67,7 +68,7 @@ enum SummarizeRuntime {
     guard !command.isEmpty else {
       let message = "error: no [llm] command resolved (backend=\(backend), model='\(model)')"
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      return RunOutcome(class: .stageFailed, error: message)
     }
     let llmBackend = CommandLLMBackend(
       info: LLMBackendInfo(name: backend, model: model.isEmpty ? nil : model), command: command)
@@ -80,19 +81,21 @@ enum SummarizeRuntime {
       selected = configuredPresets.filter { inputs.presetNames.contains($0.name) }
       let missing = Set(inputs.presetNames).subtracting(selected.map(\.name))
       guard missing.isEmpty else {
+        // Like an unknown --session id: the named input doesn't resolve.
         let message = "error: unknown preset(s): \(missing.sorted().joined(separator: ", "))"
         writeStderr(message)
-        return RunOutcome(exitCode: 1, error: message)
+        return RunOutcome(class: .inputMissing, error: message)
       }
     } else {
       let message = "error: at least one --preset is required (or pass --all-presets)"
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      return RunOutcome(class: .usage, error: message)
     }
     guard !selected.isEmpty else {
+      // `--all-presets` against a config with no presets: unusable config.
       let message = "error: no [[summarize.preset]] entries are configured"
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      return RunOutcome(class: .stageFailed, error: message)
     }
 
     let presets = selected.map { preset in

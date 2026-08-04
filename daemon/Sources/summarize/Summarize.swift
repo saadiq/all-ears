@@ -15,7 +15,10 @@ import Foundation
 @main
 struct Summarize: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "summarize"
+    commandName: "summarize",
+    // The shared exit-code taxonomy (issue #61), documented where an
+    // operator will actually look for it.
+    discussion: ExitClass.helpEpilogue
   )
 
   // Optional, not required: `--print-config`/`--config-path` must work with
@@ -98,9 +101,12 @@ struct Summarize: AsyncParsableCommand {
       tool: "summarize", version: "0.1.0", arguments: arguments
     ) { _ in
       guard !transcripts.isEmpty else {
+        // A usage error, but checked here (not by ArgumentParser) because
+        // `--print-config`/`--config-path` must work with no positional at
+        // all — so it adopts the same EX_USAGE code ArgumentParser exits with.
         let message = "error: at least one transcript path is required"
         FileHandle.standardError.write(Data((message + "\n").utf8))
-        return RunOutcome(exitCode: 1, error: message)
+        return RunOutcome(class: .usage, error: message)
       }
       return await SummarizeRuntime.run(
         arguments: arguments,

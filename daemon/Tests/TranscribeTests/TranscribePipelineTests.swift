@@ -101,7 +101,7 @@ struct TranscribePipelineTests {
       )
     )
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 64)
   }
 
   @Test("an unknown source is a precise, non-zero error, and never invokes the transcriber")
@@ -126,7 +126,7 @@ struct TranscribePipelineTests {
       )
     )
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
   }
 
   @Test("an empty --last range is a precise, non-zero error")
@@ -152,7 +152,7 @@ struct TranscribePipelineTests {
       )
     )
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 64)
   }
 
   @Test("a single source's speech window is read, transcribed, and written to disk")

@@ -1,3 +1,4 @@
+import EarsCLISupport
 import EarsCore
 import Foundation
 import Synchronization
@@ -196,8 +197,14 @@ public struct OnClosePipelineRunner: Sendable {
         + "for session '\(sessionID)'")
     let outcome = await runProcess(stage.rawValue, arguments)
     guard outcome.exitCode == 0 else {
+      // The exit-code taxonomy's class label (`EarsCLISupport.ExitClass`,
+      // issue #61) rides in the failure line — e.g. `(exit 5,
+      // retryable-upstream)` — so a future retry policy is a function of the
+      // code with no re-plumbing, and a code outside the taxonomy (a crash
+      // signal, a stray bare 1) is honestly `unclassified`.
       log(
-        "\(context) on_end: \(stage.rawValue) failed (exit \(outcome.exitCode)) for "
+        "\(context) on_end: \(stage.rawValue) failed "
+          + "(exit \(outcome.exitCode), \(ExitClass.label(forCode: outcome.exitCode))) for "
           + "session '\(sessionID)'; \(Self.stderrNote(outcome.stderr))")
       return nil
     }

@@ -1,3 +1,4 @@
+import EarsCLISupport
 import EarsCore
 import EarsDataStore
 import EarsLLMKit
@@ -56,13 +57,14 @@ enum SummarizePipeline {
   }
 
   static func run(inputs: Inputs, dependencies: Dependencies) async -> Int32 {
+    // Defensive twins of the runtime's own guards: usage-shaped absences.
     guard !inputs.transcriptPaths.isEmpty else {
       dependencies.writeStderr("error: at least one transcript path is required")
-      return 1
+      return ExitClass.usage.code
     }
     guard !inputs.presets.isEmpty else {
       dependencies.writeStderr("error: at least one preset is required (--preset or --all-presets)")
-      return 1
+      return ExitClass.usage.code
     }
 
     var documents: [TranscriptDocument] = []
@@ -75,7 +77,7 @@ enum SummarizePipeline {
       } catch {
         dependencies.writeStderr(
           "error: could not read transcript at \(resolvedURL.path): \(error)")
-        return 1
+        return ExitClass.inputMissing.code
       }
       let sidecarURL = resolvedURL.deletingPathExtension().appendingPathExtension("json")
       let jsonSidecar = try? String(contentsOf: sidecarURL, encoding: .utf8)
@@ -84,7 +86,7 @@ enum SummarizePipeline {
       } catch {
         dependencies.writeStderr(
           "error: could not parse transcript at \(resolvedURL.path): \(error)")
-        return 1
+        return ExitClass.inputMissing.code
       }
       resolvedNames.append(resolvedURL.lastPathComponent)
     }
@@ -101,9 +103,12 @@ enum SummarizePipeline {
       do {
         summaryText = try await dependencies.llmBackend.complete(prompt).text
       } catch {
+        // Classified at the site that knows the cause (issue #61): a timeout
+        // is a retryable upstream outage (5); a crashed or missing model
+        // command is a hard stage failure (4).
         dependencies.writeStderr(
           "error: LLM call failed for preset '\(preset.name)': \(error)")
-        return 1
+        return ExitClass.classifying(llmError: error).code
       }
 
       var frontmatter = baseFrontmatter
@@ -132,7 +137,7 @@ enum SummarizePipeline {
       } catch {
         dependencies.writeStderr(
           "error: failed to write summary for preset '\(preset.name)': \(error)")
-        return 1
+        return ExitClass.stageFailed.code
       }
       dependencies.log("run.summary: preset=\(preset.name) output=\(outputURL.path)")
     }

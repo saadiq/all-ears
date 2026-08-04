@@ -118,6 +118,9 @@ let package = Package(
         "EarsCore",
         "EarsConfig",
         "EarsLogging",
+        // For `ExitClass`: `OnClosePipelineRunner`'s failure log lines carry
+        // the shared exit-code taxonomy's class label (issue #61).
+        "EarsCLISupport",
         "EarsIPC",
         "EarsCaptureKit",
         "EarsDataStore",
@@ -308,8 +311,11 @@ let package = Package(
       // Also depends on the `transcribe` executable so the one-shot tools'
       // `run.summary` outcome logging is smoke-tested end to end against a
       // real spawned binary (a forced-failure run must log a failure summary,
-      // not `status=ok`) — see `TranscribeRunSummarySmokeTests`.
-      dependencies: ["EarsCore", "earsd", "ears", "transcribe"]
+      // not `status=ok`) — see `TranscribeRunSummarySmokeTests` — and on
+      // `cleanup`/`summarize` so the shared exit-code taxonomy (issue #61) is
+      // asserted against every real stage binary the daemon spawns — see
+      // `ExitTaxonomySmokeTests`.
+      dependencies: ["EarsCore", "earsd", "ears", "transcribe", "cleanup", "summarize"]
     ),
     .testTarget(
       name: "EarsIPCTests",
