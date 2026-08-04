@@ -124,6 +124,64 @@ struct NetworkTransportIntegrationTests {
     }
   }
 
+  @Test("a path exactly at the sun_path cap still binds — the guard rejects nothing usable")
+  func bindAtExactCapSucceeds() async throws {
+    let prefix = "/tmp/ears-ipc-cap-\(UUID().uuidString)-"
+    let path =
+      prefix + String(repeating: "x", count: UnixSocketPathLimit.maxBytes - prefix.utf8.count)
+    #expect(path.utf8.count == UnixSocketPathLimit.maxBytes)
+    let listener = try await NetworkSocketListener.bind(toPath: path)
+    // The empirically-worse failure mode the guard exists to prevent is a
+    // listener that reports ready without creating the socket file — so
+    // assert the file, not just the absence of a throw.
+    #expect(FileManager.default.fileExists(atPath: path))
+    await listener.close()
+  }
+
+  /// One byte past ``UnixSocketPathLimit/maxBytes``: over the cap, and the
+  /// shortest over-cap spelling so a regression toward a tighter wrong cap
+  /// (e.g. the naive "104 minus a NUL terminator") would fail the boundary
+  /// test above rather than slip through here.
+  private func overCapPath() -> String {
+    "/tmp/" + String(repeating: "x", count: UnixSocketPathLimit.maxBytes - 4)
+  }
+
+  @Test("bind rejects an over-cap path with a typed error, never a Network trap")
+  func bindRejectsOverCapPath() async {
+    let path = overCapPath()
+    do {
+      _ = try await NetworkSocketListener.bind(toPath: path)
+      Issue.record("bind unexpectedly succeeded at \(path.utf8.count) bytes")
+    } catch let error as SocketTransportError {
+      guard case .pathTooLong(let errorPath, let byteCount, let maxBytes) = error else {
+        Issue.record("expected pathTooLong, got \(error)")
+        return
+      }
+      #expect(errorPath == path)
+      #expect(byteCount == path.utf8.count)
+      #expect(maxBytes == UnixSocketPathLimit.maxBytes)
+    } catch {
+      Issue.record("expected SocketTransportError, got \(error)")
+    }
+  }
+
+  @Test("connect rejects an over-cap path with a typed error, never a Network trap")
+  func connectRejectsOverCapPath() async {
+    let path = overCapPath()
+    do {
+      _ = try await NetworkSocketConnection.connect(toPath: path)
+      Issue.record("connect unexpectedly succeeded at \(path.utf8.count) bytes")
+    } catch let error as SocketTransportError {
+      guard case .pathTooLong = error else {
+        Issue.record("expected pathTooLong, got \(error)")
+        return
+      }
+      #expect("\(error)".contains("socket path too long for sun_path"))
+    } catch {
+      Issue.record("expected SocketTransportError, got \(error)")
+    }
+  }
+
   @Test("server shutdown closes the connection so a later request fails")
   func shutdownClosesRealConnections() async throws {
     let path = tempSocketPath()

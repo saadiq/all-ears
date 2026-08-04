@@ -71,6 +71,15 @@ enum FollowRuntime {
     let socketPath =
       configuredSocketPath.isEmpty
       ? DefaultSocketPath.resolve(dataRoot: dataRootPath) : configuredSocketPath
+    // Unusable config is a stage failure (issue #74) — same check as
+    // `TranscribeRuntime.run`: an over-long socket path would otherwise trap
+    // inside the Network framework on the first `segment.publish`.
+    if let lengthMessage = DefaultSocketPath.lengthError(forPath: socketPath) {
+      let message = "error: \(lengthMessage)"
+      writeStderr(message)
+      diagnostics.recordError(message)
+      return RunOutcome(class: .stageFailed, error: message)
+    }
 
     // Graceful stop on SIGINT/SIGTERM: flip the flag the pipeline polls.
     // The dispatch sources must stay referenced for the process lifetime.

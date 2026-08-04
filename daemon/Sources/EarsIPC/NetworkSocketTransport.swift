@@ -2,12 +2,52 @@ import Foundation
 import Network
 
 /// Errors surfaced by the real Unix-domain-socket transport.
-public enum SocketTransportError: Error, Sendable {
+public enum SocketTransportError: Error, Sendable, CustomStringConvertible {
   /// A client connection could not be established (e.g. no daemon is
   /// listening at the path). Carries the underlying `NWError` description.
   case connectionFailed(String)
   /// The listener could not bind or start on the given path.
   case listenerFailed(String)
+  /// The path cannot fit in `sockaddr_un.sun_path`, so the Network framework
+  /// would never deliver a working socket — rejected up front on both sides
+  /// (issue #74). See ``UnixSocketPathLimit``.
+  case pathTooLong(path: String, byteCount: Int, maxBytes: Int)
+
+  public var description: String {
+    switch self {
+    case .connectionFailed(let detail): return "connection failed: \(detail)"
+    case .listenerFailed(let detail): return "listener failed: \(detail)"
+    case .pathTooLong(let path, let byteCount, let maxBytes):
+      return "socket path too long for sun_path (\(byteCount) bytes, max \(maxBytes)): \(path)"
+    }
+  }
+}
+
+/// The byte cap a Unix-domain socket path must fit within, and the guard both
+/// transport entry points apply before handing a path to the Network
+/// framework.
+///
+/// Measured on Darwin (macOS 15/25.x) rather than assumed: the full
+/// `sockaddr_un.sun_path` array (104 bytes) is usable with **no** NUL
+/// terminator — the kernel addresses it `sun_len`-style — so a 104-byte path
+/// binds, connects, and round-trips. At 105+ bytes `NWConnection.connect`
+/// traps (SIGTRAP) inside the framework, and `NWListener.bind` reports
+/// `.ready` without ever creating the socket file. Both are worse than an
+/// error, hence this up-front guard.
+public enum UnixSocketPathLimit {
+  /// Usable UTF-8 bytes in `sockaddr_un.sun_path` (104 on Darwin), computed
+  /// from the OS header rather than hard-coded.
+  public static let maxBytes = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
+
+  /// Throws ``SocketTransportError/pathTooLong(path:byteCount:maxBytes:)``
+  /// when `path` cannot fit; returns silently when it can.
+  public static func validate(_ path: String) throws {
+    let byteCount = path.utf8.count
+    if byteCount > maxBytes {
+      throw SocketTransportError.pathTooLong(
+        path: path, byteCount: byteCount, maxBytes: maxBytes)
+    }
+  }
 }
 
 /// The real ``SocketConnection``, wrapping one `NWConnection` over a Unix
@@ -39,6 +79,7 @@ public final class NetworkSocketConnection: SocketConnection, @unchecked Sendabl
     toPath path: String,
     queue: DispatchQueue = DispatchQueue(label: "net.tomelliot.ears.ipc.client")
   ) async throws -> NetworkSocketConnection {
+    try UnixSocketPathLimit.validate(path)
     let connection = NWConnection(to: .unix(path: path), using: unixParameters())
     do {
       return try await withCheckedThrowingContinuation { continuation in
@@ -126,6 +167,7 @@ public final class NetworkSocketListener: SocketListener, @unchecked Sendable {
     toPath path: String,
     queue: DispatchQueue = DispatchQueue(label: "net.tomelliot.ears.ipc.server")
   ) async throws -> NetworkSocketListener {
+    try UnixSocketPathLimit.validate(path)
     try? FileManager.default.removeItem(atPath: path)
 
     let parameters = unixParameters()
