@@ -27,7 +27,8 @@ struct CleanupCLIInputs: Sendable {
 enum CleanupRuntime {
   static func run(
     arguments: EarsCLI.Arguments, inputs: CleanupCLIInputs,
-    diagnostics: RunDiagnostics = RunDiagnostics()
+    diagnostics: RunDiagnostics = RunDiagnostics(),
+    emitJSONEnvelope: Bool = false
   ) async -> RunOutcome {
     // Guard the stdout path contract before anything else runs: after this,
     // only `resultChannel.emitResult` can reach the real stdout — a stray
@@ -43,6 +44,7 @@ enum CleanupRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
+      diagnostics.recordError(error.message)
       return RunOutcome(class: .usage, error: error.message)
     }
 
@@ -56,6 +58,7 @@ enum CleanupRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
+      diagnostics.recordError(message)
       // Unusable config is a stage failure (exit-code taxonomy, issue #61).
       return RunOutcome(class: .stageFailed, error: message)
     }
@@ -74,6 +77,7 @@ enum CleanupRuntime {
     guard !command.isEmpty else {
       let message = "error: no [llm] command resolved (backend=\(backend), model='\(model)')"
       writeStderr(message)
+      diagnostics.recordError(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
     let llmBackend = CommandLLMBackend(
@@ -93,8 +97,15 @@ enum CleanupRuntime {
 
     var dependencies = CleanupPipeline.Dependencies.production(
       llmBackend: llmBackend, onError: { diagnostics.recordError($0) })
-    // The result-line contract's only route to the real stdout.
-    dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+    // Headline counts reach the structured `run.summary` and, with `--json`,
+    // the envelope's `stats`.
+    dependencies.onSummary = { diagnostics.recordSummary($0) }
+    if !emitJSONEnvelope {
+      // The plain result-line contract's only route to the real stdout. In
+      // `--json` mode the line is withheld: the envelope below is the one
+      // stdout document, built from the summary's `output` field instead.
+      dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+    }
 
     let code = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
@@ -105,7 +116,48 @@ enum CleanupRuntime {
       ),
       dependencies: dependencies
     )
-    return diagnostics.outcome(exitCode: code)
+    let outcome = diagnostics.outcome(exitCode: code)
+
+    // The `--json` success envelope (issue #63): exactly one JSON document,
+    // through the guarded channel. On any non-zero exit stdout stays
+    // byte-empty; the error envelope is `Cleanup.run()`'s job (it must be
+    // the last line of stderr, after the failed run's `run.summary` echo).
+    if emitJSONEnvelope, code == 0,
+      let rawOutput = stringField(outcome.fields, "output")
+    {
+      let output = URL(fileURLWithPath: rawOutput).standardizedFileURL.path
+      let sidecar = URL(fileURLWithPath: output)
+        .deletingPathExtension().appendingPathExtension("json").path
+      let envelope = CleanupResultEnvelope.success(
+        output: output,
+        outputs: [output, sidecar],
+        stats: CleanupResultEnvelope.Stats(
+          segments: intField(outcome.fields, "segments") ?? 0,
+          accepted: intField(outcome.fields, "accepted") ?? 0,
+          fallback: intField(outcome.fields, "fallback") ?? 0,
+          skipped: intField(outcome.fields, "skipped") ?? 0))
+      if let line = StageEnvelopeJSON.encodeLine(envelope) {
+        resultChannel.emitResult(line)
+      }
+    }
+    return outcome
+  }
+
+  /// Reads one summary field's string value (`nil` when absent) — the
+  /// envelope is built from the same fields the structured `run.summary`
+  /// carries, so the two surfaces can't disagree.
+  private static func stringField(_ fields: [LogField], _ key: String) -> String? {
+    for field in fields where field.key == key {
+      if case .string(let value) = field.value { return value }
+    }
+    return nil
+  }
+
+  private static func intField(_ fields: [LogField], _ key: String) -> Int? {
+    for field in fields where field.key == key {
+      if case .int(let value) = field.value { return value }
+    }
+    return nil
   }
 
   /// `--prompt <file>` (a literal path, resolved as-given) overrides

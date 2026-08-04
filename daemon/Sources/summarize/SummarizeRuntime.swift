@@ -3,6 +3,23 @@ import EarsConfig
 import EarsCore
 import EarsLLMKit
 import Foundation
+import Synchronization
+
+/// Thread-safe collector for ``SummarizePipeline``'s per-preset outcomes,
+/// shared between the runtime (which builds the `--json` success envelope
+/// from it) and the command entry point (which builds the failure envelope's
+/// `outputs[]` from it after a non-zero exit) — the same
+/// `Mutex`-behind-a-class shape as `EarsCLISupport.RunDiagnostics`, and for
+/// the same reason: genuinely `Sendable` without `@unchecked`.
+final class PresetResultLog: Sendable {
+  private let state = Mutex<[SummarizePipeline.PresetResult]>([])
+
+  func record(_ result: SummarizePipeline.PresetResult) {
+    state.withLock { $0.append(result) }
+  }
+
+  var results: [SummarizePipeline.PresetResult] { state.withLock { $0 } }
+}
 
 /// `summarize`'s CLI inputs beyond the shared day-one flags, per
 /// `docs/specs/llm-stages.md`'s
@@ -23,13 +40,16 @@ struct SummarizeCLIInputs: Sendable {
 enum SummarizeRuntime {
   static func run(
     arguments: EarsCLI.Arguments, inputs: SummarizeCLIInputs,
-    diagnostics: RunDiagnostics = RunDiagnostics()
+    diagnostics: RunDiagnostics = RunDiagnostics(),
+    presetResults: PresetResultLog = PresetResultLog(),
+    emitJSONEnvelope: Bool = false
   ) async -> RunOutcome {
-    // `summarize` emits no result line yet, but batch stdout still carries
-    // nothing else — activate the channel so a stray dependency `print`
-    // lands on stderr instead of stdout (and any future result line has its
-    // guarded route ready).
-    _ = ResultChannel.activate()
+    // In plain mode `summarize` emits no result line, but batch stdout still
+    // carries nothing else — the channel is active either way so a stray
+    // dependency `print` lands on stderr instead of stdout. With `--json`
+    // (issue #63) the channel is also the success envelope's only route to
+    // the real stdout.
+    let resultChannel = ResultChannel.activate()
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
     let loadInputs: ConfigLoadInputs
@@ -39,6 +59,7 @@ enum SummarizeRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
+      diagnostics.recordError(error.message)
       return RunOutcome(class: .usage, error: error.message)
     }
 
@@ -52,6 +73,7 @@ enum SummarizeRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
+      diagnostics.recordError(message)
       // Unusable config is a stage failure (exit-code taxonomy, issue #61).
       return RunOutcome(class: .stageFailed, error: message)
     }
@@ -68,6 +90,7 @@ enum SummarizeRuntime {
     guard !command.isEmpty else {
       let message = "error: no [llm] command resolved (backend=\(backend), model='\(model)')"
       writeStderr(message)
+      diagnostics.recordError(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
     let llmBackend = CommandLLMBackend(
@@ -84,17 +107,20 @@ enum SummarizeRuntime {
         // Like an unknown --session id: the named input doesn't resolve.
         let message = "error: unknown preset(s): \(missing.sorted().joined(separator: ", "))"
         writeStderr(message)
+        diagnostics.recordError(message)
         return RunOutcome(class: .inputMissing, error: message)
       }
     } else {
       let message = "error: at least one --preset is required (or pass --all-presets)"
       writeStderr(message)
+      diagnostics.recordError(message)
       return RunOutcome(class: .usage, error: message)
     }
     guard !selected.isEmpty else {
       // `--all-presets` against a config with no presets: unusable config.
       let message = "error: no [[summarize.preset]] entries are configured"
       writeStderr(message)
+      diagnostics.recordError(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
 
@@ -103,12 +129,29 @@ enum SummarizeRuntime {
         name: preset.name, promptContent: readPromptFile(preset.promptFile, dataRoot: dataRoot))
     }
 
+    var dependencies = SummarizePipeline.Dependencies.production(
+      llmBackend: llmBackend, onError: { diagnostics.recordError($0) })
+    // Collected for the `--json` envelope in both dispositions: the success
+    // envelope here, the failure envelope's `outputs[]` in `Summarize.run()`.
+    dependencies.onPresetResult = { presetResults.record($0) }
+
     let code = await SummarizePipeline.run(
       inputs: SummarizePipeline.Inputs(
         transcriptPaths: inputs.transcriptPaths, presets: presets, out: inputs.out),
-      dependencies: .production(
-        llmBackend: llmBackend, onError: { diagnostics.recordError($0) })
+      dependencies: dependencies
     )
+
+    // The `--json` success envelope (issue #63): exactly one JSON document,
+    // through the guarded channel — the only remaining route to real stdout.
+    // On any non-zero exit stdout stays byte-empty; the error envelope is the
+    // command entry point's job (it must land *after* the failed run's
+    // `run.summary` stderr echo, as the last line of stderr).
+    if emitJSONEnvelope, code == 0,
+      let line = StageEnvelopeJSON.encodeLine(
+        SummarizeResultEnvelope.success(results: presetResults.results))
+    {
+      resultChannel.emitResult(line)
+    }
     return diagnostics.outcome(exitCode: code)
   }
 

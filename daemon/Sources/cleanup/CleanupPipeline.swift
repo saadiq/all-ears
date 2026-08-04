@@ -48,6 +48,13 @@ enum CleanupPipeline {
     /// default is a no-op rather than a direct `FileHandle.standardOutput`
     /// write pollution could share.
     var writeStdout: @Sendable (String) -> Void = { _ in }
+    /// Structured headline counts for the final `run.summary` (segments,
+    /// accepted, fallback, skipped, output) — the same numbers the
+    /// human-readable `run.summary:` stderr line carries, surfaced as fields
+    /// so `RunDiagnostics` can fold them into the structured summary and the
+    /// `--json` envelope's `stats` (issue #63). Mirrors
+    /// `TranscribePipeline.Dependencies.onSummary`.
+    var onSummary: (@Sendable ([LogField]) -> Void)? = nil
 
     static func production(
       llmBackend: any LLMBackend,
@@ -208,6 +215,13 @@ enum CleanupPipeline {
       "run.summary: segments=\(document.segments.count) accepted=\(accepted) "
         + "fallback=\(fellBack) skipped=\(skipped) output=\(outputURL.path)"
     )
+    dependencies.onSummary?([
+      LogField("segments", .int(document.segments.count)),
+      LogField("accepted", .int(accepted)),
+      LogField("fallback", .int(fellBack)),
+      LogField("skipped", .int(skipped)),
+      LogField("output", .string(outputURL.path)),
+    ])
     // The stdout path contract (see Dependencies.writeStdout): emitted only
     // after both output files are durably written. Re-wrapped and
     // standardized so the emitted line is always an absolute path with no

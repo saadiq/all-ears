@@ -68,6 +68,13 @@ struct Summarize: AsyncParsableCommand {
   @Option(name: .customLong("model"), help: "Override the LLM model for this run.")
   var model: String?
 
+  @Flag(
+    name: .customLong("json"),
+    help:
+      "Emit a versioned JSON result envelope (allears.summarize/v1) as the only stdout document on success; on failure stdout stays empty and the last stderr line is the error envelope."
+  )
+  var json = false
+
   @Option(
     name: .customLong("set"),
     help:
@@ -103,12 +110,14 @@ struct Summarize: AsyncParsableCommand {
     let allPresets = self.allPresets
     let out = self.out
     let model = self.model
+    let json = self.json
 
     // The real run happens inside `work`, between `run.start` and
     // `run.summary`; the summary reflects the outcome we return here, never a
     // premature `status=ok` (issue #25). The `--print-config`/`--config-path`
     // fast paths return before `work` runs.
     let diagnostics = RunDiagnostics()
+    let presetResults = PresetResultLog()
     let exitCode = await EarsCLI.run(
       tool: "summarize", version: "0.1.0", arguments: arguments
     ) { _ in
@@ -118,6 +127,7 @@ struct Summarize: AsyncParsableCommand {
         // all — so it adopts the same EX_USAGE code ArgumentParser exits with.
         let message = "error: at least one transcript path is required"
         FileHandle.standardError.write(Data((message + "\n").utf8))
+        diagnostics.recordError(message)
         return RunOutcome(class: .usage, error: message)
       }
       return await SummarizeRuntime.run(
@@ -129,8 +139,25 @@ struct Summarize: AsyncParsableCommand {
           out: out,
           model: model
         ),
-        diagnostics: diagnostics
+        diagnostics: diagnostics,
+        presetResults: presetResults,
+        emitJSONEnvelope: json
       )
+    }
+    // The `--json` failure contract (issue #63): stdout stays byte-empty
+    // (the runtime never emitted a success envelope) and the *last line of
+    // stderr* is the error envelope — written here, after `EarsCLI.run` has
+    // already echoed the failed run's `run.summary` to stderr, so nothing
+    // can land after it. `outputs[]` still carries any per-preset results,
+    // making partial success ("2 of 3 presets") expressible.
+    if exitCode != 0, json {
+      let envelope = SummarizeResultEnvelope.failure(
+        exitClass: ExitClass.label(forCode: exitCode),
+        message: diagnostics.lastError ?? "error: summarize failed (exit \(exitCode))",
+        results: presetResults.results)
+      if let line = StageEnvelopeJSON.encodeLine(envelope) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+      }
     }
     guard exitCode == 0 else { throw ExitCode(exitCode) }
   }

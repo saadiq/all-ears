@@ -26,11 +26,27 @@ enum SummarizePipeline {
     var promptContent: String
   }
 
+  /// One preset's outcome, reported through
+  /// ``Dependencies/onPresetResult`` as the run progresses — the per-preset
+  /// result surface `--json`'s envelope carries (issue #63), so partial
+  /// success ("2 of 3 presets") is expressible instead of collapsing into a
+  /// single exit code. `path` is the written summary's absolute path on
+  /// success, absent on failure. Doubles as the envelope's wire type
+  /// (`{preset, path, ok}` per `shared/stage-envelopes/summarize.v1.schema.json`).
+  struct PresetResult: Codable, Sendable, Equatable {
+    var preset: String
+    var path: String? = nil
+    var ok: Bool
+  }
+
   struct Dependencies: Sendable {
     var clock: any NowProviding
     var llmBackend: any LLMBackend
     var log: @Sendable (String) -> Void
     var writeStderr: @Sendable (String) -> Void
+    /// Called once per selected preset, in run order, with that preset's
+    /// outcome. Default no-op: plain-mode callers don't consume it.
+    var onPresetResult: @Sendable (PresetResult) -> Void = { _ in }
 
     static func production(
       llmBackend: any LLMBackend,
@@ -97,6 +113,13 @@ enum SummarizePipeline {
     let baseOutputURL = outputBaseURL(
       for: URL(fileURLWithPath: inputs.transcriptPaths[0]), explicitOut: inputs.out)
 
+    // Presets run independently (issue #63): one preset's failure no longer
+    // aborts the rest — each outcome is reported through `onPresetResult`, so
+    // partial success ("2 of 3 presets") is expressible in the `--json`
+    // envelope instead of collapsing into the first failure. The run still
+    // exits non-zero unless *all* presets succeeded, carrying the first
+    // failure's taxonomy class (issue #61).
+    var firstFailure: ExitClass? = nil
     for preset in inputs.presets {
       let prompt = LLMPrompt(stablePrefix: preset.promptContent, dynamicSuffix: combinedText)
       let summaryText: String
@@ -105,10 +128,14 @@ enum SummarizePipeline {
       } catch {
         // Classified at the site that knows the cause (issue #61): a timeout
         // is a retryable upstream outage (5); a crashed or missing model
-        // command is a hard stage failure (4).
+        // command is a hard stage failure (4). Either way the remaining
+        // presets still run — presets are few, and keeping a mostly
+        // -successful run's other summaries beats discarding them.
         dependencies.writeStderr(
           "error: LLM call failed for preset '\(preset.name)': \(error)")
-        return ExitClass.classifying(llmError: error).code
+        dependencies.onPresetResult(PresetResult(preset: preset.name, ok: false))
+        if firstFailure == nil { firstFailure = ExitClass.classifying(llmError: error) }
+        continue
       }
 
       var frontmatter = baseFrontmatter
@@ -137,12 +164,22 @@ enum SummarizePipeline {
       } catch {
         dependencies.writeStderr(
           "error: failed to write summary for preset '\(preset.name)': \(error)")
-        return ExitClass.stageFailed.code
+        dependencies.onPresetResult(PresetResult(preset: preset.name, ok: false))
+        if firstFailure == nil { firstFailure = .stageFailed }
+        continue
       }
       dependencies.log("run.summary: preset=\(preset.name) output=\(outputURL.path)")
+      // Standardized so the reported path is always absolute with no `.`/`..`
+      // components — consumers (the daemon, `--json` scripting) read it from
+      // a different cwd, matching the plain result line's own convention.
+      dependencies.onPresetResult(
+        PresetResult(
+          preset: preset.name,
+          path: URL(fileURLWithPath: outputURL.path).standardizedFileURL.path,
+          ok: true))
     }
 
-    return 0
+    return (firstFailure ?? .success).code
   }
 
   /// "cleaned preferred if both exist" (`docs/specs/llm-stages.md`):
