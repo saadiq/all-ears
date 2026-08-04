@@ -12,17 +12,20 @@ import Synchronization
 /// unrecoverable"; capturing it "alone would have identified the root cause on
 /// day one".
 ///
-/// stdout carries the stage's machine-readable output-path contract: a
-/// successful `transcribe`/`cleanup` run's stdout is exactly one line — the
-/// path of the file it wrote, which the stage chain feeds to the next stage.
+/// stdout carries the stage's machine-readable result contract: the daemon
+/// spawns every stage with `--json`, so a successful run's stdout is exactly
+/// one JSON result-envelope document (``StageResultEnvelope``) whose `output`
+/// the stage chain feeds to the next stage.
 public struct SpawnOutcome: Sendable, Equatable {
   public var exitCode: Int32
   /// The child's stderr, verbatim. Callers bound it before logging via
   /// ``OnClosePipelineRunner/boundedCapture(_:)`` so a runaway child can't
-  /// flood the daemon log.
+  /// flood the daemon log. On a `--json` failure its last line is the error
+  /// envelope (`ok: false`, `exit_class`, `message`).
   public var stderr: String
-  /// The child's stdout, verbatim (the output-path contract requires it to be
-  /// exactly one line — see ``OnClosePipelineRunner/strictResultLine(_:)``).
+  /// The child's stdout, verbatim (the `--json` contract requires it to be
+  /// exactly one JSON envelope document on success, byte-empty on failure —
+  /// see ``StageResultEnvelope/decodeSuccessDocument(stdout:tool:)``).
   public var stdout: String
 
   public init(exitCode: Int32, stderr: String = "", stdout: String = "") {
@@ -76,23 +79,29 @@ public enum OnEndStage: String, Sendable, Hashable, CaseIterable {
 /// Runs the on-end stage chain against an ended session — the stage-spawner
 /// behind the session-end hook (see ``EarsDaemon``):
 ///
-///     transcribe --session <id>   → prints the .transcript.md path
-///     cleanup <transcript path>   → prints the .clean.md path
-///     summarize <path> --all-presets
+///     transcribe --session <id> --json      → envelope names the .transcript.md
+///     cleanup <transcript path> --json      → envelope names the .clean.md
+///     summarize <path> --all-presets --json → envelope names each preset's file
 ///
-/// Output paths flow between stages via the stdout contract (each
-/// path-producing stage prints its output path as its *only* stdout line), so
-/// the daemon never re-derives `transcribe`'s `OutputPathResolution` logic.
-/// The parse side is strict: anything other than exactly one line is a
-/// contract violation that fails the stage, and the parsed path must exist on
-/// disk before it feeds the next stage — a lie or stale path dies at this
-/// seam, not two stages later.
+/// The daemon speaks the versioned `--json` result envelope to the stages
+/// (issue #64 consuming issue #63's producer contract; humans keep plain
+/// mode): each stage's stdout is exactly one JSON document whose `output`
+/// feeds the next stage, so the daemon never re-derives `transcribe`'s
+/// `OutputPathResolution` logic. The parse side is strict
+/// (``StageResultEnvelope/decodeSuccessDocument(stdout:tool:)``): anything
+/// that is not one decodable v1 envelope — pollution, a wrong major, `ok:
+/// false` under exit 0 — is a contract violation that fails the stage, and
+/// the envelope's `output` must exist on disk before it feeds the next stage
+/// — a lie or stale path dies at this seam, not two stages later.
 ///
 /// The chain stops loudly on the first failure. A `cleanup`/`summarize`
 /// failure never un-succeeds the transcribe: the raw transcript is the
 /// durable artifact, and the caller's retention stamp keys on transcribe
 /// alone. On any non-zero exit the child's captured stderr lands in the
-/// daemon log so the failure is diagnosable from the log alone (issue #21).
+/// daemon log so the failure is diagnosable from the log alone (issue #21);
+/// when its last line decodes as the error envelope, the envelope's
+/// `exit_class`/`message` ride along — augmenting, never replacing, the
+/// bounded raw capture.
 public struct OnClosePipelineRunner: Sendable {
   /// Runs one pipeline stage binary (`"transcribe"`, `"cleanup"`,
   /// `"summarize"`) with the given arguments and returns its exit code plus
@@ -131,34 +140,43 @@ public struct OnClosePipelineRunner: Sendable {
 
     guard
       let transcriptPath = await runPathStage(
-        .transcribe, arguments: ["--session", sessionID], sessionID: sessionID, context: context)
+        .transcribe, arguments: ["--session", sessionID, "--json"], sessionID: sessionID,
+        context: context)
     else { return false }
 
     var nextInput = transcriptPath
     if stages.contains(.cleanup) {
       guard
         let cleanPath = await runPathStage(
-          .cleanup, arguments: [transcriptPath], sessionID: sessionID, context: context)
+          .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context)
       else { return true }  // transcribe already succeeded; chain stops here
       nextInput = cleanPath
     }
 
     if stages.contains(.summarize) {
       // Summarize writes one file per preset, so it has no single output path
-      // to thread — success is just exit 0.
-      _ = await spawn(
-        .summarize, arguments: [nextInput, "--all-presets"], sessionID: sessionID,
+      // to thread — exit 0 is the success signal, exactly as before the
+      // envelope. The envelope's per-preset `outputs` feed the log: what was
+      // written on success here, and — via `spawn`'s error-envelope decode —
+      // partial success ("wrote 2/3 presets") on failure.
+      if let outcome = await spawn(
+        .summarize, arguments: [nextInput, "--all-presets", "--json"], sessionID: sessionID,
         context: context)
+      {
+        logSummarizeResults(stdout: outcome.stdout, sessionID: sessionID, context: context)
+      }
     }
     return true
   }
 
-  /// Spawns a path-producing stage and returns its printed output path, or
-  /// `nil` on failure. Exit 0 with anything but exactly one path line is a
-  /// failure too — a silent or polluted success the chain can't build on is
-  /// treated exactly like a crash, loudly. So is a printed path with no file
-  /// behind it: the existence check kills a lie or stale path at this seam
-  /// instead of letting it corrupt a later stage.
+  /// Spawns a path-producing stage in `--json` mode and returns its
+  /// envelope's `output` path, or `nil` on failure. Exit 0 with anything but
+  /// one decodable v1 envelope carrying an `output` is a failure too — a
+  /// silent or polluted success the chain can't build on, a breaking-major
+  /// envelope, or an `ok: false` under exit 0 is treated exactly like a
+  /// crash, loudly. So is an `output` with no file behind it: the existence
+  /// check kills a lie or stale path at this seam instead of letting it
+  /// corrupt a later stage.
   private func runPathStage(
     _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
   ) async -> String? {
@@ -166,23 +184,59 @@ public struct OnClosePipelineRunner: Sendable {
       let outcome = await spawn(
         stage, arguments: arguments, sessionID: sessionID, context: context)
     else { return nil }
-    let path: String
-    switch Self.strictResultLine(outcome.stdout) {
-    case .success(let line):
-      path = line
+    let envelope: StageResultEnvelope
+    switch StageResultEnvelope.decodeSuccessDocument(stdout: outcome.stdout, tool: stage.rawValue)
+    {
+    case .success(let decoded):
+      envelope = decoded
     case .failure(let violation):
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': \(violation.message)")
       return nil
     }
+    guard let path = envelope.output else {
+      log(
+        "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
+          + "session '\(sessionID)': result envelope carries no output path; "
+          + Self.stdoutNote(outcome.stdout))
+      return nil
+    }
     guard FileManager.default.fileExists(atPath: path) else {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
-          + "session '\(sessionID)': printed output path '\(path)' does not exist")
+          + "session '\(sessionID)': envelope output path '\(path)' does not exist")
       return nil
     }
     return path
+  }
+
+  /// Logs summarize's per-preset results from its success envelope's
+  /// `outputs` — e.g. `summarize wrote 3/3 presets`. Exit 0 already carried
+  /// the success signal, so an undecodable envelope here is logged loudly as
+  /// a contract violation but changes nothing else.
+  private func logSummarizeResults(stdout: String, sessionID: String, context: String) {
+    switch StageResultEnvelope.decodeSuccessDocument(
+      stdout: stdout, tool: OnEndStage.summarize.rawValue)
+    {
+    case .success(let envelope):
+      guard let presets = envelope.presetOutputs, !presets.isEmpty else { return }
+      log(
+        "\(context) on_end: \(Self.presetSummary(presets)) for session '\(sessionID)'")
+    case .failure(let violation):
+      log(
+        "\(context) on_end: summarize exited 0 but its result envelope is unusable for "
+          + "session '\(sessionID)': \(violation.message)")
+    }
+  }
+
+  /// The per-preset summary line's core, e.g.
+  /// `summarize wrote 2/3 presets (failed: actions)`.
+  private static func presetSummary(_ presets: [StageResultEnvelope.PresetResult]) -> String {
+    let written = presets.filter(\.ok).count
+    let failed = presets.filter { !$0.ok }.map(\.preset)
+    let failures = failed.isEmpty ? "" : " (failed: \(failed.joined(separator: ", ")))"
+    return "summarize wrote \(written)/\(presets.count) presets\(failures)"
   }
 
   /// Spawns one stage with the issue-#21 logging contract: the full argv is
@@ -201,44 +255,32 @@ public struct OnClosePipelineRunner: Sendable {
       // issue #61) rides in the failure line — e.g. `(exit 5,
       // retryable-upstream)` — so a future retry policy is a function of the
       // code with no re-plumbing, and a code outside the taxonomy (a crash
-      // signal, a stray bare 1) is honestly `unclassified`.
-      log(
+      // signal, a stray bare 1) is honestly `unclassified`. When the last
+      // stderr line decodes as the `--json` error envelope, its
+      // `exit_class`/`message` ride along too — augmenting, never replacing,
+      // the bounded raw stderr (issue #21).
+      let envelope = StageResultEnvelope.decodeErrorEnvelope(stderr: outcome.stderr)
+      var line =
         "\(context) on_end: \(stage.rawValue) failed "
-          + "(exit \(outcome.exitCode), \(ExitClass.label(forCode: outcome.exitCode))) for "
-          + "session '\(sessionID)'; \(Self.stderrNote(outcome.stderr))")
+        + "(exit \(outcome.exitCode), \(ExitClass.label(forCode: outcome.exitCode))) for "
+        + "session '\(sessionID)'"
+      if let envelope {
+        line +=
+          "; envelope: \(envelope.exitClass ?? "unclassified") — "
+          + (envelope.message ?? "no message")
+      }
+      line += "; \(Self.stderrNote(outcome.stderr))"
+      log(line)
+      // A failed summarize's error envelope still carries per-preset results,
+      // so partial success ("wrote 2/3 presets") is visible in the daemon log
+      // instead of vanishing into a bare exit code.
+      if stage == .summarize, let presets = envelope?.presetOutputs, !presets.isEmpty {
+        log("\(context) on_end: \(Self.presetSummary(presets)) for session '\(sessionID)'")
+      }
       return nil
     }
     log("\(context) on_end: \(stage.rawValue) succeeded for session '\(sessionID)'")
     return outcome
-  }
-
-  /// A stage's breach of the stdout output-path contract. Carries a
-  /// ready-to-log description of what the stage actually printed, with the
-  /// offending stdout bounded the same way stderr is (``boundedCapture(_:)``).
-  struct ContractViolation: Error, Equatable {
-    var message: String
-  }
-
-  /// The stdout output-path contract's parse side, strict: the stage's stdout
-  /// must be exactly one non-empty trimmed line — the output path. Zero lines
-  /// or more than one is a ``ContractViolation``: pollution above (or below)
-  /// the path line must fail the stage at this seam, never parse
-  /// "successfully" via a last-line rule and corrupt silently. Exposed (not
-  /// private) so the contract is unit-testable directly.
-  static func strictResultLine(_ stdout: String) -> Result<String, ContractViolation> {
-    let lines =
-      stdout
-      .split(separator: "\n", omittingEmptySubsequences: true)
-      .map { $0.trimmingCharacters(in: .whitespaces) }
-      .filter { !$0.isEmpty }
-    guard lines.count == 1 else {
-      return .failure(
-        ContractViolation(
-          message:
-            "stdout contract violated: expected exactly one line, got \(lines.count); "
-            + stdoutNote(stdout)))
-    }
-    return .success(lines[0])
   }
 
   /// The largest slice of a child's captured output (stderr or stdout) the

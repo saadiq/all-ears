@@ -50,10 +50,15 @@ struct OnClosePipelineRunnerTests {
     var calls: [(name: String, arguments: [String])] { recorded.withLock { $0 } }
   }
 
-  /// A transcribe/cleanup success whose final stdout line is `path` — the
-  /// output-path contract as the real stages emit it.
-  private static func pathOutcome(_ path: String) -> SpawnOutcome {
-    SpawnOutcome(exitCode: 0, stdout: path + "\n")
+  /// A `transcribe --json` success whose stdout is the recorded v1 envelope
+  /// naming `path` — the result contract as the real stage emits it.
+  private static func transcribeOutcome(_ path: String) -> SpawnOutcome {
+    SpawnOutcome(exitCode: 0, stdout: StageEnvelopeFixtures.transcribeSuccess(output: path))
+  }
+
+  /// `transcribeOutcome(_:)`'s cleanup twin.
+  private static func cleanupOutcome(_ path: String) -> SpawnOutcome {
+    SpawnOutcome(exitCode: 0, stdout: StageEnvelopeFixtures.cleanupSuccess(output: path))
   }
 
   /// A fresh per-test temp directory; callers remove it in a `defer`.
@@ -81,11 +86,16 @@ struct OnClosePipelineRunnerTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcript = try Self.makeFile("10-00-00_abc.transcript.md", in: directory)
     let clean = try Self.makeFile("10-00-00_abc.clean.md", in: directory)
+    let brief = try Self.makeFile("10-00-00_abc.brief.summary.md", in: directory)
+    let actions = try Self.makeFile("10-00-00_abc.actions.summary.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome(transcript),
-      Self.pathOutcome(clean),
-      SpawnOutcome(exitCode: 0),
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
+      SpawnOutcome(
+        exitCode: 0,
+        stdout: StageEnvelopeFixtures.summarizeAllPresetsSuccess(
+          presets: [(preset: "brief", path: brief), (preset: "actions", path: actions)])),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
 
@@ -94,14 +104,19 @@ struct OnClosePipelineRunnerTests {
 
     #expect(transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
-    #expect(runner.calls[0].arguments == ["--session", "b7acc61f"])
-    // cleanup consumes the transcript path transcribe printed…
-    #expect(runner.calls[1].arguments == [transcript])
-    // …and summarize consumes the cleaned path cleanup printed.
-    #expect(runner.calls[2].arguments == [clean, "--all-presets"])
+    #expect(runner.calls[0].arguments == ["--session", "b7acc61f", "--json"])
+    // cleanup consumes the `output` path transcribe's envelope named…
+    #expect(runner.calls[1].arguments == [transcript, "--json"])
+    // …and summarize consumes the cleaned path cleanup's envelope named.
+    #expect(runner.calls[2].arguments == [clean, "--all-presets", "--json"])
     for stage in ["transcribe", "cleanup", "summarize"] {
       #expect(logs.snapshot().contains { $0.contains("\(stage) succeeded for session 'b7acc61f'") })
     }
+    // Summarize's per-preset results are visible in the daemon log.
+    #expect(
+      logs.snapshot().contains {
+        $0.contains("summarize wrote 2/2 presets for session 'b7acc61f'")
+      })
   }
 
   @Test("a transcribe-only stage list spawns nothing else")
@@ -109,7 +124,7 @@ struct OnClosePipelineRunnerTests {
     let directory = try Self.makeTempDirectory("transcribe-only")
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcript = try Self.makeFile("t.transcript.md", in: directory)
-    let runner = ScriptedRunner([Self.pathOutcome(transcript)])
+    let runner = ScriptedRunner([Self.transcribeOutcome(transcript)])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
 
     let transcribed = await pipeline.runOnEndChain(
@@ -125,7 +140,7 @@ struct OnClosePipelineRunnerTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcript = try Self.makeFile("t.transcript.md", in: directory)
     let runner = ScriptedRunner([
-      Self.pathOutcome(transcript),
+      Self.transcribeOutcome(transcript),
       SpawnOutcome(exitCode: 0),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
@@ -134,7 +149,7 @@ struct OnClosePipelineRunnerTests {
       sessionID: "b7acc61f", stages: [.transcribe, .summarize], context: "session-end")
 
     #expect(runner.calls.map(\.name) == ["transcribe", "summarize"])
-    #expect(runner.calls[1].arguments == [transcript, "--all-presets"])
+    #expect(runner.calls[1].arguments == [transcript, "--all-presets", "--json"])
   }
 
   @Test("a failed transcribe stops the chain and returns false")
@@ -157,8 +172,8 @@ struct OnClosePipelineRunnerTests {
     #expect(failure.contains("stderr: error: unknown source 'mic'"))
   }
 
-  @Test("a transcribe that exits 0 without printing a path is a loud failure, not a silent success")
-  func transcribeMissingPathIsFailure() async throws {
+  @Test("a transcribe that exits 0 with empty stdout is a loud failure, not a silent success")
+  func transcribeMissingEnvelopeIsFailure() async throws {
     let logs = LogCollector()
     let runner = ScriptedRunner([SpawnOutcome(exitCode: 0, stdout: "")])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -170,20 +185,23 @@ struct OnClosePipelineRunnerTests {
     #expect(runner.calls.map(\.name) == ["transcribe"])
     let violation = try #require(
       logs.snapshot().first {
-        $0.contains("stdout contract violated: expected exactly one line, got 0")
+        $0.contains("stdout is not one JSON envelope document")
       })
     #expect(violation.contains("session 'b7acc61f'"))
     #expect(violation.contains("no stdout captured"))
   }
 
-  @Test("multi-line stdout violates the one-line contract and fails the stage")
-  func multiLineStdoutFailsStage() async throws {
-    let directory = try Self.makeTempDirectory("multi-line")
+  @Test("non-JSON stdout — pollution around or instead of the envelope — fails the stage")
+  func nonJSONStdoutFailsStage() async throws {
+    let directory = try Self.makeTempDirectory("polluted")
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcript = try Self.makeFile("t.transcript.md", in: directory)
     let logs = LogCollector()
+    // Pollution above an otherwise-valid envelope: the whole stdout is no
+    // longer one JSON document, so the stage fails at this seam.
+    let polluted = "notice\n" + StageEnvelopeFixtures.transcribeSuccess(output: transcript)
     let runner = ScriptedRunner([
-      SpawnOutcome(exitCode: 0, stdout: "notice\n\(transcript)\n")
+      SpawnOutcome(exitCode: 0, stdout: polluted)
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
 
@@ -193,20 +211,20 @@ struct OnClosePipelineRunnerTests {
     #expect(!transcribed)
     let violation = try #require(
       logs.snapshot().first {
-        $0.contains("stdout contract violated: expected exactly one line, got 2")
+        $0.contains("stdout is not one JSON envelope document")
       })
     // The bounded stdout rides along so the polluter is identifiable from the log.
     #expect(violation.contains("notice"))
     #expect(violation.contains("session 'b7acc61f'"))
   }
 
-  @Test("a single-line stdout naming a path that does not exist fails the stage")
+  @Test("an envelope whose output path does not exist on disk fails the stage")
   func missingOutputFileFailsStage() async throws {
     let missing = FileManager.default.temporaryDirectory
       .appendingPathComponent("on-close-runner-missing-\(UUID().uuidString)")
       .appendingPathComponent("t.transcript.md").path
     let logs = LogCollector()
-    let runner = ScriptedRunner([Self.pathOutcome(missing)])
+    let runner = ScriptedRunner([Self.transcribeOutcome(missing)])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
 
     let transcribed = await pipeline.runOnEndChain(
@@ -226,7 +244,7 @@ struct OnClosePipelineRunnerTests {
     let transcript = try Self.makeFile("t.transcript.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome(transcript),
+      Self.transcribeOutcome(transcript),
       SpawnOutcome(exitCode: 1, stderr: "error: no [llm] command resolved"),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -248,7 +266,7 @@ struct OnClosePipelineRunnerTests {
     let transcript = try Self.makeFile("t.transcript.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome(transcript),
+      Self.transcribeOutcome(transcript),
       SpawnOutcome(exitCode: 5, stderr: "error: LLM backend call timed out"),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -286,8 +304,8 @@ struct OnClosePipelineRunnerTests {
     let clean = try Self.makeFile("t.clean.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome(transcript),
-      Self.pathOutcome(clean),
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
       SpawnOutcome(exitCode: 2, stderr: "   \n"),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -313,32 +331,6 @@ struct OnClosePipelineRunnerTests {
 
     #expect(!transcribed)
     #expect(runner.calls.isEmpty)
-  }
-
-  // MARK: - stdout path contract parsing
-
-  @Test("exactly one trimmed line parses; zero or several are contract violations, not last-line")
-  func strictResultLineParsing() {
-    #expect(OnClosePipelineRunner.strictResultLine("/a/b.md\n") == .success("/a/b.md"))
-    #expect(OnClosePipelineRunner.strictResultLine("  /a/b.md  \n\n") == .success("/a/b.md"))
-    // Pollution above the path is a violation — the old last-line rule would
-    // have parsed it "successfully".
-    let polluted = OnClosePipelineRunner.strictResultLine("notice\n/a/b.md\n")
-    #expect(throws: OnClosePipelineRunner.ContractViolation.self) { try polluted.get() }
-    if case .failure(let violation) = polluted {
-      #expect(
-        violation.message.contains("stdout contract violated: expected exactly one line, got 2"))
-      #expect(violation.message.contains("stdout: notice\n/a/b.md"))
-    }
-    // No lines at all is a violation too, saying so rather than quoting nothing.
-    for empty in ["", "   \n \n"] {
-      let parsed = OnClosePipelineRunner.strictResultLine(empty)
-      #expect(throws: OnClosePipelineRunner.ContractViolation.self) { try parsed.get() }
-      if case .failure(let violation) = parsed {
-        #expect(violation.message.contains("expected exactly one line, got 0"))
-        #expect(violation.message.contains("no stdout captured"))
-      }
-    }
   }
 
   // MARK: - on_end_stages config resolution
@@ -387,6 +379,160 @@ struct OnClosePipelineRunnerTests {
     #expect(bounded.utf8.count < long.utf8.count)
   }
 
+  // MARK: - JSON result-envelope consumption (issue #64)
+
+  @Test("a v1 transcribe JSON envelope parses and its output path feeds cleanup")
+  func transcribeJSONEnvelopeFeedsCleanup() async throws {
+    let directory = try Self.makeTempDirectory("json-envelope")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
+    let brief = try Self.makeFile("t.brief.summary.md", in: directory)
+    let runner = ScriptedRunner([
+      SpawnOutcome(
+        exitCode: 0, stdout: StageEnvelopeFixtures.transcribeSuccess(output: transcript)),
+      SpawnOutcome(exitCode: 0, stdout: StageEnvelopeFixtures.cleanupSuccess(output: clean)),
+      SpawnOutcome(
+        exitCode: 0,
+        stdout: StageEnvelopeFixtures.summarizeAllPresetsSuccess(
+          presets: [(preset: "brief", path: brief)])),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: OnEndStage.allCases, context: "session-end")
+
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
+    // Every stage is spawned in JSON mode…
+    #expect(runner.calls[0].arguments == ["--session", "b7acc61f", "--json"])
+    // …and each envelope's `output` (not its raw stdout) feeds the next stage.
+    #expect(runner.calls[1].arguments == [transcript, "--json"])
+    #expect(runner.calls[2].arguments == [clean, "--all-presets", "--json"])
+  }
+
+  @Test("a wrong-major envelope fails the stage, naming expected and received schemas")
+  func wrongMajorEnvelopeFailsStage() async throws {
+    let directory = try Self.makeTempDirectory("wrong-major")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      SpawnOutcome(
+        exitCode: 0, stdout: StageEnvelopeFixtures.transcribeWrongMajor(output: transcript))
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(!transcribed)
+    let violation = try #require(
+      logs.snapshot().first {
+        $0.contains("allears.transcribe/v1") && $0.contains("allears.transcribe/v2")
+      },
+      "expected a failure line naming both the expected and received schema; got: \(logs.snapshot())"
+    )
+    #expect(violation.contains("session 'b7acc61f'"))
+  }
+
+  @Test("a summarize partial failure logs per-preset results: wrote 2/3, naming the failed preset")
+  func summarizePartialSuccessLogsPresetResults() async throws {
+    let directory = try Self.makeTempDirectory("summarize-partial")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
+    let brief = try Self.makeFile("t.brief.summary.md", in: directory)
+    let decisions = try Self.makeFile("t.decisions.summary.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      SpawnOutcome(
+        exitCode: 0, stdout: StageEnvelopeFixtures.transcribeSuccess(output: transcript)),
+      SpawnOutcome(exitCode: 0, stdout: StageEnvelopeFixtures.cleanupSuccess(output: clean)),
+      SpawnOutcome(
+        exitCode: 4,
+        stderr: "summarize: running 3 presets\n"
+          + StageEnvelopeFixtures.summarizePartialFailureError(
+            briefPath: brief, decisionsPath: decisions)),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: OnEndStage.allCases, context: "session-end")
+
+    // Partial summarize success never un-succeeds the transcribe.
+    #expect(transcribed)
+    let presetLine = try #require(
+      logs.snapshot().first { $0.contains("summarize wrote 2/3 presets") },
+      "expected a per-preset partial-success line; got: \(logs.snapshot())")
+    #expect(presetLine.contains("failed: actions"))
+  }
+
+  @Test("a newer-minor v1 envelope with unknown extra keys still succeeds — additive keys are free")
+  func unknownExtraKeysEnvelopeSucceeds() async throws {
+    let directory = try Self.makeTempDirectory("unknown-keys")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let runner = ScriptedRunner([
+      SpawnOutcome(
+        exitCode: 0,
+        stdout: StageEnvelopeFixtures.transcribeSuccessWithUnknownKeys(output: transcript))
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(transcribed)
+  }
+
+  @Test("a failure whose last stderr line is the error envelope logs its exit_class and message")
+  func failureLogCarriesErrorEnvelope() async throws {
+    let directory = try Self.makeTempDirectory("error-envelope")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let logs = LogCollector()
+    let stderr =
+      "cleanup: resolving [llm] command\n"
+      + StageEnvelopeFixtures.cleanupError(
+        exitClass: "stage-failed", message: "error: no [llm] command resolved")
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      SpawnOutcome(exitCode: 4, stderr: stderr),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    _ = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe, .cleanup], context: "session-end")
+
+    let failure = try #require(
+      logs.snapshot().first { $0.contains("cleanup failed (exit 4, stage-failed)") })
+    // The envelope augments the failure line…
+    #expect(failure.contains("envelope: stage-failed — error: no [llm] command resolved"))
+    // …but never replaces the bounded raw stderr capture (issue #21).
+    #expect(failure.contains("stderr: cleanup: resolving [llm] command"))
+  }
+
+  @Test("an exit-0 envelope reporting ok=false is a contract violation, not a success")
+  func okFalseUnderExitZeroFailsStage() async throws {
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      SpawnOutcome(
+        exitCode: 0,
+        stdout: StageEnvelopeFixtures.transcribeError(
+          exitClass: "stage-failed", message: "error: output write failed") + "\n")
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(!transcribed)
+    #expect(
+      logs.snapshot().contains { $0.contains("ok=false despite exit 0") },
+      "expected the ok=false violation to be logged; got: \(logs.snapshot())")
+  }
+
   // MARK: - real process runner
 
   @Test("the real process runner captures a child's stderr and its non-zero exit code")
@@ -402,7 +548,7 @@ struct OnClosePipelineRunnerTests {
     let outcome = await OnClosePipelineRunner.realProcessRunner(
       "sh", ["-c", "printf '/out/path.md\\n'; printf 'note' 1>&2; exit 0"])
     #expect(outcome.exitCode == 0)
-    #expect(OnClosePipelineRunner.strictResultLine(outcome.stdout) == .success("/out/path.md"))
+    #expect(outcome.stdout == "/out/path.md\n")
     #expect(outcome.stderr == "note")
   }
 
