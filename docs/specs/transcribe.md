@@ -75,7 +75,11 @@ Options:
   --session <uuid>         union a session's intervals into one transcript
                            (per-source store lookup: per-session copy, ring fallback)
   --follow <id>            attach to a live source and stream finalised segments
-  --json                   (follow) emit JSON segment lines to stdout
+  --json                   follow: emit JSON segment lines to stdout
+                           batch: emit the one-document result envelope
+                           (see llm-stages.md "Result envelopes"); the two
+                           modes are mutually exclusive, so the flag is
+                           unambiguous in every run
   --file <path>            transcribe a standalone audio file; repeatable, one
                            transcript per file, written next to its input
   --out <path>             override the output transcript path

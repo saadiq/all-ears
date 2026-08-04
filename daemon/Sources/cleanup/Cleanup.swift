@@ -72,6 +72,13 @@ struct Cleanup: AsyncParsableCommand {
   @Flag(name: .customLong("no-vocab"), help: "Disable vocabulary-based correction for this run.")
   var noVocab = false
 
+  @Flag(
+    name: .customLong("json"),
+    help:
+      "Emit a versioned JSON result envelope (allears.cleanup/v1) as the only stdout document on success; on failure stdout stays empty and the last stderr line is the error envelope."
+  )
+  var json = false
+
   @Option(
     name: .customLong("set"),
     help:
@@ -108,6 +115,7 @@ struct Cleanup: AsyncParsableCommand {
     let vocab = self.vocab
     let model = self.model
     let noVocab = self.noVocab
+    let json = self.json
 
     // The real run happens inside `work`, between `run.start` and
     // `run.summary`; the summary reflects the outcome we return here, never a
@@ -123,6 +131,7 @@ struct Cleanup: AsyncParsableCommand {
         // all — so it adopts the same EX_USAGE code ArgumentParser exits with.
         let message = "error: a transcript path is required"
         FileHandle.standardError.write(Data((message + "\n").utf8))
+        diagnostics.recordError(message)
         return RunOutcome(class: .usage, error: message)
       }
       return await CleanupRuntime.run(
@@ -135,8 +144,22 @@ struct Cleanup: AsyncParsableCommand {
           model: model,
           useVocab: !noVocab
         ),
-        diagnostics: diagnostics
+        diagnostics: diagnostics,
+        emitJSONEnvelope: json
       )
+    }
+    // The `--json` failure contract (issue #63): stdout stays byte-empty
+    // (the runtime never emitted a success envelope) and the *last line of
+    // stderr* is the error envelope — written here, after `EarsCLI.run` has
+    // already echoed the failed run's `run.summary` to stderr, so nothing
+    // can land after it.
+    if exitCode != 0, json {
+      let envelope = CleanupResultEnvelope.failure(
+        exitClass: ExitClass.label(forCode: exitCode),
+        message: diagnostics.lastError ?? "error: cleanup failed (exit \(exitCode))")
+      if let line = StageEnvelopeJSON.encodeLine(envelope) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+      }
     }
     guard exitCode == 0 else { throw ExitCode(exitCode) }
   }

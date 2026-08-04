@@ -1,0 +1,19 @@
+{
+  "success": {
+    "schema": "allears.transcribe/v1",
+    "ok": true,
+    "output": "/out/2026-07-17T10-30-00Z_standup.transcript.md",
+    "outputs": [
+      "/out/2026-07-17T10-30-00Z_standup.transcript.md",
+      "/out/2026-07-17T10-30-00Z_standup.transcript.json"
+    ],
+    "warnings": [],
+    "stats": { "duration_s": 412, "segments": 87, "words": 1042 }
+  },
+  "error": {
+    "schema": "allears.transcribe/v1",
+    "ok": false,
+    "exit_class": "input-missing",
+    "message": "error: unknown session 'no-such-session'"
+  }
+}

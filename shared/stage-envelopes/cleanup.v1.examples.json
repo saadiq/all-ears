@@ -1,0 +1,19 @@
+{
+  "success": {
+    "schema": "allears.cleanup/v1",
+    "ok": true,
+    "output": "/out/2026-07-17T10-30-00Z_standup.clean.md",
+    "outputs": [
+      "/out/2026-07-17T10-30-00Z_standup.clean.md",
+      "/out/2026-07-17T10-30-00Z_standup.clean.json"
+    ],
+    "warnings": [],
+    "stats": { "segments": 87, "accepted": 61, "fallback": 2, "skipped": 24 }
+  },
+  "error": {
+    "schema": "allears.cleanup/v1",
+    "ok": false,
+    "exit_class": "retryable-upstream",
+    "message": "error: LLM call timed out; aborting cleanup as retryable"
+  }
+}

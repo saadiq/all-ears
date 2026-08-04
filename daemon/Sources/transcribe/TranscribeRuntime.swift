@@ -22,7 +22,8 @@ enum TranscribeRuntime {
   static func run(
     arguments: EarsCLI.Arguments, inputs: TranscribePipeline.Inputs,
     diagnostics: RunDiagnostics = RunDiagnostics(),
-    spans: StageSpans? = nil
+    spans: StageSpans? = nil,
+    emitJSONEnvelope: Bool = false
   ) async -> RunOutcome {
     // Guard the stdout path contract before anything else runs: after this,
     // only `resultChannel.emitResult` can reach the real stdout — a stray
@@ -38,6 +39,7 @@ enum TranscribeRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
+      diagnostics.recordError(error.message)
       return RunOutcome(class: .usage, error: error.message)
     }
 
@@ -51,6 +53,7 @@ enum TranscribeRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
+      diagnostics.recordError(message)
       // Unusable config is a stage failure (exit-code taxonomy, issue #61).
       return RunOutcome(class: .stageFailed, error: message)
     }
@@ -61,6 +64,7 @@ enum TranscribeRuntime {
     guard !dataRootPath.isEmpty else {
       let message = "error: data_root is not configured"
       writeStderr(message)
+      diagnostics.recordError(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
     let outputRootPath = stringValue(root, ["output_root"])
@@ -93,8 +97,12 @@ enum TranscribeRuntime {
       onError: { diagnostics.recordError($0) },
       onSummary: { diagnostics.recordSummary($0) },
       spans: spans)
-    // The result-line contract's only route to the real stdout.
-    dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+    if !emitJSONEnvelope {
+      // The plain result-line contract's only route to the real stdout. In
+      // `--json` mode the line is withheld: the envelope below is the one
+      // stdout document, built from the summary's `output` field instead.
+      dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+    }
     // Test-only: `ALLEARS_TRANSCRIBE_BACKEND=null` swaps the ASR backend for
     // a NullTranscriber so smoke tests can drive a real successful run — see
     // NullTranscriberOverride.swift. A no-op unless a harness set the var.
@@ -108,7 +116,55 @@ enum TranscribeRuntime {
       socketPath: socketPath,
       dependencies: dependencies
     )
-    return diagnostics.outcome(exitCode: code)
+    let outcome = diagnostics.outcome(exitCode: code)
+
+    // The `--json` success envelope (issue #63): exactly one JSON document,
+    // through the guarded channel. On any non-zero exit stdout stays
+    // byte-empty; the error envelope is `Transcribe.run()`'s job (it must be
+    // the last line of stderr, after the failed run's `run.summary` echo).
+    if emitJSONEnvelope, code == 0,
+      let rawOutput = stringField(outcome.fields, "output")
+    {
+      let output = URL(fileURLWithPath: rawOutput).standardizedFileURL.path
+      let sidecar = URL(fileURLWithPath: output)
+        .deletingPathExtension().appendingPathExtension("json").path
+      let duration = doubleField(outcome.fields, "duration_seconds") ?? 0
+      let envelope = TranscribeResultEnvelope.success(
+        output: output,
+        outputs: [output, sidecar],
+        stats: TranscribeResultEnvelope.Stats(
+          durationS: duration.isFinite ? duration : 0,
+          segments: intField(outcome.fields, "segments") ?? 0,
+          words: intField(outcome.fields, "words") ?? 0))
+      if let line = StageEnvelopeJSON.encodeLine(envelope) {
+        resultChannel.emitResult(line)
+      }
+    }
+    return outcome
+  }
+
+  // MARK: - Summary-field readers (the envelope is built from the same
+  // fields the structured `run.summary` carries, so the two can't disagree)
+
+  private static func stringField(_ fields: [LogField], _ key: String) -> String? {
+    for field in fields where field.key == key {
+      if case .string(let value) = field.value { return value }
+    }
+    return nil
+  }
+
+  private static func intField(_ fields: [LogField], _ key: String) -> Int? {
+    for field in fields where field.key == key {
+      if case .int(let value) = field.value { return value }
+    }
+    return nil
+  }
+
+  private static func doubleField(_ fields: [LogField], _ key: String) -> Double? {
+    for field in fields where field.key == key {
+      if case .double(let value) = field.value { return value }
+    }
+    return nil
   }
 
   /// `transcribe --file`'s entry point: the file path needs only the model

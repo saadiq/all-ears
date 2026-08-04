@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tomelliot/all-ears/shared/stage-envelopes/cleanup.v1.schema.json",
+  "title": "allears.cleanup/v1 result envelope",
+  "description": "cleanup's --json result envelope (issue #63). Success: the one JSON document on stdout. Failure: the last line of stderr; stdout stays byte-empty. Additive keys may appear in later revisions, so consumers must ignore unknown keys (additionalProperties stays permissive on purpose).",
+  "oneOf": [
+    {
+      "title": "success",
+      "type": "object",
+      "required": ["schema", "ok", "output", "outputs", "warnings", "stats"],
+      "properties": {
+        "schema": { "const": "allears.cleanup/v1" },
+        "ok": { "const": true },
+        "output": {
+          "type": "string",
+          "description": "Absolute path of the primary artifact: the .clean.md."
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Absolute paths of every written artifact, primary first (the .clean.md and its .clean.json sidecar)."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "stats": {
+          "type": "object",
+          "required": ["segments", "accepted", "fallback", "skipped"],
+          "properties": {
+            "segments": { "type": "integer", "minimum": 0 },
+            "accepted": { "type": "integer", "minimum": 0 },
+            "fallback": { "type": "integer", "minimum": 0 },
+            "skipped": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    {
+      "title": "error",
+      "type": "object",
+      "required": ["schema", "ok", "exit_class", "message"],
+      "properties": {
+        "schema": { "const": "allears.cleanup/v1" },
+        "ok": { "const": false },
+        "exit_class": {
+          "type": "string",
+          "description": "The exit-code taxonomy label (issue #61); 'unclassified' for any code outside it.",
+          "enum": ["input-missing", "stage-failed", "retryable-upstream", "usage", "unclassified"]
+        },
+        "message": { "type": "string" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tomelliot/all-ears/shared/stage-envelopes/summarize.v1.schema.json",
+  "title": "allears.summarize/v1 result envelope",
+  "description": "summarize's --json result envelope (issue #63). Success (every preset succeeded): the one JSON document on stdout; 'output' is present only when exactly one preset ran. Failure: the last line of stderr, still carrying per-preset 'outputs' so partial success (2 of 3 presets) is expressible; stdout stays byte-empty and the exit is non-zero unless all presets succeeded. Additive keys may appear in later revisions, so consumers must ignore unknown keys (additionalProperties stays permissive on purpose).",
+  "$defs": {
+    "presetResult": {
+      "type": "object",
+      "required": ["preset", "ok"],
+      "properties": {
+        "preset": { "type": "string" },
+        "path": {
+          "type": "string",
+          "description": "Absolute path of the written summary; absent when the preset failed."
+        },
+        "ok": { "type": "boolean" }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "title": "success",
+      "type": "object",
+      "required": ["schema", "ok", "outputs", "warnings", "stats"],
+      "properties": {
+        "schema": { "const": "allears.summarize/v1" },
+        "ok": { "const": true },
+        "output": {
+          "type": "string",
+          "description": "Present only when exactly one preset ran: that preset's summary path."
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/presetResult" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "stats": {
+          "type": "object",
+          "required": ["presets"],
+          "properties": {
+            "presets": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    {
+      "title": "error",
+      "type": "object",
+      "required": ["schema", "ok", "exit_class", "message"],
+      "properties": {
+        "schema": { "const": "allears.summarize/v1" },
+        "ok": { "const": false },
+        "exit_class": {
+          "type": "string",
+          "description": "The exit-code taxonomy label (issue #61); 'unclassified' for any code outside it.",
+          "enum": ["input-missing", "stage-failed", "retryable-upstream", "usage", "unclassified"]
+        },
+        "message": { "type": "string" },
+        "outputs": {
+          "type": "array",
+          "description": "Present when at least one preset was attempted: per-preset results, so a partial failure still names what was written.",
+          "items": { "$ref": "#/$defs/presetResult" }
+        }
+      }
+    }
+  ]
+}

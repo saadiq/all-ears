@@ -64,7 +64,7 @@ The daemon runs this chain itself when a browser session ends (`[earsd.sessions]
 
 ### Output-path contract (stdout)
 
-The daemon chains stages without re-deriving each stage's output-path logic: a path-producing stage prints its primary output path as the **final non-empty line of stdout** on success. `transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path; `summarize` writes one file per preset and prints no path (its result surface is deferred to the `--json` issue). Batch stdout carries nothing else, so the contract is also script-friendly: `` cleanup "$(transcribe --session "$SESSION_ID")" ``. A stage that exits 0 without printing a path is treated by the daemon as a failure.
+The daemon chains stages without re-deriving each stage's output-path logic: a path-producing stage prints its primary output path as the **final non-empty line of stdout** on success. `transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path; `summarize` writes one file per preset and prints no path (its result surface is the `--json` envelope below). Batch stdout carries nothing else, so the contract is also script-friendly: `` cleanup "$(transcribe --session "$SESSION_ID")" ``. A stage that exits 0 without printing a path is treated by the daemon as a failure.
 
 **The promise, frozen (issue #62):** On exit 0 in default mode, stdout is exactly one line: the absolute path of the primary output. All other output goes to stderr. This will not change.
 
@@ -75,3 +75,23 @@ Rejected alternatives, recorded so they stay rejected:
 - **No second stdout line, ever.** It would break every `$(…)` consumer and the daemon's strict one-line parse in the same release.
 - **No TTY detection for the data format.** Stdout is the same one line piped or interactive; a format that changes shape depending on who is watching cannot be scripted against.
 - **No `key=value` mode.** Anything richer than the one path line is the `--json` surface's job, on its own flag — never a mutation of plain mode.
+
+### Result envelopes (`--json`)
+
+The plain contract is frozen, so all growth happens in the opt-in `--json` envelope (issue #63): versioned, additive-friendly, and loud on pollution — a stray stdout byte makes the document unparseable instead of producing a plausible wrong string. All three batch stages carry the flag.
+
+On `transcribe`, `--json` reuses the existing flag: under `--follow` it still means JSON *segment lines*; in batch mode it means the result envelope. The modes are mutually exclusive, so the two meanings can never collide in one run.
+
+**Success (exit 0):** stdout is exactly one JSON document, emitted through `EarsCLISupport.ResultChannel` (the plain path line is withheld — the envelope is the whole stdout):
+
+```json
+{"schema":"allears.transcribe/v1","ok":true,"output":"/abs/….transcript.md","outputs":["/abs/….transcript.md","/abs/….transcript.json"],"warnings":[],"stats":{"duration_s":412,"segments":87,"words":1042}}
+```
+
+**Failure (non-zero exit):** stdout stays **byte-empty** — "empty stdout ⇒ no result" holds in both modes — and the **last line of stderr** is an error envelope with the same `schema` field, `ok: false`, `exit_class` (the exit-code taxonomy label from issue #61 — `EarsCLISupport.ExitClass`), and `message`. Usage rejections that stop the invocation before a run starts (ArgumentParser validation) keep their plain usage error: stdout is still empty, but no envelope is emitted for a run that never began.
+
+**`output` semantics:** present when exactly one primary artifact exists — `transcribe`: the `.transcript.md`; `cleanup`: the `.clean.md`; `summarize` single preset: that summary file. A multi-preset `summarize` run has no single primary artifact, so `output` is absent and `outputs[]` carries per-preset entries `{preset, path, ok}` — which also makes partial success ("2 of 3 presets") expressible: presets run independently, each outcome is reported, and the exit is 0 only when all presets succeeded (a failed run's stderr envelope still carries `outputs[]`, naming what was written).
+
+**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`; `summarize`: `presets`). Additive keys are free later; the schemas deliberately leave `additionalProperties` permissive, so consumers must ignore unknown keys.
+
+The cross-repo contract is one JSON Schema per stage checked into `shared/stage-envelopes/<tool>.v1.schema.json` (the same home pattern as `shared/protocol-fixtures/`), with example fixtures beside them that the Swift suite decodes and round-trips. The envelope structs are `Codable` types owned by each tool; the daemon gets its own decoder in the consumer issue. Pinned end to end by `Tests/CLISmokeTests/JSONEnvelopeContractSmokeTests.swift` across every stage, success and failure, with and without `--verbose`.

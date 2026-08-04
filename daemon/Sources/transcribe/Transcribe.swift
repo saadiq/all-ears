@@ -1,5 +1,6 @@
 import ArgumentParser
 import EarsCLISupport
+import Foundation
 
 /// Reads captured audio chunks and the VAD index for a source/time-range, runs the
 /// ASR model, and writes a transcript to the output location. See
@@ -103,9 +104,15 @@ struct Transcribe: AsyncParsableCommand {
     help: "Attach to a live source by id and stream finalised segments until signalled.")
   var follow: String?
 
+  // One flag, two mutually exclusive modes (issue #63's recorded decision):
+  // under `--follow` it streams JSON *segment lines*; in batch mode it emits
+  // the one JSON *result envelope* (allears.transcribe/v1). The modes can't
+  // combine, so the flag is unambiguous at every call site.
   @Flag(
     name: .customLong("json"),
-    help: "(follow) Emit JSON segment lines to stdout instead of plain text.")
+    help:
+      "Follow mode: emit JSON segment lines to stdout instead of plain text. Batch mode: emit a versioned JSON result envelope (allears.transcribe/v1) as the only stdout document on success; on failure stdout stays empty and the last stderr line is the error envelope."
+  )
   var json = false
 
   func run() async throws {
@@ -172,7 +179,23 @@ struct Transcribe: AsyncParsableCommand {
           last: last, from: from, to: to, session: session, sourceIDs: sources,
           out: out),
         diagnostics: diagnostics,
-        spans: bootstrap.stageSpans(tool: "transcribe"))
+        spans: bootstrap.stageSpans(tool: "transcribe"),
+        emitJSONEnvelope: json)
+    }
+    // The batch `--json` failure contract (issue #63): stdout stays
+    // byte-empty (the runtime never emitted a success envelope) and the
+    // *last line of stderr* is the error envelope — written here, after
+    // `EarsCLI.run` has already echoed the failed run's `run.summary` to
+    // stderr, so nothing can land after it. Only the batch path: under
+    // `--follow`, `--json` means segment lines, and `--file` rejects the
+    // flag outright.
+    if exitCode != 0, json, follow == nil, files.isEmpty {
+      let envelope = TranscribeResultEnvelope.failure(
+        exitClass: ExitClass.label(forCode: exitCode),
+        message: diagnostics.lastError ?? "error: transcribe failed (exit \(exitCode))")
+      if let line = StageEnvelopeJSON.encodeLine(envelope) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+      }
     }
     guard exitCode == 0 else { throw ExitCode(exitCode) }
   }
@@ -205,9 +228,9 @@ struct Transcribe: AsyncParsableCommand {
       }
       return
     }
-    guard !json else {
-      throw ValidationError("--json is only meaningful with --follow")
-    }
+    // Batch `--json` (the result envelope, issue #63) is valid from here on:
+    // the `--file` and `--follow` paths above have already returned, so no
+    // rejection — the flag's two meanings can never collide in one run.
     if session != nil {
       // A session names its own range and sources; mixing selectors is a
       // precise error rather than a silent ignore.

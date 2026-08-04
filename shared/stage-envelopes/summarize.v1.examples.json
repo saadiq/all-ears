@@ -1,0 +1,49 @@
+{
+  "success": {
+    "schema": "allears.summarize/v1",
+    "ok": true,
+    "output": "/out/2026-07-17T10-30-00Z_standup.summary.md",
+    "outputs": [
+      { "preset": "brief", "path": "/out/2026-07-17T10-30-00Z_standup.summary.md", "ok": true }
+    ],
+    "warnings": [],
+    "stats": { "presets": 1 }
+  },
+  "all_presets_success": {
+    "schema": "allears.summarize/v1",
+    "ok": true,
+    "outputs": [
+      {
+        "preset": "brief",
+        "path": "/out/2026-07-17T10-30-00Z_standup.brief.summary.md",
+        "ok": true
+      },
+      {
+        "preset": "actions",
+        "path": "/out/2026-07-17T10-30-00Z_standup.actions.summary.md",
+        "ok": true
+      }
+    ],
+    "warnings": [],
+    "stats": { "presets": 2 }
+  },
+  "partial_failure_error": {
+    "schema": "allears.summarize/v1",
+    "ok": false,
+    "exit_class": "stage-failed",
+    "message": "error: LLM call failed for preset 'actions': model process exited 1",
+    "outputs": [
+      {
+        "preset": "brief",
+        "path": "/out/2026-07-17T10-30-00Z_standup.brief.summary.md",
+        "ok": true
+      },
+      { "preset": "actions", "ok": false },
+      {
+        "preset": "decisions",
+        "path": "/out/2026-07-17T10-30-00Z_standup.decisions.summary.md",
+        "ok": true
+      }
+    ]
+  }
+}
