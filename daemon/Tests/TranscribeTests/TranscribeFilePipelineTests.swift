@@ -178,7 +178,7 @@ struct TranscribeFilePipelineTests {
       dependencies: dependencies(NullTranscriber(), writeStderr: { messages.append($0) }),
       fileReader: fakeReader())
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 64)
     #expect(messages.all.contains { $0.contains("--out cannot be combined with multiple") })
   }
 
@@ -191,7 +191,7 @@ struct TranscribeFilePipelineTests {
       dependencies: dependencies(NullTranscriber(), writeStderr: { messages.append($0) }),
       fileReader: fakeReader())
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
     #expect(messages.all.contains { $0.contains("no such file") })
   }
 

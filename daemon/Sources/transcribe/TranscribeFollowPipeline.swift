@@ -1,3 +1,4 @@
+import EarsCLISupport
 import EarsCore
 import EarsDataStore
 import EarsTranscribeKit
@@ -172,7 +173,7 @@ enum TranscribeFollowPipeline {
       dependencies.writeStderr(
         "error: source '\(sourceID.rawValue)' is not live: no active session is capturing it "
           + "(start one with `ears session start --source \(sourceID.rawValue)`)")
-      return 1
+      return ExitClass.inputMissing.code
     }
     let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: session.id)
 
@@ -182,7 +183,7 @@ enum TranscribeFollowPipeline {
       dependencies.writeStderr(
         "error: source '\(sourceID.rawValue)' is claimed by session '\(session.id)' "
           + "but no data found under \(sourceDirectory.path)")
-      return 1
+      return ExitClass.inputMissing.code
     }
     dependencies.log(
       "attaching to session '\(session.id)' (\(session.title)) for source '\(sourceID.rawValue)'")
@@ -193,7 +194,7 @@ enum TranscribeFollowPipeline {
     } catch {
       dependencies.writeStderr(
         "error: failed to read source metadata for '\(sourceID.rawValue)': \(error)")
-      return 1
+      return ExitClass.inputMissing.code
     }
 
     let transcriber: any Transcriber
@@ -202,13 +203,13 @@ enum TranscribeFollowPipeline {
       try transcriber.load(dependencies.loadOptions)
     } catch {
       dependencies.writeStderr("error: failed to load transcriber: \(error)")
-      return 1
+      return ExitClass.stageFailed.code
     }
     guard let streaming = transcriber as? any StreamingTranscriber else {
       dependencies.writeStderr(
         "error: backend '\(transcriber.info.name)' does not support streaming "
           + "(--follow requires a StreamingTranscriber)")
-      return 1
+      return ExitClass.stageFailed.code
     }
 
     let run = FollowRun(
@@ -356,7 +357,7 @@ private final class FollowRun {
     writeTranscript()
     if transcriptWriteFailed {
       dependencies.writeStderr("error: failed to write transcript to \(paths.markdown.path)")
-      return 1
+      return ExitClass.stageFailed.code
     }
     dependencies.log(
       "run.summary: segments=\(committedSegments.count) "

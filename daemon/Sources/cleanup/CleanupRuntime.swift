@@ -43,7 +43,7 @@ enum CleanupRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
-      return RunOutcome(exitCode: 1, error: error.message)
+      return RunOutcome(class: .usage, error: error.message)
     }
 
     let loaded: LoadedConfig
@@ -56,7 +56,8 @@ enum CleanupRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      // Unusable config is a stage failure (exit-code taxonomy, issue #61).
+      return RunOutcome(class: .stageFailed, error: message)
     }
 
     let root = loaded.value
@@ -73,7 +74,7 @@ enum CleanupRuntime {
     guard !command.isEmpty else {
       let message = "error: no [llm] command resolved (backend=\(backend), model='\(model)')"
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      return RunOutcome(class: .stageFailed, error: message)
     }
     let llmBackend = CommandLLMBackend(
       info: LLMBackendInfo(name: backend, model: model.isEmpty ? nil : model), command: command)

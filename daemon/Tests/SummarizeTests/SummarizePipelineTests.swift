@@ -206,7 +206,7 @@ struct SummarizePipelineTests {
       inputs: SummarizePipeline.Inputs(
         transcriptPaths: ["/tmp/whatever.transcript.md"], presets: [], out: nil),
       dependencies: deps)
-    #expect(exitCode == 1)
+    #expect(exitCode == 64)
   }
 
   @Test("a missing transcript file is a clear, non-zero error")
@@ -217,6 +217,6 @@ struct SummarizePipelineTests {
         transcriptPaths: ["/nonexistent/path.transcript.md"],
         presets: [SummarizePipeline.Preset(name: "brief", promptContent: "Brief:")], out: nil),
       dependencies: deps)
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
   }
 }

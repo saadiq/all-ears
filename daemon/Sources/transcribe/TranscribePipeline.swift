@@ -1,3 +1,4 @@
+import EarsCLISupport
 import EarsCore
 import EarsDataStore
 import EarsDiarizeKit
@@ -184,7 +185,7 @@ enum TranscribePipeline {
         session = try SessionStore.read(sessionID: sessionID, dataRoot: dataRoot)
       } catch {
         dependencies.writeStderr("error: unknown session '\(sessionID)': \(error)")
-        return 1
+        return ExitClass.inputMissing.code
       }
       // A still-open interval (session active) reads up to now — "give me
       // what's there so far", matching `--last`'s own "ending now" semantics.
@@ -194,7 +195,7 @@ enum TranscribePipeline {
       }
       guard let first = ranges.first, let last = ranges.last else {
         dependencies.writeStderr("error: session '\(sessionID)' has no non-empty intervals")
-        return 1
+        return ExitClass.inputMissing.code
       }
       requestedRange = TimeRange(start: first.start, end: last.end)
       intervalRanges = ranges
@@ -205,8 +206,9 @@ enum TranscribePipeline {
       ) {
       case .success(let value): requestedRange = value
       case .failure(let error):
+        // Malformed --last/--from/--to spellings are usage errors.
         dependencies.writeStderr("error: \(error.description)")
-        return 1
+        return ExitClass.usage.code
       }
       intervalRanges = [requestedRange]
       sessionRecord = nil
@@ -217,7 +219,7 @@ enum TranscribePipeline {
     let sourceIDs = sessionRecord?.sources ?? inputs.sourceIDs.map { SourceID($0) }
     guard !sourceIDs.isEmpty else {
       dependencies.writeStderr("error: at least one --source is required (or --session naming one)")
-      return 1
+      return ExitClass.usage.code
     }
 
     // Resolve, per source, which store to read from.
@@ -260,7 +262,7 @@ enum TranscribePipeline {
           dependencies.writeStderr(
             "error: unknown source '\(sourceID.rawValue)': no data found under \(sourceDirectory.path)"
           )
-          return 1
+          return ExitClass.inputMissing.code
         }
       }
       plans = sourceIDs.map { SourceAudioPlan(sourceID: $0, reader: reader, store: nil) }
@@ -305,7 +307,7 @@ enum TranscribePipeline {
       }
     } catch {
       dependencies.writeStderr("error: failed to load transcriber: \(error)")
-      return 1
+      return ExitClass.stageFailed.code
     }
 
     // Optional diarizer (`[diarize].backend`). Loading it is best-effort and
@@ -367,7 +369,7 @@ enum TranscribePipeline {
           } catch {
             dependencies.writeStderr(
               "error: failed to read audio for source '\(sourceID.rawValue)': \(error)")
-            return 1
+            return ExitClass.inputMissing.code
           }
         }
       }
@@ -424,7 +426,7 @@ enum TranscribePipeline {
       } catch {
         dependencies.writeStderr(
           "error: transcription failed for source '\(sourceID.rawValue)': \(error)")
-        return 1
+        return ExitClass.stageFailed.code
       }
       speechSeconds += sliceAudioSeconds
 
@@ -508,7 +510,7 @@ enum TranscribePipeline {
       }
     } catch {
       dependencies.writeStderr("error: failed to write transcript: \(error)")
-      return 1
+      return ExitClass.stageFailed.code
     }
 
     // A run that produced no segments is only diagnosable if each source says

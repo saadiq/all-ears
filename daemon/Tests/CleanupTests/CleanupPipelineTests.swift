@@ -160,6 +160,47 @@ struct CleanupPipelineTests {
     let directory = Self.makeTempDirectory("fallback")
     defer { try? FileManager.default.removeItem(at: directory) }
 
+    // Two segments: the first gets an accepted correction, the second a
+    // rejected one — so the run is a partial success (exit 0, per issue #61's
+    // taxonomy only an *all*-rejected run is a stage failure) and the
+    // fallback keeps the rejected segment's original text.
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 0, end: 3, text: "hello there how are you")),
+        TranscriptSegment(
+          source: "mic", speaker: "You", segment: Segment(start: 4, end: 6, text: "Hello there.")),
+      ])
+
+    let (deps, _) = Self.dependencies(llmResults: [
+      .success(LLMCompletionResult(text: "Hello there, how are you?")),
+      // Wildly different length + invented content -> CleanupValidator rejects it.
+      .success(
+        LLMCompletionResult(
+          text:
+            "This is a completely different sentence about something the original never mentioned at all."
+        )),
+    ])
+
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let cleanedMarkdown = try String(
+      contentsOf: directory.appendingPathComponent("standup.clean.md"), encoding: .utf8)
+    #expect(cleanedMarkdown.contains("Hello there, how are you?"))
+    #expect(cleanedMarkdown.contains("Hello there."))
+  }
+
+  @Test("every attempted segment rejected is a stage failure (exit 4), not a do-nothing success")
+  func everySegmentRejectedIsStageFailure() async throws {
+    let directory = Self.makeTempDirectory("all-rejected")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
     let markdownURL = try Self.writeFixtureTranscript(
       at: directory,
       segments: [
@@ -167,7 +208,8 @@ struct CleanupPipelineTests {
           source: "mic", speaker: "You", segment: Segment(start: 0, end: 3, text: "Hello there."))
       ])
 
-    // Wildly different length + invented content -> CleanupValidator rejects it.
+    // The only attempted segment's candidate fails validation, so the run
+    // produced nothing: a "cleaned" file would be a byte-for-byte copy.
     let (deps, _) = Self.dependencies(llmResults: [
       .success(
         LLMCompletionResult(
@@ -181,10 +223,11 @@ struct CleanupPipelineTests {
         transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
-    #expect(exitCode == 0)
-    let cleanedMarkdown = try String(
-      contentsOf: directory.appendingPathComponent("standup.clean.md"), encoding: .utf8)
-    #expect(cleanedMarkdown.contains("Hello there."))
+    #expect(exitCode == 4, "expected exit 4 (stage-failed), got \(exitCode)")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("standup.clean.md").path),
+      "an all-rejected run must not write a do-nothing copy of its input")
   }
 
   @Test(
@@ -220,19 +263,30 @@ struct CleanupPipelineTests {
     #expect(recorded.count == 1)
   }
 
-  @Test("keeps the original text when the LLM call itself throws")
+  @Test("keeps the original text when the LLM call itself throws (non-timeout)")
   func keepsOriginalOnLLMFailure() async throws {
     let directory = Self.makeTempDirectory("llm-error")
     defer { try? FileManager.default.removeItem(at: directory) }
 
+    // Two segments: the first LLM call crashes (a per-segment degrade, kept
+    // as a fallback), the second is accepted — so the run still succeeds.
+    // A *timeout* is different: it aborts the whole run as retryable
+    // upstream (see `llmTimeoutExitsRetryableUpstream`), and an all-fallback
+    // run is a stage failure (see `everySegmentRejectedIsStageFailure`).
     let markdownURL = try Self.writeFixtureTranscript(
       at: directory,
       segments: [
         TranscriptSegment(
-          source: "mic", speaker: "You", segment: Segment(start: 0, end: 3, text: "Original text."))
+          source: "mic", speaker: "You", segment: Segment(start: 0, end: 3, text: "Original text.")),
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 4, end: 7, text: "hello there how are you")),
       ])
 
-    let (deps, _) = Self.dependencies(llmResults: [.failure(LLMBackendError.timedOut)])
+    let (deps, _) = Self.dependencies(llmResults: [
+      .failure(LLMBackendError.nonZeroExit(code: 1, stderr: "model crashed")),
+      .success(LLMCompletionResult(text: "Hello there, how are you?")),
+    ])
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
@@ -243,6 +297,7 @@ struct CleanupPipelineTests {
     let cleanedMarkdown = try String(
       contentsOf: directory.appendingPathComponent("standup.clean.md"), encoding: .utf8)
     #expect(cleanedMarkdown.contains("Original text."))
+    #expect(cleanedMarkdown.contains("Hello there, how are you?"))
   }
 
   @Test("--out overrides the output path")
@@ -300,6 +355,31 @@ struct CleanupPipelineTests {
         atPath: directory.appendingPathComponent("standup.clean.md").path))
   }
 
+  @Test("an LLM timeout aborts the run with exit 5 (retryable upstream failure)")
+  func llmTimeoutExitsRetryableUpstream() async throws {
+    let directory = Self.makeTempDirectory("llm-timeout")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You", segment: Segment(start: 0, end: 3, text: "Original text."))
+      ])
+
+    let (deps, _) = Self.dependencies(llmResults: [.failure(LLMBackendError.timedOut)])
+
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+      dependencies: deps)
+
+    // A timed-out LLM is an upstream outage, not a per-segment degrade: the
+    // remaining segments would hit the same wall, so the run aborts with the
+    // retryable class a future retry policy keys on (issue #61).
+    #expect(exitCode == 5, "expected exit 5 (retryable-upstream), got \(exitCode)")
+  }
+
   @Test("a missing transcript file is a clear, non-zero error")
   func missingTranscriptIsError() async {
     let (deps, _) = Self.dependencies(llmResults: [])
@@ -308,6 +388,6 @@ struct CleanupPipelineTests {
         transcriptPath: "/nonexistent/path.transcript.md", out: nil, systemPrompt: nil,
         vocabulary: []),
       dependencies: deps)
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
   }
 }

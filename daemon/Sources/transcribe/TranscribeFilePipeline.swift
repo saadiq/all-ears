@@ -1,3 +1,4 @@
+import EarsCLISupport
 import EarsCore
 import EarsDataStore
 import Foundation
@@ -39,14 +40,14 @@ enum TranscribeFilePipeline {
   ) async -> Int32 {
     guard !inputs.files.isEmpty else {
       dependencies.writeStderr("error: at least one --file is required")
-      return 1
+      return ExitClass.usage.code
     }
     // `--out` names a single path, so it can't disambiguate more than one
     // input -- a precise error rather than silently writing every file to the
     // same place.
     if inputs.out != nil, inputs.files.count > 1 {
       dependencies.writeStderr("error: --out cannot be combined with multiple --file inputs")
-      return 1
+      return ExitClass.usage.code
     }
 
     // Fail fast on a missing file before loading the (expensive) ASR model,
@@ -54,7 +55,7 @@ enum TranscribeFilePipeline {
     for path in inputs.files {
       guard FileManager.default.fileExists(atPath: path) else {
         dependencies.writeStderr("error: no such file: \(path)")
-        return 1
+        return ExitClass.inputMissing.code
       }
     }
 
@@ -66,7 +67,7 @@ enum TranscribeFilePipeline {
       try transcriber.load(dependencies.loadOptions)
     } catch {
       dependencies.writeStderr("error: failed to load transcriber: \(error)")
-      return 1
+      return ExitClass.stageFailed.code
     }
     let modelInfo = TranscriptModelInfo(
       name: transcriber.info.name, backend: backendName, version: transcriber.info.version)
@@ -140,7 +141,7 @@ enum TranscribeFilePipeline {
         fileURL: fileURL, targetSampleRate: targetSampleRate, anchor: anchor)
     } catch {
       dependencies.writeStderr("error: failed to read audio from '\(path)': \(error)")
-      return (1, nil)
+      return (ExitClass.inputMissing.code, nil)
     }
 
     let sourceID = SourceID(fileURL.deletingPathExtension().lastPathComponent)
@@ -156,7 +157,7 @@ enum TranscribeFilePipeline {
         }
       } catch {
         dependencies.writeStderr("error: transcription failed for '\(path)': \(error)")
-        return (1, nil)
+        return (ExitClass.stageFailed.code, nil)
       }
     }
 
@@ -202,7 +203,7 @@ enum TranscribeFilePipeline {
       }
     } catch {
       dependencies.writeStderr("error: failed to write transcript for '\(path)': \(error)")
-      return (1, nil)
+      return (ExitClass.stageFailed.code, nil)
     }
 
     dependencies.log(

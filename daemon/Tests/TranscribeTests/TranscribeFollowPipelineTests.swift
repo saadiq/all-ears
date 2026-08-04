@@ -440,7 +440,7 @@ struct TranscribeFollowPipelineTests {
       dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
     #expect(
       harness.stderrLines.withLock { $0 }.contains { $0.contains("app:no.such.app") })
   }
@@ -469,7 +469,7 @@ struct TranscribeFollowPipelineTests {
       dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
     #expect(harness.stderrLines.withLock { $0 }.contains { $0.contains("is not live") })
   }
 
@@ -488,7 +488,7 @@ struct TranscribeFollowPipelineTests {
       dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 3)
     #expect(harness.stderrLines.withLock { $0 }.contains { $0.contains("no data found") })
   }
 
@@ -540,7 +540,7 @@ struct TranscribeFollowPipelineTests {
       dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
-    #expect(exitCode == 1)
+    #expect(exitCode == 4)
     #expect(
       harness.stderrLines.withLock { $0 }.contains { $0.contains("StreamingTranscriber") })
   }

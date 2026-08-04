@@ -38,7 +38,7 @@ enum TranscribeRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
-      return RunOutcome(exitCode: 1, error: error.message)
+      return RunOutcome(class: .usage, error: error.message)
     }
 
     let loaded: LoadedConfig
@@ -51,7 +51,8 @@ enum TranscribeRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      // Unusable config is a stage failure (exit-code taxonomy, issue #61).
+      return RunOutcome(class: .stageFailed, error: message)
     }
 
     let root = loaded.value
@@ -60,7 +61,7 @@ enum TranscribeRuntime {
     guard !dataRootPath.isEmpty else {
       let message = "error: data_root is not configured"
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      return RunOutcome(class: .stageFailed, error: message)
     }
     let outputRootPath = stringValue(root, ["output_root"])
     let backendName = stringValue(root, ["transcribe", "backend"], default: "fluidaudio")
@@ -128,7 +129,7 @@ enum TranscribeRuntime {
     case .success(let value): loadInputs = value
     case .failure(let error):
       writeStderr(error.message)
-      return RunOutcome(exitCode: 1, error: error.message)
+      return RunOutcome(class: .usage, error: error.message)
     }
 
     let loaded: LoadedConfig
@@ -141,7 +142,8 @@ enum TranscribeRuntime {
     case .failure(let error):
       let message = describe(error)
       writeStderr(message)
-      return RunOutcome(exitCode: 1, error: message)
+      // Unusable config is a stage failure (exit-code taxonomy, issue #61).
+      return RunOutcome(class: .stageFailed, error: message)
     }
 
     let root = loaded.value

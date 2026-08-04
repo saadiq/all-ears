@@ -1,3 +1,4 @@
+import EarsCLISupport
 import EarsCore
 import EarsDataStore
 import EarsLLMKit
@@ -89,7 +90,7 @@ enum CleanupPipeline {
     } catch {
       dependencies.writeStderr(
         "error: could not read transcript at \(inputs.transcriptPath): \(error)")
-      return 1
+      return ExitClass.inputMissing.code
     }
 
     let inputSidecarURL = sidecarURL(for: transcriptURL)
@@ -101,7 +102,7 @@ enum CleanupPipeline {
     } catch {
       dependencies.writeStderr(
         "error: could not parse transcript at \(inputs.transcriptPath): \(error)")
-      return 1
+      return ExitClass.inputMissing.code
     }
 
     let promptBuilder = CleanupPromptBuilder(
@@ -127,6 +128,17 @@ enum CleanupPipeline {
       do {
         candidateText = try await dependencies.llmBackend.complete(prompt).text
       } catch {
+        // A timeout is an upstream outage, not a per-segment degrade: every
+        // remaining segment would stall against the same wall (each waiting
+        // the full timeout), so the run aborts with the retryable class a
+        // future retry policy keys on (issue #61). Every *other* LLM failure
+        // keeps the per-segment fallback — one crashed completion shouldn't
+        // discard the rest of a mostly-successful pass.
+        if ExitClass.classifying(llmError: error) == .retryableUpstream {
+          dependencies.writeStderr(
+            "error: LLM call timed out; aborting cleanup as retryable: \(error)")
+          return ExitClass.retryableUpstream.code
+        }
         dependencies.log(
           "LLM call failed for a segment, keeping the original text: \(error)")
         fellBack += 1
@@ -146,6 +158,19 @@ enum CleanupPipeline {
         dependencies.log("rejected a cleanup candidate (\(reason)), keeping the original text")
         cleanedSegments.append(turn)
       }
+    }
+
+    // Every attempted (non-skipped) segment falling back means the stage
+    // produced nothing: the "cleaned" output would be a byte-for-byte copy of
+    // the input. That is a stage failure under the exit-code taxonomy
+    // (issue #61's "every-segment-rejected"), reported loudly rather than
+    // dressed up as a success the chain would then feed forward.
+    let attempted = document.segments.count - skipped
+    if attempted > 0 && accepted == 0 {
+      dependencies.writeStderr(
+        "error: cleanup produced no accepted segments "
+          + "(\(fellBack) of \(attempted) attempted segments fell back)")
+      return ExitClass.stageFailed.code
     }
 
     let generated = dependencies.clock.now()
@@ -176,7 +201,7 @@ enum CleanupPipeline {
       }
     } catch {
       dependencies.writeStderr("error: failed to write cleaned transcript: \(error)")
-      return 1
+      return ExitClass.stageFailed.code
     }
 
     dependencies.log(

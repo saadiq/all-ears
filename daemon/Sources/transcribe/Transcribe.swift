@@ -22,7 +22,10 @@ import EarsCLISupport
 @main
 struct Transcribe: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "transcribe"
+    commandName: "transcribe",
+    // The shared exit-code taxonomy (issue #61), documented where an
+    // operator will actually look for it.
+    discussion: ExitClass.helpEpilogue
   )
 
   @Option(name: .customLong("config"), help: "Path to a TOML config file.")
