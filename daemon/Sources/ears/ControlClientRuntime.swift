@@ -89,6 +89,11 @@ enum ControlClientRuntime {
       let dataRoot = stringValue(loaded.value, ["data_root"])
       let configured = stringValue(loaded.value, ["socket_path"])
       let path = configured.isEmpty ? DefaultSocketPath.resolve(dataRoot: dataRoot) : configured
+      // Over-long paths fail here with the config-naming message rather than
+      // at connect time (issue #74).
+      if let message = DefaultSocketPath.lengthError(forPath: path) {
+        return .failure(ConfigResolutionError(description: "error: \(message)"))
+      }
       return .success(path)
     case .failure(let error):
       return .failure(ConfigResolutionError(description: describe(error)))

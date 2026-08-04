@@ -122,6 +122,17 @@ enum EarsdRuntime {
     for warning in resolution.warnings {
       await logHandle.emit("config: \(warning)")
     }
+    // Refuse to start on a socket path that cannot fit in `sun_path`
+    // (issue #74): past this point the Network framework would trap on
+    // connect and report a listener `.ready` without ever creating the
+    // socket file — a daemon that looks up but is unreachable.
+    if let message = DefaultSocketPath.lengthError(
+      forPath: resolution.configuration.socketPath)
+    {
+      await logHandle.emit("config: \(message)", level: .error)
+      writeStderr("error: \(message)")
+      return 1
+    }
     let sourceList =
       resolution.configuration.sources.isEmpty
       ? "(none)"

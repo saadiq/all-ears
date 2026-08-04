@@ -85,6 +85,19 @@ enum TranscribeRuntime {
     let socketPath =
       configuredSocketPath.isEmpty
       ? DefaultSocketPath.resolve(dataRoot: dataRootPath) : configuredSocketPath
+    // Unusable config is a stage failure (issue #74): even though the socket
+    // is only the best-effort progress feed, an over-long path used to trap
+    // inside the Network framework before this run reached its own input
+    // validation — fail loudly with the config-naming message instead. Only
+    // `--session` runs dial the socket, so only they are checked: a batch
+    // `--last`/`--from` run with a deep `data_root` keeps working.
+    if inputs.session != nil, let lengthMessage = DefaultSocketPath.lengthError(forPath: socketPath)
+    {
+      let message = "error: \(lengthMessage)"
+      writeStderr(message)
+      diagnostics.recordError(message)
+      return RunOutcome(class: .stageFailed, error: message)
+    }
 
     var dependencies = TranscribePipeline.Dependencies.production(
       loadOptions: LoadOptions(
