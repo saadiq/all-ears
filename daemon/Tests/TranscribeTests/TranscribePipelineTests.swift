@@ -840,6 +840,52 @@ struct TranscribePipelineTests {
     #expect(FileManager.default.fileExists(atPath: sidecarPath))
   }
 
+  @Test("the emitted stdout path is absolute and standardized, not the output root's raw spelling")
+  func stdoutPathIsAbsoluteAndStandardized() async throws {
+    let dataRoot = makeTempDirectory("stdout-path")
+    let outputBase = makeTempDirectory("stdout-path-output")
+    // The relative-spelling case (`output_root = "."`): Foundation resolves a
+    // relative `fileURLWithPath` against cwd at URL creation, so what actually
+    // survives to the emitter is the un-normalized dot component — the daemon
+    // parsing the emitted line must get the standardized absolute path, not
+    // the root's raw spelling.
+    let outputRoot = URL(fileURLWithPath: outputBase.path + "/./transcripts")
+    try await writeFixtureSource(
+      sourceID: "mic", dataRoot: dataRoot,
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello world")]
+    ])
+
+    let stdoutLines = Mutex<[String]>([])
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(last: "20s", sourceIDs: ["mic"], out: nil),
+      dataRoot: dataRoot,
+      outputRoot: outputRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") },
+        writeStdout: { line in stdoutLines.withLock { $0.append(line) } }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let emitted = try #require(stdoutLines.withLock { $0 }.last)
+    #expect(emitted.hasPrefix("/"))
+    #expect(!emitted.contains("/./"))
+    let expected = OutputPathResolution.resolve(
+      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
+      explicitOut: nil
+    ).markdown.standardizedFileURL.path
+    #expect(emitted == expected)
+  }
+
   @Test("the configured LoadOptions is passed through to the transcriber's load call")
   func loadOptionsPassedThrough() async throws {
     let dataRoot = makeTempDirectory("load-options")

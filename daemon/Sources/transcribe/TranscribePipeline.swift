@@ -46,15 +46,16 @@ enum TranscribePipeline {
     var log: @Sendable (String) -> Void
     var writeStderr: @Sendable (String) -> Void
     /// The machine-readable stdout channel. A successful batch run's **final
-    /// stdout line is the written transcript's path** — the contract the
-    /// daemon's on-end stage chain (`OnClosePipelineRunner`) parses to feed
-    /// `cleanup` without re-deriving `OutputPathResolution`'s logic. Batch
-    /// stdout carries nothing else (`--follow`'s live segment lines are a
-    /// different pipeline). Defaults to real stdout so only tests that
-    /// assert on the contract need to inject.
-    var writeStdout: @Sendable (String) -> Void = { line in
-      FileHandle.standardOutput.write(Data((line + "\n").utf8))
-    }
+    /// stdout line is the written transcript's absolute path** — the contract
+    /// the daemon's on-end stage chain (`OnClosePipelineRunner`) parses to
+    /// feed `cleanup` without re-deriving `OutputPathResolution`'s logic.
+    /// Batch stdout carries nothing else (`--follow`'s live segment lines are
+    /// a different pipeline). ``TranscribeRuntime`` routes this through the
+    /// process's `EarsCLISupport.ResultChannel` — the *only* route to the
+    /// real stdout once the channel is active — so the default is a no-op
+    /// rather than a direct `FileHandle.standardOutput` write pollution could
+    /// share.
+    var writeStdout: @Sendable (String) -> Void = { _ in }
     /// Structured headline counts for the final `run.summary` (segments,
     /// words, sources consulted, output path), surfaced so the *log* — not
     /// just the human-readable stdout/stderr line — carries them, and an
@@ -555,8 +556,11 @@ enum TranscribePipeline {
 
     // The stdout path contract (see Dependencies.writeStdout): last line of a
     // successful run is the transcript path, emitted only after both files
-    // are durably written.
-    dependencies.writeStdout(paths.markdown.path)
+    // are durably written. Re-wrapped and standardized so the emitted line is
+    // always an absolute path with no `.`/`..` components — the daemon parses
+    // it from a different cwd, where the output root's raw spelling (e.g.
+    // `output_root = "."`) means nothing.
+    dependencies.writeStdout(URL(fileURLWithPath: paths.markdown.path).standardizedFileURL.path)
 
     return 0
   }

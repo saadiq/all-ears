@@ -358,5 +358,12 @@ let package = Package(
       name: "SummarizeTests",
       dependencies: ["EarsCore", "EarsCoreTestSupport", "EarsLLMKit", "summarize"]
     ),
+    // ResultChannel's fd-swap enforcement is unit-tested in-process (a
+    // capture pipe stands in for the real stdout), so it gets a dedicated
+    // tier-1 target rather than riding in CLISmokeTests' spawn-a-binary tier.
+    .testTarget(
+      name: "EarsCLISupportTests",
+      dependencies: ["EarsCLISupport"]
+    ),
   ]
 )

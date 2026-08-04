@@ -29,6 +29,11 @@ enum CleanupRuntime {
     arguments: EarsCLI.Arguments, inputs: CleanupCLIInputs,
     diagnostics: RunDiagnostics = RunDiagnostics()
   ) async -> RunOutcome {
+    // Guard the stdout path contract before anything else runs: after this,
+    // only `resultChannel.emitResult` can reach the real stdout — a stray
+    // `print` (ours or a dependency's) lands on stderr instead of forging a
+    // plausible-looking result line.
+    let resultChannel = ResultChannel.activate()
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
     let loadInputs: ConfigLoadInputs
@@ -85,6 +90,11 @@ enum CleanupRuntime {
         globalPath: stringValue(root, ["vocab", "global"]), extraPath: inputs.vocabPath,
         dataRoot: dataRoot) : []
 
+    var dependencies = CleanupPipeline.Dependencies.production(
+      llmBackend: llmBackend, onError: { diagnostics.recordError($0) })
+    // The result-line contract's only route to the real stdout.
+    dependencies.writeStdout = { line in resultChannel.emitResult(line) }
+
     let code = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
         transcriptPath: inputs.transcriptPath,
@@ -92,8 +102,7 @@ enum CleanupRuntime {
         systemPrompt: systemPrompt,
         vocabulary: vocabulary
       ),
-      dependencies: .production(
-        llmBackend: llmBackend, onError: { diagnostics.recordError($0) })
+      dependencies: dependencies
     )
     return diagnostics.outcome(exitCode: code)
   }

@@ -25,6 +25,11 @@ enum SummarizeRuntime {
     arguments: EarsCLI.Arguments, inputs: SummarizeCLIInputs,
     diagnostics: RunDiagnostics = RunDiagnostics()
   ) async -> RunOutcome {
+    // `summarize` emits no result line yet, but batch stdout still carries
+    // nothing else — activate the channel so a stray dependency `print`
+    // lands on stderr instead of stdout (and any future result line has its
+    // guarded route ready).
+    _ = ResultChannel.activate()
     let environment = ProcessInfo.processInfo.environment
     let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
     let loadInputs: ConfigLoadInputs

@@ -39,13 +39,14 @@ enum CleanupPipeline {
     var log: @Sendable (String) -> Void
     var writeStderr: @Sendable (String) -> Void
     /// The machine-readable stdout channel: a successful run's **final stdout
-    /// line is the cleaned transcript's path** — the same contract
+    /// line is the cleaned transcript's absolute path** — the same contract
     /// `transcribe` follows (see `TranscribePipeline.Dependencies`), parsed by
-    /// the daemon's on-end stage chain to feed `summarize`. Defaults to real
-    /// stdout so only tests that assert on the contract need to inject.
-    var writeStdout: @Sendable (String) -> Void = { line in
-      FileHandle.standardOutput.write(Data((line + "\n").utf8))
-    }
+    /// the daemon's on-end stage chain to feed `summarize`. ``CleanupRuntime``
+    /// routes this through the process's `EarsCLISupport.ResultChannel` — the
+    /// *only* route to the real stdout once the channel is active — so the
+    /// default is a no-op rather than a direct `FileHandle.standardOutput`
+    /// write pollution could share.
+    var writeStdout: @Sendable (String) -> Void = { _ in }
 
     static func production(
       llmBackend: any LLMBackend,
@@ -183,8 +184,11 @@ enum CleanupPipeline {
         + "fallback=\(fellBack) skipped=\(skipped) output=\(outputURL.path)"
     )
     // The stdout path contract (see Dependencies.writeStdout): emitted only
-    // after both output files are durably written.
-    dependencies.writeStdout(outputURL.path)
+    // after both output files are durably written. Re-wrapped and
+    // standardized so the emitted line is always an absolute path with no
+    // `.`/`..` components — the daemon parses it from a different cwd, where
+    // a relative `--out` spelling means nothing.
+    dependencies.writeStdout(URL(fileURLWithPath: outputURL.path).standardizedFileURL.path)
     return 0
   }
 

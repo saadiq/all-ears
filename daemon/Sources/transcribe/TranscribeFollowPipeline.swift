@@ -102,7 +102,12 @@ enum TranscribeFollowPipeline {
     /// Checked once per loop iteration; wired to SIGINT/SIGTERM in
     /// production, flipped directly by tests.
     var isStopped: @Sendable () -> Bool
-    /// One finalised-segment line, written and flushed immediately.
+    /// One finalised-segment line, written and flushed immediately. In
+    /// production this is the process's `EarsCLISupport.ResultChannel` — the
+    /// real stdout saved before fd 1 was redirected to stderr — so the
+    /// streaming segment feed keeps its stdout contract while stray
+    /// `print`s (ours or a dependency's) physically cannot interleave with
+    /// it.
     var writeStdoutLine: @Sendable (String) -> Void
     /// Best-effort live-feed publish (must swallow its own failures).
     var publishSegment: @Sendable (EarsEvent) async -> Void
@@ -110,11 +115,14 @@ enum TranscribeFollowPipeline {
     var writeStderr: @Sendable (String) -> Void
 
     /// The real wiring: ``ParakeetTranscriber``, real chunk decoding, real
-    /// signals/stdout, and a ``SegmentEventPublisher`` for the live feed.
+    /// signals, a ``SegmentEventPublisher`` for the live feed, and the
+    /// caller's result-channel emitter for the segment stream (`emitLine`,
+    /// wired by ``FollowRuntime`` to the activated `ResultChannel`).
     static func production(
       loadOptions: LoadOptions,
       publisher: SegmentEventPublisher,
       isStopped: @escaping @Sendable () -> Bool,
+      emitLine: @escaping @Sendable (String) -> Void,
       onError: (@Sendable (String) -> Void)? = nil
     ) -> Dependencies {
       Dependencies(
@@ -129,9 +137,7 @@ enum TranscribeFollowPipeline {
         pollInterval: .milliseconds(250),
         sleep: { duration in try? await Task.sleep(for: duration) },
         isStopped: isStopped,
-        writeStdoutLine: { line in
-          FileHandle.standardOutput.write(Data((line + "\n").utf8))
-        },
+        writeStdoutLine: emitLine,
         publishSegment: { event in await publisher.publish(event) },
         log: { message in
           FileHandle.standardError.write(Data(("transcribe: " + message + "\n").utf8))
