@@ -56,14 +56,35 @@ struct OnClosePipelineRunnerTests {
     SpawnOutcome(exitCode: 0, stdout: path + "\n")
   }
 
+  /// A fresh per-test temp directory; callers remove it in a `defer`.
+  private static func makeTempDirectory(_ label: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "on-close-runner-\(label)-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  /// Creates a real (empty) file at `name` inside `directory` and returns its
+  /// path — stage outputs must exist on disk to survive the runner's
+  /// existence check.
+  private static func makeFile(_ name: String, in directory: URL) throws -> String {
+    let url = directory.appendingPathComponent(name)
+    try Data().write(to: url)
+    return url.path
+  }
+
   // MARK: - stage chain
 
   @Test("the full chain runs transcribe → cleanup → summarize, threading each output path")
   func fullChainThreadsPaths() async throws {
+    let directory = try Self.makeTempDirectory("full-chain")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("10-00-00_abc.transcript.md", in: directory)
+    let clean = try Self.makeFile("10-00-00_abc.clean.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome("/out/2026-08-03/10-00-00_abc.transcript.md"),
-      Self.pathOutcome("/out/2026-08-03/10-00-00_abc.clean.md"),
+      Self.pathOutcome(transcript),
+      Self.pathOutcome(clean),
       SpawnOutcome(exitCode: 0),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -75,10 +96,9 @@ struct OnClosePipelineRunnerTests {
     #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
     #expect(runner.calls[0].arguments == ["--session", "b7acc61f"])
     // cleanup consumes the transcript path transcribe printed…
-    #expect(runner.calls[1].arguments == ["/out/2026-08-03/10-00-00_abc.transcript.md"])
+    #expect(runner.calls[1].arguments == [transcript])
     // …and summarize consumes the cleaned path cleanup printed.
-    #expect(
-      runner.calls[2].arguments == ["/out/2026-08-03/10-00-00_abc.clean.md", "--all-presets"])
+    #expect(runner.calls[2].arguments == [clean, "--all-presets"])
     for stage in ["transcribe", "cleanup", "summarize"] {
       #expect(logs.snapshot().contains { $0.contains("\(stage) succeeded for session 'b7acc61f'") })
     }
@@ -86,7 +106,10 @@ struct OnClosePipelineRunnerTests {
 
   @Test("a transcribe-only stage list spawns nothing else")
   func transcribeOnly() async throws {
-    let runner = ScriptedRunner([Self.pathOutcome("/out/t.transcript.md")])
+    let directory = try Self.makeTempDirectory("transcribe-only")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let runner = ScriptedRunner([Self.pathOutcome(transcript)])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
 
     let transcribed = await pipeline.runOnEndChain(
@@ -98,8 +121,11 @@ struct OnClosePipelineRunnerTests {
 
   @Test("without cleanup in the stages, summarize consumes the raw transcript path")
   func summarizeWithoutCleanup() async throws {
+    let directory = try Self.makeTempDirectory("no-cleanup")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
     let runner = ScriptedRunner([
-      Self.pathOutcome("/out/t.transcript.md"),
+      Self.pathOutcome(transcript),
       SpawnOutcome(exitCode: 0),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
@@ -108,7 +134,7 @@ struct OnClosePipelineRunnerTests {
       sessionID: "b7acc61f", stages: [.transcribe, .summarize], context: "session-end")
 
     #expect(runner.calls.map(\.name) == ["transcribe", "summarize"])
-    #expect(runner.calls[1].arguments == ["/out/t.transcript.md", "--all-presets"])
+    #expect(runner.calls[1].arguments == [transcript, "--all-presets"])
   }
 
   @Test("a failed transcribe stops the chain and returns false")
@@ -141,17 +167,65 @@ struct OnClosePipelineRunnerTests {
 
     #expect(!transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe"])
-    #expect(
-      logs.snapshot().contains {
-        $0.contains("printed no output path") && $0.contains("session 'b7acc61f'")
+    let violation = try #require(
+      logs.snapshot().first {
+        $0.contains("stdout contract violated: expected exactly one line, got 0")
       })
+    #expect(violation.contains("session 'b7acc61f'"))
+    #expect(violation.contains("no stdout captured"))
+  }
+
+  @Test("multi-line stdout violates the one-line contract and fails the stage")
+  func multiLineStdoutFailsStage() async throws {
+    let directory = try Self.makeTempDirectory("multi-line")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      SpawnOutcome(exitCode: 0, stdout: "notice\n\(transcript)\n")
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(!transcribed)
+    let violation = try #require(
+      logs.snapshot().first {
+        $0.contains("stdout contract violated: expected exactly one line, got 2")
+      })
+    // The bounded stdout rides along so the polluter is identifiable from the log.
+    #expect(violation.contains("notice"))
+    #expect(violation.contains("session 'b7acc61f'"))
+  }
+
+  @Test("a single-line stdout naming a path that does not exist fails the stage")
+  func missingOutputFileFailsStage() async throws {
+    let missing = FileManager.default.temporaryDirectory
+      .appendingPathComponent("on-close-runner-missing-\(UUID().uuidString)")
+      .appendingPathComponent("t.transcript.md").path
+    let logs = LogCollector()
+    let runner = ScriptedRunner([Self.pathOutcome(missing)])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(!transcribed)
+    let violation = try #require(
+      logs.snapshot().first { $0.contains("does not exist") })
+    #expect(violation.contains(missing))
+    #expect(violation.contains("session 'b7acc61f'"))
   }
 
   @Test("a failed cleanup skips summarize but still returns true — LLM stages never gate retention")
   func cleanupFailureSkipsSummarizeKeepsTranscribe() async throws {
+    let directory = try Self.makeTempDirectory("cleanup-fails")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome("/out/t.transcript.md"),
+      Self.pathOutcome(transcript),
       SpawnOutcome(exitCode: 1, stderr: "error: no [llm] command resolved"),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -167,10 +241,14 @@ struct OnClosePipelineRunnerTests {
 
   @Test("a failed summarize is logged but the chain result stays true")
   func summarizeFailureLogged() async throws {
+    let directory = try Self.makeTempDirectory("summarize-fails")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
-      Self.pathOutcome("/out/t.transcript.md"),
-      Self.pathOutcome("/out/t.clean.md"),
+      Self.pathOutcome(transcript),
+      Self.pathOutcome(clean),
       SpawnOutcome(exitCode: 2, stderr: "   \n"),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
@@ -200,13 +278,28 @@ struct OnClosePipelineRunnerTests {
 
   // MARK: - stdout path contract parsing
 
-  @Test("the final stdout line wins, ignoring earlier lines and trailing whitespace")
-  func finalStdoutLineParsing() {
-    #expect(OnClosePipelineRunner.finalStdoutLine("/a/b.md\n") == "/a/b.md")
-    #expect(OnClosePipelineRunner.finalStdoutLine("notice\n/a/b.md\n") == "/a/b.md")
-    #expect(OnClosePipelineRunner.finalStdoutLine("  /a/b.md  \n\n") == "/a/b.md")
-    #expect(OnClosePipelineRunner.finalStdoutLine("") == nil)
-    #expect(OnClosePipelineRunner.finalStdoutLine("   \n \n") == nil)
+  @Test("exactly one trimmed line parses; zero or several are contract violations, not last-line")
+  func strictResultLineParsing() {
+    #expect(OnClosePipelineRunner.strictResultLine("/a/b.md\n") == .success("/a/b.md"))
+    #expect(OnClosePipelineRunner.strictResultLine("  /a/b.md  \n\n") == .success("/a/b.md"))
+    // Pollution above the path is a violation — the old last-line rule would
+    // have parsed it "successfully".
+    let polluted = OnClosePipelineRunner.strictResultLine("notice\n/a/b.md\n")
+    #expect(throws: OnClosePipelineRunner.ContractViolation.self) { try polluted.get() }
+    if case .failure(let violation) = polluted {
+      #expect(
+        violation.message.contains("stdout contract violated: expected exactly one line, got 2"))
+      #expect(violation.message.contains("stdout: notice\n/a/b.md"))
+    }
+    // No lines at all is a violation too, saying so rather than quoting nothing.
+    for empty in ["", "   \n \n"] {
+      let parsed = OnClosePipelineRunner.strictResultLine(empty)
+      #expect(throws: OnClosePipelineRunner.ContractViolation.self) { try parsed.get() }
+      if case .failure(let violation) = parsed {
+        #expect(violation.message.contains("expected exactly one line, got 0"))
+        #expect(violation.message.contains("no stdout captured"))
+      }
+    }
   }
 
   // MARK: - on_end_stages config resolution
@@ -236,19 +329,19 @@ struct OnClosePipelineRunnerTests {
     #expect(resolved.problems.contains { $0.contains("require the transcribe stage") })
   }
 
-  // MARK: - bounded stderr
+  // MARK: - bounded capture
 
-  @Test("bounded stderr trims whitespace and passes a short message through unchanged")
-  func boundedStderrShort() {
-    #expect(OnClosePipelineRunner.boundedStderr("  boom  \n") == "boom")
-    #expect(OnClosePipelineRunner.boundedStderr("") == "")
+  @Test("bounded capture trims whitespace and passes a short message through unchanged")
+  func boundedCaptureShort() {
+    #expect(OnClosePipelineRunner.boundedCapture("  boom  \n") == "boom")
+    #expect(OnClosePipelineRunner.boundedCapture("") == "")
   }
 
-  @Test("bounded stderr keeps the tail of an over-long message and marks the truncation")
-  func boundedStderrLongKeepsTail() {
-    let padding = String(repeating: "x", count: OnClosePipelineRunner.maxStderrLogBytes + 500)
+  @Test("bounded capture keeps the tail of an over-long message and marks the truncation")
+  func boundedCaptureLongKeepsTail() {
+    let padding = String(repeating: "x", count: OnClosePipelineRunner.maxCaptureLogBytes + 500)
     let long = padding + "TAIL-MARKER"
-    let bounded = OnClosePipelineRunner.boundedStderr(long)
+    let bounded = OnClosePipelineRunner.boundedCapture(long)
     #expect(bounded.hasPrefix("…(truncated) "))
     #expect(bounded.hasSuffix("TAIL-MARKER"))
     // Bounded to the cap plus the short truncation prefix, never the full input.
@@ -270,7 +363,7 @@ struct OnClosePipelineRunnerTests {
     let outcome = await OnClosePipelineRunner.realProcessRunner(
       "sh", ["-c", "printf '/out/path.md\\n'; printf 'note' 1>&2; exit 0"])
     #expect(outcome.exitCode == 0)
-    #expect(OnClosePipelineRunner.finalStdoutLine(outcome.stdout) == "/out/path.md")
+    #expect(OnClosePipelineRunner.strictResultLine(outcome.stdout) == .success("/out/path.md"))
     #expect(outcome.stderr == "note")
   }
 
