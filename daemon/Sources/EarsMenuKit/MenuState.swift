@@ -35,3 +35,21 @@ public struct MenuState: Sendable, Hashable {
     jobs.filter { $0.state == .failed }
   }
 }
+
+extension MenuState {
+  mutating func upsertSession(_ session: Session) {
+    if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+      sessions[index] = session
+    } else {
+      sessions.append(session)
+    }
+  }
+
+  mutating func updateSource(id: SourceID, to newState: SourceRuntimeState) {
+    if let index = sources.firstIndex(where: { $0.id == id }) {
+      sources[index].state = newState
+    } else {
+      sources.append(SourceStatus(id: id, state: newState, codec: ""))
+    }
+  }
+}
