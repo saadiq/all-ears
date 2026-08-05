@@ -50,6 +50,13 @@ struct OnClosePipelineRunnerTests {
     var calls: [(name: String, arguments: [String])] { recorded.withLock { $0 } }
   }
 
+  /// Collects the JobPublishParams the runner hands to its publishJob seam.
+  private final class JobCollector: Sendable {
+    private let entries = Mutex<[JobPublishParams]>([])
+    func append(_ params: JobPublishParams) { entries.withLock { $0.append(params) } }
+    var snapshot: [JobPublishParams] { entries.withLock { $0 } }
+  }
+
   /// A `transcribe --json` success whose stdout is the recorded v1 envelope
   /// naming `path` — the result contract as the real stage emits it.
   private static func transcribeOutcome(_ path: String) -> SpawnOutcome {
@@ -331,6 +338,93 @@ struct OnClosePipelineRunnerTests {
 
     #expect(!transcribed)
     #expect(runner.calls.isEmpty)
+  }
+
+  // MARK: - job events
+
+  @Test("the full chain publishes started/done for cleanup and summarize, never transcribe")
+  func fullChainPublishesJobEvents() async throws {
+    let dir = try Self.makeTempDirectory("onend-jobs")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let transcript = try Self.makeFile("t.transcript.md", in: dir)
+    let clean = try Self.makeFile("t.clean.md", in: dir)
+    let brief = try Self.makeFile("t.brief.summary.md", in: dir)
+    let actions = try Self.makeFile("t.actions.summary.md", in: dir)
+    let jobs = JobCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
+      SpawnOutcome(
+        exitCode: 0,
+        stdout: StageEnvelopeFixtures.summarizeAllPresetsSuccess(
+          presets: [(preset: "brief", path: brief), (preset: "actions", path: actions)])),
+    ])
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+    #expect(transcribed)
+    let published = jobs.snapshot
+    #expect(published.map(\.kind) == ["cleanup", "cleanup", "summarize", "summarize"])
+    #expect(published.map(\.state) == [.started, .done, .started, .done])
+    #expect(published.allSatisfy { $0.session == "s1" })
+    #expect(published[0].job == published[1].job)
+    #expect(published[0].job.hasPrefix("cleanup-"))
+    #expect(published[2].job == published[3].job)
+    #expect(published[2].job.hasPrefix("summarize-"))
+  }
+
+  @Test("a failing cleanup publishes started/failed and no summarize events")
+  func failingCleanupPublishesFailed() async throws {
+    let dir = try Self.makeTempDirectory("onend-jobs-fail")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let transcript = try Self.makeFile("t.transcript.md", in: dir)
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      SpawnOutcome(exitCode: 4, stderr: "boom"),
+    ])
+    let jobs = JobCollector()
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+    #expect(jobs.snapshot.map(\.kind) == ["cleanup", "cleanup"])
+    #expect(jobs.snapshot.map(\.state) == [.started, .failed])
+  }
+
+  @Test("a failing summarize publishes failed with the exit code as detail")
+  func failingSummarizePublishesFailedDetail() async throws {
+    let dir = try Self.makeTempDirectory("onend-jobs-sumfail")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let transcript = try Self.makeFile("t.transcript.md", in: dir)
+    let clean = try Self.makeFile("t.clean.md", in: dir)
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
+      SpawnOutcome(exitCode: 4, stderr: "llm exploded"),
+    ])
+    let jobs = JobCollector()
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+    let summarize = jobs.snapshot.filter { $0.kind == "summarize" }
+    #expect(summarize.map(\.state) == [.started, .failed])
+    #expect(summarize[1].detail == "exit 4")
+  }
+
+  @Test("a failing transcribe publishes nothing")
+  func failingTranscribePublishesNothing() async throws {
+    let runner = ScriptedRunner([SpawnOutcome(exitCode: 4)])
+    let jobs = JobCollector()
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+    #expect(jobs.snapshot.isEmpty)
   }
 
   // MARK: - on_end_stages config resolution

@@ -253,7 +253,8 @@ public enum JobState: String, Sendable, Hashable, Codable, CaseIterable {
 public struct JobPublishParams: Sendable, Hashable, Codable {
   /// Client-chosen job id, e.g. `transcribe-4fd1a2b0`.
   public var job: String
-  /// Today always `transcribe`.
+  /// `transcribe` (self-reported), or `cleanup`/`summarize` (reported by the
+  /// daemon's on-end chain).
   public var kind: String
   public var session: String?
   public var state: JobState

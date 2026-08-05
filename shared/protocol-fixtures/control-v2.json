@@ -222,6 +222,18 @@
           "state": "running"
         }
       }
+    },
+    {
+      "name": "job-event-summarize-done",
+      "frame": {
+        "event": "job",
+        "params": {
+          "job": "summarize-9be04d11",
+          "kind": "summarize",
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "state": "done"
+        }
+      }
     }
   ]
 }

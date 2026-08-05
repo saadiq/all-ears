@@ -193,7 +193,7 @@ Grouped by capability. All carried in the v2 envelope.
 | `sessions` | `session.list` | `{}` → live + recent sessions (ended history is read from disk, not the socket) |
 | `sessions` | `session.get` | `{session}` → session |
 | `publish` | `segment.publish` | `{session, speaker, start, end, text}` → `{}`. Notification-only republish from `transcribe --follow` |
-| `publish` | `job.publish` | `{job, kind: "transcribe", session?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing |
+| `publish` | `job.publish` | `{job, kind: "transcribe"\|"cleanup"\|"summarize", session?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing. `transcribe` reports itself; the daemon's on-end chain reports `cleanup` and `summarize`. |
 | `sources` | `sources.list` / `sources.enable` / `sources.disable` | source listing and enable/disable |
 | `admin` | `sources.add` / `sources.remove` / `capture.pause` / `capture.resume` / `flush` | runtime source mutation and capture control |
 

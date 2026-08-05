@@ -424,7 +424,9 @@ public actor EarsDaemon {
     // `summarize` over its output — see `OnClosePipelineRunner`).
     let onSessionEnded: SessionRegistry.EndedHook?
     if !configuration.onEndStages.isEmpty {
-      let pipeline = OnClosePipelineRunner(log: log)
+      let pipeline = OnClosePipelineRunner(
+        log: log,
+        publishJob: { [eventBus] params in await eventBus.publish(.job(params)) })
       let stages = configuration.onEndStages
       onSessionEnded = { [weak self] session in
         guard session.trigger == .browserExtension else { return }
