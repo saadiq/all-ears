@@ -5,3 +5,5 @@
 docs/**/journal.db
 docs/**/journal.db-shm
 docs/**/journal.db-wal
+.claude/worktrees/
+.superpowers/
