@@ -471,6 +471,66 @@ struct PlainModeContractSmokeTests {
     }
   }
 
+  @Test("summarize --session reads the notes beside the published transcript and writes back")
+  func summarizeBySessionWithNotes() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let outputRoot = temp.url.appendingPathComponent("out")
+    let sessionID = "0d5e7f6a-aaaa-bbbb-cccc-ddddeeeeffff"
+    // The session's stored intermediate — what `--session` resolves from.
+    _ = try Self.writeFixtureTranscript(
+      in: temp,
+      at: dataRoot.appendingPathComponent("sessions/\(sessionID)/transcript.md"),
+      session: sessionID,
+      title: "Kevin Weekly",
+      // 2026-08-05T09:04:07Z — US week 32.
+      started: Instant(secondsSinceEpoch: 1_785_920_647))
+    // The jotted daily note the preset reads and writes back over.
+    let notesURL = outputRoot.appendingPathComponent(
+      "daily-notes/2026/08/32/2026-08-05/2026-08-05 - Kevin Weekly.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted beforehand\n".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let scriptPath = try Self.writeFakeLLMScript(in: temp)
+    let configPath = temp.write(
+      """
+      data_root = "\(dataRoot.path)"
+      output_root = "\(outputRoot.path)"
+
+      [llm]
+      backend = "command"
+      command = "\(scriptPath)"
+
+      [[summarize.preset]]
+      name = "meeting-notes"
+      notes = "{output_root}/daily-notes/{year}/{month}/{week}/{date}/{date} - {title}.md"
+      out = "{notes}"
+      frontmatter = false
+      """,
+      named: "config.toml")
+
+    let result = try Self.run(
+      "summarize",
+      [
+        "--config", configPath,
+        "--log-file", temp.url.appendingPathComponent("summarize.jsonl").path,
+        "--session", sessionID, "--preset", "meeting-notes",
+      ])
+
+    #expect(
+      result.exitCode == 0,
+      "expected exit 0, got \(result.exitCode); stderr:\n\(result.stderr)")
+    // The note now holds the LLM's output verbatim — no ears frontmatter to
+    // collide with the vault's own, and no stray sidecar beside it.
+    let written = try String(contentsOf: notesURL, encoding: .utf8)
+    #expect(written == Self.fixtureUtterance + "\n")
+    #expect(!written.contains("kind: summary"))
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: notesURL.deletingPathExtension().appendingPathExtension("json").path))
+  }
+
   @Test(
     "summarize failure: stdout is byte-empty (missing transcript, exit 3)",
     arguments: Mode.allCases)

@@ -1,6 +1,7 @@
 import EarsCore
 import EarsCoreTestSupport
 import Foundation
+import Synchronization
 import Testing
 
 @testable import summarize
@@ -119,12 +120,14 @@ struct SummarizePipelineTests {
         atPath: directory.appendingPathComponent("standup.actions.summary.md").path))
   }
 
-  @Test("prefers a sibling .clean.md over the .transcript.md it was pointed at")
-  func prefersCleanedSibling() async throws {
-    let directory = Self.makeTempDirectory("prefer-clean")
+  @Test("summarizes exactly the path it was given, with no sibling redirection")
+  func usesTheGivenPathVerbatim() async throws {
+    let directory = Self.makeTempDirectory("verbatim-path")
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcriptURL = try Self.writeFixtureTranscript(
       at: directory, text: "raw unclean text")
+    // A sibling `.clean.md` exists but is *not* what was asked for: the
+    // caller (the daemon chain, or `--session`) names the input explicitly.
     _ = try Self.writeFixtureTranscript(
       at: directory, name: "standup.clean.md", text: "Cleaned, readable text.")
 
@@ -138,12 +141,109 @@ struct SummarizePipelineTests {
       dependencies: deps)
 
     #expect(exitCode == 0)
-    #expect(
-      FileManager.default.fileExists(
-        atPath: directory.appendingPathComponent("standup.summary.md").path))
     let content = try String(
       contentsOf: directory.appendingPathComponent("standup.summary.md"), encoding: .utf8)
-    #expect(content.contains("derived_from: standup.clean.md"))
+    #expect(content.contains("derived_from: standup.transcript.md"))
+  }
+
+  @Test("a preset's notes file is read as plain Markdown and labelled in the prompt")
+  func notesAreLabelledInThePrompt() async throws {
+    let directory = Self.makeTempDirectory("notes")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("jotted.md")
+    try "- ship the thing\n- ask Kevin".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let (deps, backend) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "brief", promptContent: "Brief:",
+            notes: PathTemplate("{output_root}/jotted.md"))
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let prompt = try #require(await backend.receivedPrompts.first)
+    #expect(prompt.dynamicSuffix.contains("## Jotted notes\n\n- ship the thing\n- ask Kevin"))
+    #expect(prompt.dynamicSuffix.contains("## Transcript\n\n"))
+    #expect(prompt.dynamicSuffix.contains("Transcript body."))
+  }
+
+  @Test("a configured notes file that doesn't exist fails only its own preset")
+  func missingNotesFailsOnePreset() async throws {
+    let directory = Self.makeTempDirectory("missing-notes")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+
+    let results = Mutex<[SummarizePipeline.PresetResult]>([])
+    var (deps, _) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+    deps.onPresetResult = { result in results.withLock { $0.append(result) } }
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "notes", promptContent: "Notes:",
+            notes: PathTemplate("{output_root}/absent.md")),
+          SummarizePipeline.Preset(name: "brief", promptContent: "Brief:"),
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    // Exit 3 (input missing) — but the healthy preset still ran and wrote.
+    #expect(exitCode == 3)
+    let recorded = results.withLock { $0 }
+    #expect(recorded.count == 2)
+    #expect(recorded.first == SummarizePipeline.PresetResult(preset: "notes", ok: false))
+    #expect(recorded.last?.preset == "brief")
+    #expect(recorded.last?.ok == true)
+  }
+
+  @Test("out = {notes} overwrites the notes file, and frontmatter = false writes the body alone")
+  func writesBackOverTheNotesFile() async throws {
+    let directory = Self.makeTempDirectory("notes-writeback")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("daily/2026-08-05.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let (deps, backend) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "# Notes\n\n- jotted, expanded"))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "meeting-notes", promptContent: "Notes:",
+            notes: PathTemplate("{output_root}/daily/2026-08-05.md"),
+            out: PathTemplate("{notes}"),
+            frontmatter: false)
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    // The original notes were read before the write — the prompt saw them.
+    let prompt = try #require(await backend.receivedPrompts.first)
+    #expect(prompt.dynamicSuffix.contains("- jotted"))
+    // ...and the note now holds the summary body, with no ears frontmatter
+    // to collide with a vault's own, and no stray JSON sidecar beside it.
+    let written = try String(contentsOf: notesURL, encoding: .utf8)
+    #expect(written == "# Notes\n\n- jotted, expanded\n")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("daily/2026-08-05.json").path))
   }
 
   @Test("merges sources/vocab and spans the range across multiple input transcripts")

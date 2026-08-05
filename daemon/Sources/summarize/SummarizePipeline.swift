@@ -5,11 +5,18 @@ import EarsLLMKit
 import Foundation
 
 /// `summarize`'s actual pipeline, per `docs/specs/llm-stages.md`'s
-/// "summarize" section: read one or more transcripts (preferring a sibling
-/// `.clean.md` over a `.transcript.md` when both exist), run each selected
-/// preset's prompt over their combined text, and write `<...>.summary.md`
+/// "summarize" section: read one or more transcripts at the paths given
+/// (the caller names them — `summarize --session` resolves the session's
+/// cleaned transcript, and the daemon chain passes cleanup's output
+/// forward), optionally read each preset's companion notes file, run every
+/// selected preset's prompt over the result, and write `<...>.summary.md`
 /// (single preset) or `<...>.<preset>.summary.md` (multiple), with
 /// `kind: summary`, `preset`, and `derived_from`.
+///
+/// A preset can override all of that: `out` names its own destination
+/// through a ``PathTemplate`` (including `{notes}`, to write back over its
+/// own notes file), and `frontmatter = false` emits the body alone for a
+/// destination — an Obsidian vault, say — that owns its own frontmatter.
 ///
 /// Split the same way `cleanup`'s `CleanupPipeline`/`CleanupRuntime` are:
 /// this type takes already-resolved inputs (an injected `LLMBackend`,
@@ -24,6 +31,21 @@ enum SummarizePipeline {
   struct Preset: Sendable {
     var name: String
     var promptContent: String
+    /// `notes`: a path template for a companion notes file, read as **plain
+    /// Markdown** — no frontmatter parsing, no sidecar. When set and the
+    /// expanded path doesn't exist, this preset fails (the others still
+    /// run): a prompt written to fold jotted notes into its output would
+    /// silently drop them otherwise.
+    var notes: PathTemplate? = nil
+    /// `out`: a path template for this preset's output, overriding the
+    /// default sibling naming. May reference `{notes}` to write back over
+    /// the notes file — safe because every input is read before any write.
+    var out: PathTemplate? = nil
+    /// `frontmatter`: `false` emits the summary body alone, with no YAML
+    /// block and no JSON sidecar — the artifact is then plain Markdown, not
+    /// an ears document, which is what writing into a vault (whose own
+    /// frontmatter the `kind:`/`preset:` stamp would collide with) needs.
+    var frontmatter: Bool = true
   }
 
   /// One preset's outcome, reported through
@@ -70,6 +92,13 @@ enum SummarizePipeline {
     var transcriptPaths: [String]
     var presets: [Preset]
     var out: String?
+    /// `--notes <path>`: an ad-hoc companion notes file, overriding the
+    /// selected preset's own `notes` template. Single-preset runs only —
+    /// the runtime rejects it otherwise.
+    var notes: String? = nil
+    /// The configured `output_root`, already `~`-expanded.
+    var outputRoot: String = ""
+    var weekNumbering: WeekNumbering = .us
   }
 
   static func run(inputs: Inputs, dependencies: Dependencies) async -> Int32 {
@@ -86,7 +115,7 @@ enum SummarizePipeline {
     var documents: [TranscriptDocument] = []
     var resolvedNames: [String] = []
     for path in inputs.transcriptPaths {
-      let resolvedURL = preferCleanedSibling(for: URL(fileURLWithPath: path))
+      let resolvedURL = URL(fileURLWithPath: path)
       let markdown: String
       do {
         markdown = try String(contentsOf: resolvedURL, encoding: .utf8)
@@ -113,6 +142,23 @@ enum SummarizePipeline {
     let baseOutputURL = outputBaseURL(
       for: URL(fileURLWithPath: inputs.transcriptPaths[0]), explicitOut: inputs.out)
 
+    // Every preset's destination and companion notes are resolved, and every
+    // notes file read, **before any write happens**. That ordering is what
+    // makes an `out = "{notes}"` preset safe: the file it overwrites has
+    // already been read, by this preset and by any other.
+    let context = templateContext(inputs, baseFrontmatter, documents)
+    let plans = inputs.presets.map { preset -> PresetPlan in
+      let notesPath =
+        inputs.notes ?? preset.notes.map { $0.expand(context) }
+      var notesContext = context
+      notesContext.notes = notesPath
+      return PresetPlan(
+        preset: preset,
+        notesPath: notesPath,
+        notes: notesPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) },
+        outputURL: preset.out.map { URL(fileURLWithPath: $0.expand(notesContext)) })
+    }
+
     // Presets run independently (issue #63): one preset's failure no longer
     // aborts the rest — each outcome is reported through `onPresetResult`, so
     // partial success ("2 of 3 presets") is expressible in the `--json`
@@ -120,8 +166,22 @@ enum SummarizePipeline {
     // exits non-zero unless *all* presets succeeded, carrying the first
     // failure's taxonomy class (issue #61).
     var firstFailure: ExitClass? = nil
-    for preset in inputs.presets {
-      let prompt = LLMPrompt(stablePrefix: preset.promptContent, dynamicSuffix: combinedText)
+    for plan in plans {
+      let preset = plan.preset
+      // A configured notes file that isn't there is this preset's failure,
+      // not the run's: its prompt is written to fold those notes into its
+      // output, so summarizing without them would silently lose them.
+      if let notesPath = plan.notesPath, plan.notes == nil {
+        dependencies.writeStderr(
+          "error: preset '\(preset.name)': no notes file at \(notesPath)")
+        dependencies.onPresetResult(PresetResult(preset: preset.name, ok: false))
+        if firstFailure == nil { firstFailure = .inputMissing }
+        continue
+      }
+
+      let prompt = LLMPrompt(
+        stablePrefix: preset.promptContent,
+        dynamicSuffix: promptBody(notes: plan.notes, transcript: combinedText))
       let summaryText: String
       do {
         summaryText = try await dependencies.llmBackend.complete(prompt).text
@@ -149,17 +209,26 @@ enum SummarizePipeline {
             segment: Segment(start: 0, end: 0, text: summaryText))
         ])
 
-      let outputURL = outputURL(
-        for: baseOutputURL, preset: preset.name, isOnlyPreset: inputs.presets.count == 1)
-      let sidecarURL = outputURL.deletingPathExtension().appendingPathExtension("json")
+      let outputURL =
+        plan.outputURL
+        ?? outputURL(
+          for: baseOutputURL, preset: preset.name, isOnlyPreset: inputs.presets.count == 1)
       do {
+        // `frontmatter = false` means this artifact is plain Markdown, not an
+        // ears document — so it gets no YAML block, and no JSON sidecar
+        // either: a stray `.json` beside a vault note is pollution, and there
+        // is no ears document for it to describe.
+        let body = summaryText.hasSuffix("\n") ? summaryText : summaryText + "\n"
+        let markdown = preset.frontmatter ? TranscriptRenderer.renderMarkdown(document) : body
         try AtomicFileIO.writeAtomically(to: outputURL) { tempURL in
-          try TranscriptRenderer.renderMarkdown(document).write(
-            to: tempURL, atomically: false, encoding: .utf8)
+          try markdown.write(to: tempURL, atomically: false, encoding: .utf8)
         }
-        try AtomicFileIO.writeAtomically(to: sidecarURL) { tempURL in
-          try TranscriptRenderer.renderJSON(document).write(
-            to: tempURL, atomically: false, encoding: .utf8)
+        if preset.frontmatter {
+          let sidecarURL = outputURL.deletingPathExtension().appendingPathExtension("json")
+          try AtomicFileIO.writeAtomically(to: sidecarURL) { tempURL in
+            try TranscriptRenderer.renderJSON(document).write(
+              to: tempURL, atomically: false, encoding: .utf8)
+          }
         }
       } catch {
         dependencies.writeStderr(
@@ -182,16 +251,43 @@ enum SummarizePipeline {
     return (firstFailure ?? .success).code
   }
 
-  /// "cleaned preferred if both exist" (`docs/specs/llm-stages.md`):
-  /// a `<...>.transcript.md` path is redirected to its sibling
-  /// `<...>.clean.md` when that file exists; any other name (already
-  /// `.clean.md`, or a non-standard name) is used as given.
-  private static func preferCleanedSibling(for url: URL) -> URL {
-    let name = url.lastPathComponent
-    guard name.hasSuffix(".transcript.md") else { return url }
-    let stem = String(name.dropLast(".transcript.md".count))
-    let cleanURL = url.deletingLastPathComponent().appendingPathComponent("\(stem).clean.md")
-    return FileManager.default.fileExists(atPath: cleanURL.path) ? cleanURL : url
+  /// One preset's fully-resolved destination and companion notes, computed
+  /// for every preset before any write happens.
+  private struct PresetPlan: Sendable {
+    var preset: Preset
+    /// The expanded `notes` path, when this preset configures one.
+    var notesPath: String?
+    /// That file's contents — `nil` when it doesn't exist or can't be read,
+    /// which fails this preset (see the run loop).
+    var notes: String?
+    /// The expanded `out` path, or `nil` for the default sibling naming.
+    var outputURL: URL?
+  }
+
+  /// The LLM input. With a companion notes file both halves are labelled, so
+  /// a prompt can address each ("fold the jotted notes into a narrative,
+  /// using the transcript for detail"). With no notes the transcript is sent
+  /// bare, exactly as before — an unlabelled single input needs no heading.
+  private static func promptBody(notes: String?, transcript: String) -> String {
+    guard let notes else { return transcript }
+    return "## Jotted notes\n\n\(notes)\n\n## Transcript\n\n\(transcript)"
+  }
+
+  /// The path-template context for this run, read off the input documents'
+  /// merged frontmatter — the same context `cleanup` publishes by, so a
+  /// preset's `notes`/`out` templates address the same session.
+  private static func templateContext(
+    _ inputs: Inputs, _ frontmatter: TranscriptFrontmatter, _ documents: [TranscriptDocument]
+  ) -> PathTemplate.Context {
+    PathTemplate.Context(
+      outputRoot: inputs.outputRoot,
+      start: frontmatter.started ?? frontmatter.range.start,
+      weekNumbering: inputs.weekNumbering,
+      session: frontmatter.session,
+      slug: frontmatter.sources.map(\.pathSafe).joined(separator: "_"),
+      title: frontmatter.title,
+      fallbackName: URL(fileURLWithPath: inputs.transcriptPaths[0])
+        .deletingPathExtension().lastPathComponent)
   }
 
   private static func bodyText(_ document: TranscriptDocument) -> String {
@@ -235,6 +331,11 @@ enum SummarizePipeline {
       kind: .summary,
       rangeRun: first.rangeRun,
       session: first.session,
+      // The path-template context, carried forward from the first document:
+      // a summary of several transcripts still belongs to the session that
+      // one names, and this is what a preset's `notes`/`out` expand against.
+      title: first.title,
+      started: first.started,
       sources: sources,
       range: TimeRange(start: start, end: end),
       model: first.model,
