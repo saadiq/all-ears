@@ -159,4 +159,26 @@ struct EventApplicationTests {
     #expect(outcome == .applied)
     #expect(state.lastRev == 41)
   }
+
+  @Test("a state event with no rev while connected returns gap and mutates nothing")
+  func missingRevWhileConnected() {
+    var state = connectedState(rev: 41)
+    let session = makeSession(title: "Should not apply")
+    let outcome = MenuStateReducer.apply(
+      &state, EventFrame(event: .session(session), rev: nil))
+    #expect(outcome == .gap)
+    #expect(state.sessions.map(\.title) == ["Weekly sync"])
+    #expect(state.lastRev == 41)
+  }
+
+  @Test("a state event applied to a never-connected state returns gap and mutates nothing")
+  func stateEventBeforeSnapshot() {
+    var state = MenuState()
+    let session = makeSession(title: "Should not apply")
+    let outcome = MenuStateReducer.apply(
+      &state, EventFrame(event: .session(session), rev: 1))
+    #expect(outcome == .gap)
+    #expect(state.sessions.isEmpty)
+    #expect(state.lastRev == nil)
+  }
 }
