@@ -90,6 +90,7 @@ export function setTrackSink(sink: TrackSink): void {
 
 function dispatchTrack(e: RTCTrackEvent): void {
   if (e.track.kind !== "audio") return;
+  registerTrackProvenance(e.track.id, "remote", "ontrack");
   const stream = e.streams[0] ?? new MediaStream([e.track]);
   const record: TrackRecord = { stream, transceiver: e.transceiver };
   const registry = liveTracks();
@@ -162,6 +163,10 @@ export function installHook(): void {
   if (location.host === "meet.google.com") installMeetEncodedAudioTee();
   if (location.host === "meet.google.com") installMeetTransformProbe();
   if (location.host === "meet.google.com") installMeetWebAudioProbe();
+  // Meet-only like the probes above: the webaudio-track seam is the sole
+  // consumer (seamOrderFor), and Zoom's own track wrapping is exactly the
+  // surface rtc-hook stays off (see the constraint at the top of this file).
+  if (location.host === "meet.google.com") installProvenanceWraps();
 
   console.debug("[ears][hook] RTCPeerConnection hook installed");
 }
@@ -806,9 +811,205 @@ function registerWebAudioTrack(track: MediaStreamTrack, via: string): void {
 export function webAudioTracks(): MediaStreamTrack[] {
   const registry = webAudioTrackRegistry();
   for (const [id, rec] of registry) {
-    if (rec.track.readyState === "ended") registry.delete(id);
+    if (rec.track.readyState === "ended") {
+      registry.delete(id);
+      pruneTrackProvenance(id);
+    }
   }
   return [...registry.values()].map((rec) => rec.track);
+}
+
+// ── Track provenance: local/remote lineage for the webaudio seam ────────────
+//
+// The webaudio-track seam self-discovers anonymous tracks, and Meet's WebAudio
+// graph carries the user's own outgoing audio alongside remote participants —
+// on the 2026-08-05 call three of six adopted tracks were the local mic, so
+// every utterance landed in the transcript four times. Provenance classifies a
+// track from the page's own API contract, never from signal analysis: a track
+// handed out by getUserMedia/getDisplayMedia or handed to a sender is local by
+// construction; a track delivered by `ontrack` is remote; a clone inherits its
+// parent. Everything else stays unknown — and unknown ADOPTS (capture-seams.ts
+// policy): a wrongly dropped remote track is unrecoverable data loss, a missed
+// local one only a transcript-quality bug, so classification can only fail safe.
+//
+// Realm-global like __earsLiveTracks, so re-injected epochs share one lineage.
+// Reads and writes never enumerate getSenders()/getReceivers() — only the
+// page's own calls are observed (the constraint at the top of this file).
+
+export type TrackOrigin = "local" | "remote";
+
+export interface TrackProvenanceRecord {
+  origin: TrackOrigin;
+  /** The API that established it: gum, display-media, sender, replaceTrack, ontrack, clone. */
+  via: string;
+  /** Lineage root — the original this track was (transitively) cloned from. */
+  rootId: string;
+  /** Registration order; clone-dedup keeps the earliest-registered per root. */
+  seq: number;
+}
+
+interface ProvenanceWindow extends Window {
+  __earsTrackProvenance?: Map<string, TrackProvenanceRecord>;
+  __earsTrackProvenanceSeq?: number;
+}
+
+/** Leak backstop only — entries are pruned with the webaudio registry sweep,
+ * but gUM/sender tracks the sweep never sees would otherwise accrue forever
+ * on a page that mints tracks pathologically. Oldest evict first. */
+export const PROVENANCE_MAX_ENTRIES = 512;
+
+function provenanceRegistry(): Map<string, TrackProvenanceRecord> {
+  const g = window as unknown as ProvenanceWindow;
+  if (!g.__earsTrackProvenance) g.__earsTrackProvenance = new Map();
+  return g.__earsTrackProvenance;
+}
+
+/** First write wins: an id's origin never flips (a remote track looped back
+ * into a sender is still remote content). Bookkeeping only — never throws. */
+export function registerTrackProvenance(
+  id: string,
+  origin: TrackOrigin,
+  via: string,
+  rootId: string = id,
+): void {
+  try {
+    const registry = provenanceRegistry();
+    if (registry.has(id)) return;
+    while (registry.size >= PROVENANCE_MAX_ENTRIES) {
+      const oldest = registry.keys().next().value;
+      if (oldest === undefined) break;
+      registry.delete(oldest);
+    }
+    const g = window as unknown as ProvenanceWindow;
+    const seq = (g.__earsTrackProvenanceSeq = (g.__earsTrackProvenanceSeq ?? 0) + 1);
+    registry.set(id, { origin, via, rootId, seq });
+  } catch {
+    // bookkeeping only — never throws into the page
+  }
+}
+
+export function trackProvenance(id: string): TrackProvenanceRecord | undefined {
+  try {
+    return provenanceRegistry().get(id);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Drop an ended track's entry unless a live entry still claims it as root —
+ * the root id is what keeps that root's later clones deduplicated. */
+function pruneTrackProvenance(id: string): void {
+  try {
+    const registry = provenanceRegistry();
+    const record = registry.get(id);
+    if (!record) return;
+    for (const other of registry.values()) {
+      if (other !== record && other.rootId === id) return;
+    }
+    registry.delete(id);
+  } catch {
+    // bookkeeping only
+  }
+}
+
+/**
+ * Passive provenance wraps (installHook, once per realm, Meet only). Every
+ * wrap is pass-through: the native call always runs first, its result returns
+ * untouched, and bookkeeping failures never surface into the page.
+ */
+function installProvenanceWraps(): void {
+  try {
+    const w = window as unknown as {
+      navigator?: { mediaDevices?: Record<string, unknown> };
+      MediaDevices?: { prototype?: Record<string, unknown> };
+      MediaStreamTrack?: { prototype?: Record<string, unknown> };
+      RTCRtpSender?: { prototype?: Record<string, unknown> };
+      RTCPeerConnection?: { prototype?: Record<string, unknown> };
+    };
+
+    const registerStreamAudio = (value: unknown, via: string): void => {
+      const tracks =
+        (value as { getAudioTracks?: () => Array<{ id?: string }> } | null)?.getAudioTracks?.() ?? [];
+      for (const track of tracks) {
+        if (typeof track?.id === "string") registerTrackProvenance(track.id, "local", via);
+      }
+    };
+
+    // getUserMedia / getDisplayMedia — the local roots. Wrap the prototype
+    // when the platform exposes it (survives the page caching
+    // navigator.mediaDevices), the instance otherwise.
+    const wrapCapture = (holder: Record<string, unknown> | undefined, method: string, via: string): boolean => {
+      const native = holder?.[method];
+      if (!holder || typeof native !== "function") return false;
+      holder[method] = function (this: unknown, ...args: unknown[]): unknown {
+        const result = (native as (...a: unknown[]) => unknown).apply(this, args);
+        try {
+          void (result as Promise<unknown> | null)?.then?.(
+            (stream) => registerStreamAudio(stream, via),
+            () => {}, // the page's own copy of the rejection is untouched
+          );
+        } catch {
+          // bookkeeping only
+        }
+        return result;
+      };
+      return true;
+    };
+    const mdProto = w.MediaDevices?.prototype;
+    if (!wrapCapture(mdProto, "getUserMedia", "gum")) {
+      wrapCapture(w.navigator?.mediaDevices, "getUserMedia", "gum");
+    }
+    if (!wrapCapture(mdProto, "getDisplayMedia", "display-media")) {
+      wrapCapture(w.navigator?.mediaDevices, "getDisplayMedia", "display-media");
+    }
+
+    // Outgoing by construction: any audio track the page hands to a sender.
+    // Observation of the page's own calls — getSenders() is never invoked.
+    const wrapSenderArg = (holder: Record<string, unknown> | undefined, method: string, via: string): void => {
+      const native = holder?.[method];
+      if (!holder || typeof native !== "function") return;
+      holder[method] = function (this: unknown, ...args: unknown[]): unknown {
+        const result = (native as (...a: unknown[]) => unknown).apply(this, args);
+        try {
+          // addTransceiver's first arg may be a kind string — the guard skips it.
+          const track = args[0] as { id?: string; kind?: string } | null;
+          if (track && typeof track.id === "string" && track.kind === "audio") {
+            registerTrackProvenance(track.id, "local", via);
+          }
+        } catch {
+          // bookkeeping only
+        }
+        return result;
+      };
+    };
+    const pcProto = w.RTCPeerConnection?.prototype;
+    wrapSenderArg(pcProto, "addTrack", "sender");
+    wrapSenderArg(pcProto, "addTransceiver", "sender");
+    wrapSenderArg(w.RTCRtpSender?.prototype, "replaceTrack", "replaceTrack");
+
+    // Lineage: a clone inherits origin and root, which is what makes "three
+    // clones of one mic" one capture decision instead of three. A clone of an
+    // unregistered parent stays unknown.
+    const trackProto = w.MediaStreamTrack?.prototype;
+    const nativeClone = trackProto?.clone;
+    if (trackProto && typeof nativeClone === "function") {
+      trackProto.clone = function (this: { id?: string }, ...args: unknown[]): unknown {
+        const result = (nativeClone as (...a: unknown[]) => unknown).apply(this, args);
+        try {
+          const parent = typeof this?.id === "string" ? trackProvenance(this.id) : undefined;
+          const cloneId = (result as { id?: string } | null)?.id;
+          if (parent && typeof cloneId === "string") {
+            registerTrackProvenance(cloneId, parent.origin, "clone", parent.rootId);
+          }
+        } catch {
+          // bookkeeping only
+        }
+        return result;
+      };
+    }
+  } catch (err) {
+    console.debug("[ears][hook] provenance wraps failed to install (non-fatal):", err);
+  }
 }
 
 function energyProbeEnabled(): boolean {
