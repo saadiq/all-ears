@@ -260,7 +260,10 @@ export default defineBackground(() => {
           );
           return;
         case "meeting-started":
-          sessions.meetingStarted(portId, msg.platform, msg.externalMeetingId);
+          sessions.meetingStarted(portId, msg.platform, msg.externalMeetingId, msg.title);
+          return;
+        case "meeting-renamed":
+          sessions.meetingRenamed(msg.externalMeetingId, msg.title);
           return;
         case "meeting-ended":
           sessions.meetingEnded(msg.externalMeetingId);

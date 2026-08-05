@@ -214,7 +214,7 @@ interface RelayState {
   // id so a repeat confirmation overwrites rather than duplicates. Replayed on
   // worker respawn for the same reason as the roster.
   renames: Map<string, { platform: Platform; toId: string }>;
-  liveMeeting: { platform: Platform; externalMeetingId: string } | null;
+  liveMeeting: { platform: Platform; externalMeetingId: string; title?: string } | null;
 }
 
 /** Regroup the accumulated roster back into per-platform entry batches for the
@@ -304,13 +304,32 @@ function relay(
       break;
     }
     case "meeting-started":
-      state.liveMeeting = { platform: msg.platform, externalMeetingId: msg.externalMeetingId };
+      state.liveMeeting = {
+        platform: msg.platform,
+        externalMeetingId: msg.externalMeetingId,
+        ...(msg.title ? { title: msg.title } : {}),
+      };
       port.post({
         type: "meeting-started",
         platform: msg.platform,
         externalMeetingId: msg.externalMeetingId,
+        ...(msg.title ? { title: msg.title } : {}),
       });
       console.debug(`[ears][relay] meeting started: ${msg.platform}/${msg.externalMeetingId}`);
+      break;
+    case "meeting-renamed":
+      // Fold the name into the durable relay state too, so a respawned
+      // service worker's replayed `meeting-started` already carries it.
+      if (state.liveMeeting?.externalMeetingId === msg.externalMeetingId) {
+        state.liveMeeting = { ...state.liveMeeting, title: msg.title };
+      }
+      port.post({
+        type: "meeting-renamed",
+        platform: msg.platform,
+        externalMeetingId: msg.externalMeetingId,
+        title: msg.title,
+      });
+      console.debug(`[ears][relay] meeting named: ${msg.title}`);
       break;
     case "meeting-ended":
       state.liveMeeting = null;

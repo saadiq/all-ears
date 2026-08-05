@@ -15,6 +15,7 @@ import {
 // daemon's session verbs:
 //
 //   meeting-started      → session.start (idempotent on platform+external id)
+//   meeting name scraped → session.rename (compare-and-set on rev)
 //   participant joined   → session.attendee upsert (display name)
 //   ingest stream opened → session.attendee upsert (source link)
 //   participant left     → session.attendee upsert (left timestamp)
@@ -44,8 +45,13 @@ export type BadgeState =
 /** The control-plane surface SessionTracker consumes — ControlSocket
  * (control-transport.ts) in production, a recording fake in tests. */
 export interface SessionControl {
-  sessionStart(platform: Platform, externalMeetingId: string): Promise<SessionWire>;
+  sessionStart(
+    platform: Platform,
+    externalMeetingId: string,
+    title?: string,
+  ): Promise<SessionWire>;
   sessionEnd(session: string): Promise<SessionWire>;
+  sessionRename(session: string, title: string, ifRev?: number): Promise<SessionWire>;
   sessionPause(session: string): Promise<SessionWire>;
   sessionResume(session: string): Promise<SessionWire>;
   sessionAttendee(session: string, attendee: AttendeeUpsert): Promise<SessionWire>;
@@ -76,6 +82,17 @@ interface SessionRecord {
   externalMeetingId: string;
   /** Daemon-assigned session UUID, once session.start lands. */
   sessionId?: string;
+  /** The session's last known revision — `session.rename`'s compare-and-set
+   * key, so a title discovered mid-call never clobbers a manual rename. */
+  rev?: number;
+  /** The meeting name declared to the daemon, if any. */
+  title?: string;
+  /** Names already sent as a rename: at most one `session.rename` per
+   * discovered name, and none at all once one has failed its compare-and-set
+   * (that failure means a manual rename won, and it keeps winning). */
+  renamesSent: Set<string>;
+  /** A name discovered before session.start landed, applied on arrival. */
+  pendingTitle?: string;
   /** A session.start is in flight. */
   starting: boolean;
   paused: boolean;
@@ -127,9 +144,19 @@ export class SessionTracker {
   }
 
   /** meeting-started from a tab: declare it to the daemon. */
-  meetingStarted(portId: string, platform: Platform, externalMeetingId: string): void {
+  meetingStarted(
+    portId: string,
+    platform: Platform,
+    externalMeetingId: string,
+    title?: string,
+  ): void {
     const existing = this.sessions.get(externalMeetingId);
-    if (existing && !existing.ended) return; // duplicate start — already tracked
+    if (existing && !existing.ended) {
+      // Duplicate start — already tracked. A title riding along on the
+      // duplicate is still news, though: treat it exactly like a late scrape.
+      if (title) this.meetingRenamed(externalMeetingId, title);
+      return;
+    }
     const record: SessionRecord = {
       portId,
       platform,
@@ -139,11 +166,49 @@ export class SessionTracker {
       ended: false,
       pendingAttendees: [],
       participants: new Set(),
+      renamesSent: new Set(),
+      ...(title ? { title } : {}),
     };
     this.sessions.set(externalMeetingId, record);
     this.declare(record);
     this.drainPending(portId, record);
     this.emitState();
+  }
+
+  /**
+   * The tab resolved the meeting's human name after the session was already
+   * declared (calendar names often land seconds after join). Renamed with
+   * `if_rev` as a compare-and-set, so a rename the user made by hand in the
+   * meantime is never clobbered — and a lost compare-and-set is not retried.
+   */
+  meetingRenamed(externalMeetingId: string, title: string): void {
+    const record = this.sessions.get(externalMeetingId);
+    if (!record || record.ended) return;
+    if (record.title === title || record.renamesSent.has(title)) return;
+    if (!record.sessionId) {
+      // The start is still in flight; declare() applies this when it lands.
+      record.pendingTitle = title;
+      return;
+    }
+    this.rename(record, title);
+  }
+
+  private rename(record: SessionRecord, title: string): void {
+    if (record.renamesSent.size > 0) return; // one rename per session, at most
+    record.renamesSent.add(title);
+    const sessionId = record.sessionId;
+    if (!sessionId) return;
+    void this.control
+      .sessionRename(sessionId, title, record.rev)
+      .then((session) => {
+        record.title = session.title;
+        record.rev = session.rev;
+      })
+      .catch((err) => {
+        // A `conflict` means the session was renamed by someone else since we
+        // read `rev` — theirs wins, deliberately and permanently.
+        console.warn(`[ears][session] session.rename(${sessionId}) failed:`, err);
+      });
   }
 
   /** meeting-ended from the tab (capture toggled off, call teardown). */
@@ -352,6 +417,7 @@ export class SessionTracker {
         : undefined;
       if (record && !record.ended) {
         record.sessionId = session.id;
+        record.rev = session.rev;
         record.paused = session.state === "paused";
       }
     }
@@ -373,7 +439,7 @@ export class SessionTracker {
     if (record.starting) return;
     record.starting = true;
     void this.control
-      .sessionStart(record.platform, record.externalMeetingId)
+      .sessionStart(record.platform, record.externalMeetingId, record.title)
       .then((session) => {
         record.starting = false;
         if (record.ended) {
@@ -383,6 +449,7 @@ export class SessionTracker {
         }
         const wantPaused = record.paused;
         record.sessionId = session.id;
+        record.rev = session.rev;
         console.debug(`[ears][session] session ${record.externalMeetingId} → ${session.id}`);
         // The popup may have toggled pause before the id was known; apply
         // it now. Otherwise adopt the daemon's state (idempotent re-declare
@@ -395,6 +462,10 @@ export class SessionTracker {
         }
         const queued = record.pendingAttendees.splice(0, record.pendingAttendees.length);
         for (const attendee of queued) this.upsertAttendee(record, attendee);
+        // A name scraped while the start was in flight.
+        const pendingTitle = record.pendingTitle;
+        record.pendingTitle = undefined;
+        if (pendingTitle && pendingTitle !== record.title) this.rename(record, pendingTitle);
         this.emitState();
       })
       .catch((err) => {
