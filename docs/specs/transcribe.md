@@ -4,10 +4,12 @@
 
 Turn captured audio for a session (or a source + time range) into a transcript on disk. Batch or streaming. Reads files directly; does not depend on `earsd` running except to publish live-feed events in `--follow` mode.
 
+The transcript it writes is an **intermediate**, not a deliverable: it lands in the data store, addressed by session or run id, and never under `output_root`. Publishing — a cleaned transcript at a user-configured path — is [`cleanup`](llm-stages.md)'s job.
+
 ## Inputs
 
 - A **session** (`--session <uuid>`, which resolves sources, interval ranges, and optional vocabulary — `vocab/<id>.txt` — from the session record), **or** a **source** (`--source mic`, repeatable) and a **time range** (`--last 30m`, or `--from`/`--to`), **or** a **standalone file** (`--file memo.m4a`, repeatable) transcribed directly with no capture store involved. The selectors are mutually exclusive; mixing them is a hard error.
-- An output override (`--out`); otherwise the [output layout](../data-formats.md#directory-layout) decides — except `--file`, which writes each transcript next to its input (`--out` applies only to a single `--file`).
+- An output override (`--out`); otherwise the [store layout](../data-formats.md#directory-layout) decides — except `--file`, which writes each transcript next to its input (`--out` applies only to a single `--file`).
 
 The ASR backend is currently fixed: Parakeet via FluidAudio on the Apple Neural Engine.
 
@@ -41,7 +43,7 @@ The rule: **prefer the per-session copy when it holds chunks in range, and fall 
 - Resolves the source through the session currently capturing it (live capture is session-scoped: audio lands under `sessions/<id>/sources/<source>/`), picking the most recently started non-ended session when several claim the source. No live session, or a claimed source with no data on disk, is a fail-fast error — never a silent attach to a dead index.
 - Tails the live source's index, reading newly-written chunks as they land.
 - Emits finalised segments to stdout as they stabilise (one per line; `--json` for JSON segment lines).
-- Appends to the session's transcript file — the same file batch mode would produce, so the file is complete when the session ends.
+- Appends to a per-source live transcript inside the session's directory (`sessions/<id>/<source>.follow.transcript.md`) — the same renderers and format batch mode produces, kept under its own name so a follow run and the session's authoritative batch transcript never overwrite one another.
 - Publishes `segment` events to the daemon's live feed via `segment.publish`, letting other subscribers watch one live transcript. The socket is notification-only; the durable transcript is the file.
 - Uses a real `StreamingTranscriber` (Parakeet TDT decoder state threaded between steps) — it does not fake streaming by re-transcribing overlapping windows and de-duplicating.
 
@@ -90,7 +92,14 @@ Exits non-zero with a precise error if the range is empty or invalid, sources ar
 
 ## Outputs
 
-- `<output-root>/<date>/<time>_<slug|range>.transcript.md` — canonical human transcript.
-- `.transcript.json` sidecar with word-level detail.
+All intermediates, in the data store — `output_root` is never consulted, so `run.start` never reports it and `run.summary` carries the real output path.
+
+- `--session <uuid>` → `<data-root>/sessions/<uuid>/transcript.md`.
+- `--last`/`--from`/`--to` → `<data-root>/runs/<start-timestamp>_<slug>.transcript.md`, keyed by the same identifier the transcript's `range_run:` frontmatter carries.
+- `--follow <source>` → `<data-root>/sessions/<uuid>/<source>.follow.transcript.md`.
+- `--file` → `<input-dir>/<name>.transcript.md`, beside the recording.
+- `--out <path>` overrides any of these verbatim.
+- A `.transcript.json` sidecar with word-level detail follows the Markdown in every case (same stem, `.md` → `.json`).
 - A final `run.summary` log record: segments, words, speech seconds, wall time, real-time factor, output path.
-- `--file` writes `<input-dir>/<name>.transcript.md` (and the `.json` sidecar) beside the recording instead; `output_root` is not consulted, so the run's `run.start` record omits it and `run.summary` carries the real output path.
+
+The transcript's frontmatter carries `title:` (the session's display title) and `started:` (when the session began), so the publishing stage's path template resolves from the document rather than from flags — a manual rerun files exactly where the daemon-spawned run did.

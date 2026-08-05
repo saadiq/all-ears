@@ -44,8 +44,9 @@ Capture each active session's audio sources under the session's own directory, m
 ### Storage maintenance and retention
 
 - Chunks are fixed-duration (default 30 s), written atomically (temp + rename) then indexed. On flush, `fsync` both the file and its directory; on an encode failure, keep the partial chunk.
-- Retention is per-session, driven by `[earsd.retention]`: a daemon-owned periodic sweep (default every 60 s) deletes an **ended** session's whole `sources/` directory once `transcript_completed + evict_after_transcript_seconds` has passed — or, when no transcript ever completed, once `ended + max_audio_age_seconds` has (so a failed transcription can be retried up to that point). `session.toml` and `events.jsonl` are never deleted; transcripts under `<output-root>` are never deleted. Live sessions are never touched.
+- Retention is per-session, driven by `[earsd.retention]`: a daemon-owned periodic sweep (default every 60 s) deletes an **ended** session's whole `sources/` directory once `transcript_completed + evict_after_transcript_seconds` has passed — or, when no transcript ever completed, once `ended + max_audio_age_seconds` has (so a failed transcription can be retried up to that point). `session.toml` and `events.jsonl` are never deleted. Live sessions are never touched.
 - The transcript-completion marker is stamped by the daemon when the session-end auto-transcribe exits 0 (persisted as `transcript_completed` in `session.toml`), so retention survives restarts.
+- **Transcripts are never swept, in either tier.** Published artifacts under `output_root` are the user's files. The *raw* transcript in the session's own directory (`sessions/<uuid>/transcript.md`) is deliberately kept too, even though it lives inside the store the sweep runs over: once the audio is evicted it is the only route to re-running cleanup or summarize with a different prompt or model. The sweep deletes `sources/` and nothing else.
 
 ### VAD
 

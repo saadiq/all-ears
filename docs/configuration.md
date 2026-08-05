@@ -55,9 +55,14 @@ All tools read the same file. Tool-specific settings live in their own tables.
 schema = 1
 
 # --- Shared paths ---
-data_root   = "~/Library/Application Support/ears"  # sessions (records + audio), vocab, runtime
-output_root = "~/Documents/Transcripts"             # transcripts, summaries
+data_root   = "~/Library/Application Support/ears"  # sessions (records, audio, raw transcripts), vocab, runtime
+output_root = "~/Documents/Transcripts"             # published artifacts: cleaned transcripts, summaries
 socket_path = ""   # empty => <data_root>/runtime/earsd.sock
+
+# Which week-of-year convention a path template's {week} renders.
+# "us"  — weeks start Sunday, week 1 holds Jan 1 (Obsidian's `ww` default)
+# "iso" — ISO-8601: weeks start Monday, week 1 holds the first Thursday
+week_numbering = "us"
 
 # --- Logging (see logging.md) ---
 [log]
@@ -149,6 +154,8 @@ model   = "claude-sonnet-5"   #   llm-cli runs `llm -m <model>`; command runs th
 [cleanup]
 prompt_file = ""              # empty => built-in cleanup prompt
 use_vocab   = true
+# Where the cleaned transcript is published (a path template, see below).
+output = "{output_root}/{year}/{month}/{day}/{date} - {title}.md"
 
 [[summarize.preset]]
 name = "brief"
@@ -156,6 +163,14 @@ prompt_file = "prompts/brief.md"
 [[summarize.preset]]
 name = "actions"
 prompt_file = "prompts/action-items.md"
+# A preset may read a companion notes file, write anywhere, and skip the
+# ears frontmatter — enough to fold a call into an Obsidian daily note:
+# [[summarize.preset]]
+# name = "meeting-notes"
+# prompt_file = "~/vault/prompts/meeting-notes.md"
+# notes = "~/vault/daily-notes/{year}/{month}/{week}/{date}/{date} - {title}.md"
+# out = "{notes}"          # write the result back over that same note
+# frontmatter = false      # body only — the vault owns its own frontmatter
 
 # --- Vocabulary ---
 [vocab]
@@ -187,9 +202,38 @@ With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAud
 - **Captured audio** (`--last`/`--from`/`--to`, `--session`): only multi-speaker far-end sources are diarized — `system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams (each already a single speaker).
 - **Standalone files** (`--file`): the whole file is treated as one multi-speaker source and always diarized when a backend is configured, since a file carries no source-of-origin separation. Example: `transcribe --file memo.m4a`.
 
+## Two tiers of artifact
+
+The pipeline writes two kinds of file, and they live in different places.
+
+**Intermediates** — the raw `.transcript.md` and its JSON sidecar — live in the hidden data store under `data_root`, addressed by session (`sessions/<uuid>/transcript.md`) or by range-run id (`runs/<id>.transcript.md`). They have no user-facing layout, and nothing sweeps them: once the audio is evicted they are the only route to re-running cleanup or summarize with a different prompt or model.
+
+**Published output** — the cleaned transcript and the summaries — lands wherever its path template resolves to, under `output_root` by default. This is the tier you open, sync, and file.
+
+## Path templates
+
+`[cleanup] output` and a preset's `notes`/`out` are path templates: a full path with `{token}` placeholders.
+
+| Token | Expands to |
+|---|---|
+| `{output_root}` | the configured `output_root` |
+| `{year}` `{month}` `{day}` | the session's start date, zero-padded |
+| `{date}` | `YYYY-MM-DD` |
+| `{time}` | `HH-MM-SS` |
+| `{week}` | week of year, zero-padded, per `week_numbering` |
+| `{session}` | the session id |
+| `{slug}` | the path-safe source list, e.g. `mic_app_us.zoom.xos` |
+| `{title}` | the session title, sanitised for a path |
+| `{notes}` | a preset's expanded `notes` path — in `out` only |
+
+- **Dates come from the session start, not the wall clock.** A call that runs past midnight files under the day it started, and re-cleaning it a week later lands on the same path.
+- **Missing context degrades.** No title falls back to `{slug}`; no slug falls back to the input file's basename. A `--file` transcript's slug *is* its basename, so `{title}` resolves sensibly there too.
+- **An unknown token is a config error**, reported with its key path like any other invalid value — never a literal `{titel}` in a filename.
+- Parent directories are created as needed, and writes are atomic.
+
 ## Conventions
 
-- **Paths** support `~` expansion and resolve relative to `data_root` when not absolute (except `data_root`/`output_root` themselves).
+- **Paths** support `~` expansion and resolve relative to `data_root` when not absolute (except `data_root`/`output_root`, and the path templates above, which get `~` expansion only — their base is a token, not the cwd).
 - **Zero-config:** with no file present, the daemon captures `mic` with the defaults above and the LLM stages use the `llm` CLI.
 - **Validation:** each tool validates its config at startup and exits non-zero with a precise message (key path + reason) on any unknown key or invalid value. No silent fallback.
 - **Discovery:** every tool prints the resolved, merged config and reports which file was loaded. The single-purpose tools spell it `--print-config` / `--config-path`; `ears` spells it `ears config show` / `ears config path`. `ears config describe` lists every setting with its type, default, and description (see "Discovering settings").
