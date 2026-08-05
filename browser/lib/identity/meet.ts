@@ -14,8 +14,10 @@ import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 // by contract: any miss — tile not mounted yet, DOM shape changed, track not
 // attached to any media element — returns null and audio-tap.ts's speaker-<n>
 // fallback carries the audio. Identity never blocks, throws into, or delays
-// capture. Per the VERIFICATION STATUS section below, this path is confirmed
-// dead on the current build and identify() is expected to keep returning null.
+// capture. The VERIFICATION STATUS section below records this path dead on
+// the 2026-07-18 build; the 2026-08-05 probes found the tile id attributes
+// BACK (see the addendum there), so identify() is opportunistic again — it
+// may resolve, and speaker-<n> still carries every call where it doesn't.
 //
 // ── COLLECTIONS-DATACHANNEL UPGRADE (journal #49-#58) ───────────────────────
 //
@@ -32,7 +34,7 @@ import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 //   2. audio-tap.ts calls onTrackSpeaking(track, speaking) on every track's
 //      audio-domain speaking edge (unconditionally, not debug-gated), and
 //      onTrackUnmute(track) on every track's "unmute" event.
-//   3. TWO SpeakingCorrelator instances (meet-correlator.ts, pure logic,
+//   3. THREE SpeakingCorrelator instances (meet-correlator.ts, pure logic,
 //      independently unit-tested) pair device events against track events:
 //      - `correlator`: collections mic-open edge ↔ decoded-audio speaking
 //        onset within ~200ms. This was the original design when the flag was
@@ -48,8 +50,17 @@ import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 //        edges landing within the same second on every deliberate toggle.
 //        One shot per participant per unmute, but reliable — anyone who joins
 //        muted and unmutes to speak produces exactly this pair.
-//      Both require CONFIRM_THRESHOLD (1, see its own comment below)
-//      consecutive confirming pairings before being trusted.
+//      - `domCorrelator`: tile speaking-ring burst onset (meet-speaking-dom.ts,
+//        via onDeviceSpeaking) ↔ decoded-audio speaking onset, within ~1s.
+//        Added 2026-08-05: two instrumented live calls showed the ring is the
+//        only per-turn per-device signal on current builds — Meet animates it
+//        from its own audio-analyzer worklet per participant track — so this
+//        pairing confirms on natural turn-taking, no mute toggle needed. The
+//        window is wider than `correlator`'s because the ring rides Meet's
+//        render pipeline (RAF batching, style flush) behind the audio domain.
+//      All require CONFIRM_THRESHOLD (see its own comment below) consecutive
+//      confirming pairings — per correlator, never summed across them — before
+//      being trusted.
 //   4. Once confirmed, the upgraded id is pushed via the onIdentify(cb)
 //      callback registered by audio-tap.ts, which restarts that track's
 //      pipeline as a new segment under the real id (see audio-tap.ts's
@@ -128,6 +139,22 @@ import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 // or track/tile counts start matching) — see journal #41–#46 for full detail
 // and #45 for an unrelated capture-pipeline bug (AudioDecoder errors) noticed
 // during this pass.
+//
+// ── 2026-08-05 ADDENDUM: the tile-id path is back ───────────────────────────
+// Two instrumented live calls found `data-participant-id` and
+// `data-requested-participant-id` present again on tile roots, values
+// `spaces/<space>/devices/<n>`-shaped and mapping cleanly to both call
+// participants; the production roster path resolved names off those tiles the
+// same day ("Meet roster resolved" debug-log lines). `data-initial-participant-
+// id` is still gone (kept in PARTICIPANT_ID_ATTRIBUTES — costs nothing);
+// a new opaque `data-tile-media-id` appeared (unused). `media.srcObject`
+// assignments were also observed again on the same build, so
+// findMediaElementForTrack() may resolve too. The attributes vanished once
+// (July 24) and returned, so every consumer stays opportunistic — the
+// speaker-<n> fallback remains fully intact. Also from those calls: tile
+// `data-ssrc` does NOT join to the receiver's RTP source ids (SFU rewrites
+// them; decisively probed during audible speech), and the speaking-ring DOM
+// is the only per-turn per-device signal — see meet-speaking-dom.ts.
 //
 // The returned ParticipantId is the raw tile attribute value (historically
 // "spaces/<space>/devices/<device>"-shaped); protocol.ts's sanitizeLabel maps
@@ -307,16 +334,20 @@ function mediaStreamOf(el: MediaElementLike): StreamRef | null {
 }
 
 // Consecutive confirming turns (SpeakingCorrelator) required before an
-// onIdentify upgrade fires. Shipped at 3 (conservative per Task 4), then
-// loosened to 1 after live verification (2026-07-19, journal): a live
-// 3-participant call produced zero ambiguous matches across every turn
-// observed — the correlator's own "exactly one live track's audio onset
-// within the window" requirement (meet-correlator.ts) is already the primary
-// false-positive guard per event; requiring the *same* pairing to repeat 3
-// times on top of that mostly just adds latency (each unmute/first-turn wait)
-// without having caught a real false positive in testing. Revisit if live
-// use ever shows a single-turn upgrade landing on the wrong participant.
-const CONFIRM_THRESHOLD = 1;
+// onIdentify upgrade fires. Shipped at 3 (conservative per Task 4), loosened
+// to 1 after the 2026-07-19 live run showed zero ambiguous matches, then
+// raised back to 2 on 2026-08-05: a live call confirmed a join on a single
+// unmute-edge turn while two same-room devices were hearing the same voice —
+// exactly the coincidence a 1-turn threshold cannot reject (the correlator's
+// distinct-tracks guard only sees ONE track's onset when the other device is
+// muted). One coincidence is cheap; two consecutive coincidences for the same
+// (track, device) pairing are not. The DOM speaking-ring correlator added the
+// same day supplies a device onset per natural turn, so reaching 2 no longer
+// requires two deliberate mute toggles — normal conversation gets there in
+// two turns. Counts are per correlator instance, never summed across them
+// (one physical toggle can legitimately match in two correlators at once and
+// must not self-corroborate).
+export const CONFIRM_THRESHOLD = 2;
 const CORRELATION_WINDOW_MS = 200; // journal #50: onset pairs landed within tens of ms
 // The collections mic-open edge and the track's "unmute" event land close but
 // not tens-of-ms close: the DC message rides a different transport than the
@@ -324,6 +355,11 @@ const CORRELATION_WINDOW_MS = 200; // journal #50: onset pairs landed within ten
 // same second (≤ ~900ms apart) on every toggle. 2s covers that with margin
 // while staying far under the ~5s a human takes between deliberate toggles.
 const UNMUTE_CORRELATION_WINDOW_MS = 2_000;
+// The speaking-ring burst rides Meet's render pipeline (worklet → UI state →
+// RAF-batched class churn), landing later after the audio onset than the
+// tens-of-ms the 200ms audio window assumes. Turns are seconds apart and the
+// correlator's distinct-tracks guard handles overlap, so 1s is safe margin.
+const DOM_CORRELATION_WINDOW_MS = 1_000;
 
 class MeetAdapter implements PlatformAdapter {
   readonly platform = "meet" as const;
@@ -341,6 +377,9 @@ class MeetAdapter implements PlatformAdapter {
   /** Pairs the collections mic-open edge with the track-level unmute event —
    * the only pairing the current Meet build's channel supports (see header). */
   private readonly unmuteCorrelator = new SpeakingCorrelator(UNMUTE_CORRELATION_WINDOW_MS);
+  /** Pairs the tile speaking-ring burst (meet-speaking-dom.ts) with decoded-
+   * audio onsets — the per-turn pairing the collections channel lost. */
+  private readonly domCorrelator = new SpeakingCorrelator(DOM_CORRELATION_WINDOW_MS);
   /** deviceId → last-known mic state, for future use (e.g. debugging);
    * not read for the correlation decision itself, which lives in correlator. */
   private readonly deviceState = new Map<string, { micOpen: boolean; lastSeen: number }>();
@@ -422,9 +461,22 @@ class MeetAdapter implements PlatformAdapter {
     try {
       this.liveTracksById.set(track.id, track);
       if (!speaking) return; // only onsets feed the correlator (see meet-correlator.ts)
-      this.applyMatch(this.correlator.recordAudioOnset(track.id, Date.now()));
+      const now = Date.now();
+      this.applyMatch(this.correlator.recordAudioOnset(track.id, now));
+      this.applyMatch(this.domCorrelator.recordAudioOnset(track.id, now));
     } catch {
       // best-effort — a broken correlation must never affect capture
+    }
+  }
+
+  /** hook.content.ts calls this on every tile speaking-ring burst onset
+   * (meet-speaking-dom.ts). Same best-effort contract as onTrackSpeaking. */
+  onDeviceSpeaking(deviceId: ParticipantId, at: number): void {
+    if (this.disposed) return;
+    try {
+      this.applyMatch(this.domCorrelator.recordDeviceOnset(deviceId, at));
+    } catch {
+      // best-effort — same contract as onTrackSpeaking
     }
   }
 
@@ -483,7 +535,7 @@ class MeetAdapter implements PlatformAdapter {
     console.debug(
       `[ears][identity] Meet identity join: track ${match.trackKey} → ${match.deviceId}` +
         `${name ? ` "${name}"` : " (name not yet resolved from tiles)"} ` +
-        `via collections datachannel (${match.confirmations} confirming turns)`,
+        `via speaking-onset correlation (${match.confirmations} confirming turns)`,
     );
     this.identifyCb?.(track, match.deviceId);
   }

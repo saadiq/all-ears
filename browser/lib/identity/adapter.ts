@@ -30,6 +30,14 @@ export interface PlatformAdapter {
    */
   onTrackUnmute?(track: MediaStreamTrack): void;
   /**
+   * Optional: a platform-DOM speaking indicator fired for `deviceId` at `at`
+   * (ms). On Meet this is the tile speaking-ring burst (meet-speaking-dom.ts)
+   * — the only per-turn per-device signal on current builds — and pairs with
+   * decoded-audio onsets to correlate a track to a device id. Same best-effort
+   * contract as onTrackSpeaking.
+   */
+  onDeviceSpeaking?(deviceId: string, at: number): void;
+  /**
    * Optional: register a callback for a later, asynchronous identity upgrade
    * — an id resolved after identify() already returned null (or a fallback)
    * for that track at +track time. At most one upgrade per track is expected;
