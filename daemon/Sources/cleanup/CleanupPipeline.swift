@@ -8,8 +8,15 @@ import Foundation
 /// "cleanup" section: read a `.transcript.md` (+ JSON sidecar if present),
 /// run each segment through the LLM guardrail chain (skip high-confidence
 /// utterances, build a minimal-change prompt, validate the candidate against
-/// the original), and write `<...>.clean.md` atomically with `kind: clean`
-/// and `derived_from` naming the source transcript.
+/// the original), and write the result atomically with `kind: clean` and
+/// `derived_from` naming the source transcript.
+///
+/// **This is the publishing stage.** `transcribe` leaves an intermediate in
+/// the data store; the cleaned transcript is the first artifact a user is
+/// meant to open, so it lands wherever `[cleanup] output`'s
+/// ``PathTemplate`` resolves to — by default a date-foldered
+/// `<date> - <title>.md` under `output_root`. The JSON sidecar follows the
+/// Markdown wherever it goes.
 ///
 /// Split the same way `transcribe`'s `TranscribePipeline`/`TranscribeRuntime`
 /// are: this type takes already-resolved inputs (an injected `LLMBackend`,
@@ -80,7 +87,14 @@ enum CleanupPipeline {
     /// Path to the source `.transcript.md` (or `.clean.md` — any rendered
     /// transcript document; cleanup doesn't care which stage produced it).
     var transcriptPath: String
+    /// `--out`: overrides the template verbatim.
     var out: String?
+    /// `[cleanup] output` — where the cleaned transcript is *published*.
+    var outputTemplate: PathTemplate
+    /// The configured `output_root`, already `~`-expanded: what the
+    /// template's `{output_root}` expands to.
+    var outputRoot: String
+    var weekNumbering: WeekNumbering
     /// The cleanup system prompt to use, or `nil` for
     /// `CleanupPromptBuilder`'s built-in default.
     var systemPrompt: String?
@@ -193,8 +207,13 @@ enum CleanupPipeline {
 
     let cleanedDocument = TranscriptDocument(frontmatter: frontmatter, segments: cleanedSegments)
 
+    // Publishing: `--out` verbatim, otherwise `[cleanup] output`'s template
+    // expanded against the *input document's* own context. Reading the
+    // context from the document rather than from flags is what makes a
+    // manual rerun land exactly where the daemon-spawned run did.
     let outputURL =
-      inputs.out.map { URL(fileURLWithPath: $0) } ?? cleanOutputURL(for: transcriptURL)
+      inputs.out.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+      ?? URL(fileURLWithPath: inputs.outputTemplate.expand(templateContext(inputs, document)))
     let outputSidecarURL = sidecarURL(for: outputURL)
 
     do {
@@ -238,17 +257,38 @@ enum CleanupPipeline {
     markdownURL.deletingPathExtension().appendingPathExtension("json")
   }
 
-  /// `<...>.transcript.md` → `<...>.clean.md`; any other name gets `.clean.md`
-  /// appended after stripping its extension, so `cleanup` still produces a
-  /// sensible sibling file when pointed at a non-standard filename.
-  private static func cleanOutputURL(for transcriptURL: URL) -> URL {
-    let name = transcriptURL.lastPathComponent
-    let directory = transcriptURL.deletingLastPathComponent()
-    if name.hasSuffix(".transcript.md") {
-      let stem = String(name.dropLast(".transcript.md".count))
-      return directory.appendingPathComponent("\(stem).clean.md")
+  /// The path-template context for this run, assembled from the input
+  /// document's frontmatter:
+  ///
+  /// - `{title}` is the session title the transcript recorded; absent (a
+  ///   plain range run, a `--file` run) it degrades to `{slug}`.
+  /// - `{slug}` is the document's path-safe source list — which, for a
+  ///   `--file` transcript, *is* the input file's basename, since
+  ///   `transcribe --file` names its source after the file.
+  /// - dates come from `started:` when the transcript carries it, so a
+  ///   narrowed rerun still files under the day the session began.
+  private static func templateContext(_ inputs: Inputs, _ document: TranscriptDocument)
+    -> PathTemplate.Context
+  {
+    let frontmatter = document.frontmatter
+    return PathTemplate.Context(
+      outputRoot: inputs.outputRoot,
+      start: frontmatter.started ?? frontmatter.range.start,
+      weekNumbering: inputs.weekNumbering,
+      session: frontmatter.session,
+      slug: frontmatter.sources.map(\.pathSafe).joined(separator: "_"),
+      title: frontmatter.title,
+      fallbackName: documentStem(URL(fileURLWithPath: inputs.transcriptPath)))
+  }
+
+  /// The input's basename with any known transcript suffix stripped, the
+  /// last-resort stand-in when a document carries neither a title nor
+  /// sources: `standup.transcript.md` → `standup`.
+  private static func documentStem(_ url: URL) -> String {
+    let name = url.lastPathComponent
+    for suffix in [".transcript.md", ".clean.md", ".summary.md"] where name.hasSuffix(suffix) {
+      return String(name.dropLast(suffix.count))
     }
-    let stem = transcriptURL.deletingPathExtension().lastPathComponent
-    return directory.appendingPathComponent("\(stem).clean.md")
+    return url.deletingPathExtension().lastPathComponent
   }
 }

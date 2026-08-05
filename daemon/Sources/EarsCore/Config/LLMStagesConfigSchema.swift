@@ -10,6 +10,11 @@
 /// ``effectiveDefaults`` compose the two via ``ConfigSchema/union(_:)`` into
 /// what `cleanup`/`summarize` actually validate against.
 public enum LLMStagesConfigSchema {
+  /// The smart default for `[cleanup] output` — a date-foldered
+  /// `<date> - <title>.md` under `output_root`. Named here so the schema's
+  /// defaults and `cleanup`'s own fallback can never drift apart.
+  public static let defaultCleanupOutput = "{output_root}/{year}/{month}/{day}/{date} - {title}.md"
+
   public static let defaults: ConfigValue = .table([
     "llm": .table([
       // "llm-cli" | "command"; see docs/configuration.md's [llm] table.
@@ -26,7 +31,7 @@ public enum LLMStagesConfigSchema {
       // The smart default for the *published* cleaned transcript: a
       // date-foldered `<date> - <title>.md` under `output_root`. Raw
       // transcripts never land here — they stay in the data store.
-      "output": .string("{output_root}/{year}/{month}/{day}/{date} - {title}.md"),
+      "output": .string(defaultCleanupOutput),
     ]),
     "summarize": .table([
       "preset": .array([])

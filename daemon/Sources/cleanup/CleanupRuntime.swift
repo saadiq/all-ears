@@ -1,6 +1,7 @@
 import EarsCLISupport
 import EarsConfig
 import EarsCore
+import EarsDataStore
 import EarsLLMKit
 import Foundation
 
@@ -8,7 +9,12 @@ import Foundation
 /// `--log-level`, ...), per `docs/specs/llm-stages.md`'s
 /// `cleanup <transcript.md> [--out] [--prompt] [--vocab] [--model] [--no-vocab]`.
 struct CleanupCLIInputs: Sendable {
-  var transcriptPath: String
+  /// The transcript to clean, or `nil` when ``sessionID`` names it instead.
+  var transcriptPath: String?
+  /// `--session <id>`: resolve the session's intermediate transcript from
+  /// the data store — the one-command rerun path now that raw transcripts
+  /// are hidden.
+  var sessionID: String?
   var out: String?
   var promptFile: String?
   var vocabPath: String?
@@ -67,6 +73,30 @@ enum CleanupRuntime {
     let dataRootPath = stringValue(root, ["data_root"])
     let dataRoot = URL(fileURLWithPath: dataRootPath.isEmpty ? "." : dataRootPath)
 
+    // `--session <id>` names the session's intermediate transcript in the
+    // data store; a positional path names it directly. Exactly one is
+    // present — `Cleanup.run()` rejects both/neither as a usage error.
+    let transcriptPath: String
+    if let sessionID = inputs.sessionID {
+      let url = DataStoreLayout.sessionTranscriptFile(dataRoot: dataRoot, sessionID: sessionID)
+      guard FileManager.default.fileExists(atPath: url.path) else {
+        let message =
+          "error: session '\(sessionID)' has no transcript at \(url.path) "
+          + "(run `transcribe --session \(sessionID)` first)"
+        writeStderr(message)
+        diagnostics.recordError(message)
+        return RunOutcome(class: .inputMissing, error: message)
+      }
+      transcriptPath = url.path
+    } else if let path = inputs.transcriptPath {
+      transcriptPath = path
+    } else {
+      let message = "error: a transcript path or --session is required"
+      writeStderr(message)
+      diagnostics.recordError(message)
+      return RunOutcome(class: .usage, error: message)
+    }
+
     let backend = stringValue(root, ["llm", "backend"], default: "llm-cli")
     let model = inputs.model ?? stringValue(root, ["llm", "model"])
     let configuredCommand = stringValue(root, ["llm", "command"])
@@ -109,8 +139,13 @@ enum CleanupRuntime {
 
     let code = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: inputs.transcriptPath,
+        transcriptPath: transcriptPath,
         out: inputs.out,
+        outputTemplate: PathTemplate(
+          stringValue(
+            root, ["cleanup", "output"], default: LLMStagesConfigSchema.defaultCleanupOutput)),
+        outputRoot: stringValue(root, ["output_root"]),
+        weekNumbering: WeekNumbering(configValue: stringValue(root, ["week_numbering"])),
         systemPrompt: systemPrompt,
         vocabulary: vocabulary
       ),

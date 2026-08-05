@@ -18,16 +18,33 @@ struct CleanupPipelineTests {
       "CleanupPipelineTests-\(label)-\(UUID().uuidString)")
   }
 
+  /// The publishing template these tests run under — the reference default's
+  /// shape, flattened to one directory level so assertions stay readable.
+  private static let outputTemplate = PathTemplate("{output_root}/published/{date} - {title}.md")
+
+  /// Where ``outputTemplate`` puts the fixture transcript: its range starts
+  /// at the epoch and it carries no `title:`, so `{title}` degrades to the
+  /// `{slug}` its single `mic` source supplies.
+  private static func publishedURL(under outputRoot: URL) -> URL {
+    outputRoot.appendingPathComponent("published/1970-01-01 - mic.md")
+  }
+
   private static func writeFixtureTranscript(
     at directory: URL,
     segments: [TranscriptSegment],
-    writeSidecar: Bool = true
+    writeSidecar: Bool = true,
+    session: String? = nil,
+    title: String? = nil,
+    started: Instant? = nil
   ) throws -> URL {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let frontmatter = TranscriptFrontmatter(
       schema: 1,
       kind: .transcript,
-      rangeRun: "2026-07-17T10-30-00Z_standup",
+      rangeRun: session == nil ? "2026-07-17T10-30-00Z_standup" : nil,
+      session: session,
+      title: title,
+      started: started,
       sources: ["mic"],
       range: TimeRange(start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 60)),
       model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
@@ -93,7 +110,9 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
@@ -101,7 +120,7 @@ struct CleanupPipelineTests {
     #expect(recorded.count == 1)
 
     let cleanedMarkdown = try String(
-      contentsOf: directory.appendingPathComponent("standup.clean.md"), encoding: .utf8)
+      contentsOf: Self.publishedURL(under: directory), encoding: .utf8)
     #expect(cleanedMarkdown.contains("kind: clean"))
     // Not quoted: "standup.transcript.md" needs no YAML quoting (no leading
     // digit/special character), per FrontmatterRenderer's `needsQuoting`.
@@ -111,7 +130,7 @@ struct CleanupPipelineTests {
     // stdout line of a successful run is the cleaned transcript's path.
     #expect(
       stdoutLines.withLock { $0 }.last
-        == directory.appendingPathComponent("standup.clean.md").path)
+        == Self.publishedURL(under: directory).path)
   }
 
   @Test("the emitted stdout path is absolute and standardized, not --out's raw spelling")
@@ -142,7 +161,9 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: out, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: out,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
@@ -186,12 +207,14 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
     let cleanedMarkdown = try String(
-      contentsOf: directory.appendingPathComponent("standup.clean.md"), encoding: .utf8)
+      contentsOf: Self.publishedURL(under: directory), encoding: .utf8)
     #expect(cleanedMarkdown.contains("Hello there, how are you?"))
     #expect(cleanedMarkdown.contains("Hello there."))
   }
@@ -220,13 +243,15 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 4, "expected exit 4 (stage-failed), got \(exitCode)")
     #expect(
       !FileManager.default.fileExists(
-        atPath: directory.appendingPathComponent("standup.clean.md").path),
+        atPath: Self.publishedURL(under: directory).path),
       "an all-rejected run must not write a do-nothing copy of its input")
   }
 
@@ -255,7 +280,9 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
@@ -290,12 +317,14 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
     let cleanedMarkdown = try String(
-      contentsOf: directory.appendingPathComponent("standup.clean.md"), encoding: .utf8)
+      contentsOf: Self.publishedURL(under: directory), encoding: .utf8)
     #expect(cleanedMarkdown.contains("Original text."))
     #expect(cleanedMarkdown.contains("Hello there, how are you?"))
   }
@@ -317,7 +346,9 @@ struct CleanupPipelineTests {
     let (deps, _) = Self.dependencies(llmResults: [])
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: customOut, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: customOut,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
@@ -346,13 +377,15 @@ struct CleanupPipelineTests {
     let (deps, _) = Self.dependencies(llmResults: [])
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     #expect(exitCode == 0)
     #expect(
       FileManager.default.fileExists(
-        atPath: directory.appendingPathComponent("standup.clean.md").path))
+        atPath: Self.publishedURL(under: directory).path))
   }
 
   @Test("an LLM timeout aborts the run with exit 5 (retryable upstream failure)")
@@ -371,7 +404,9 @@ struct CleanupPipelineTests {
 
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: markdownURL.path, out: nil, systemPrompt: nil, vocabulary: []),
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
 
     // A timed-out LLM is an upstream outage, not a per-segment degrade: the
@@ -380,13 +415,86 @@ struct CleanupPipelineTests {
     #expect(exitCode == 5, "expected exit 5 (retryable-upstream), got \(exitCode)")
   }
 
+  @Test("publishes through the template, keyed on the transcript's own title and start")
+  func publishesThroughTemplate() async throws {
+    let directory = Self.makeTempDirectory("publish")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // A session transcript: title and `started:` (2026-08-05T09:04:07Z, US
+    // week 32) are the context the template reads, and `started` is
+    // deliberately a different day from the transcribed range's start, so a
+    // narrowed rerun provably files under the day the session began.
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 0, end: 3, text: "Hi.", confidence: 1.0))
+      ],
+      session: "0d5e7f6a",
+      title: "Kevin Weekly",
+      started: Instant(secondsSinceEpoch: 1_785_920_647))
+
+    let (deps, _) = Self.dependencies(llmResults: [])
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: PathTemplate(
+          "{output_root}/{year}/{month}/{day}/{week}/{date} - {title}.md"),
+        outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let published = directory.appendingPathComponent(
+      "2026/08/05/32/2026-08-05 - Kevin Weekly.md")
+    #expect(FileManager.default.fileExists(atPath: published.path))
+    // The sidecar follows the Markdown wherever it lands.
+    #expect(
+      FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("2026/08/05/32/2026-08-05 - Kevin Weekly.json")
+          .path))
+  }
+
+  @Test("week_numbering = iso changes {week} where the conventions disagree")
+  func isoWeekNumbering() async throws {
+    let directory = Self.makeTempDirectory("iso-week")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // 2027-01-01 is a Friday: US week 01 of 2027, ISO week 53 of 2026.
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 0, end: 3, text: "Hi.", confidence: 1.0))
+      ],
+      title: "New Year",
+      started: Instant(secondsSinceEpoch: 1_798_761_600))
+
+    let (deps, _) = Self.dependencies(llmResults: [])
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: PathTemplate("{output_root}/{week}/{title}.md"),
+        outputRoot: directory.path, weekNumbering: .iso,
+        systemPrompt: nil, vocabulary: []),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    #expect(
+      FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("53/New Year.md").path))
+  }
+
   @Test("a missing transcript file is a clear, non-zero error")
   func missingTranscriptIsError() async {
     let (deps, _) = Self.dependencies(llmResults: [])
     let exitCode = await CleanupPipeline.run(
       inputs: CleanupPipeline.Inputs(
-        transcriptPath: "/nonexistent/path.transcript.md", out: nil, systemPrompt: nil,
-        vocabulary: []),
+        transcriptPath: "/nonexistent/path.transcript.md", out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: "/nonexistent", weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
       dependencies: deps)
     #expect(exitCode == 3)
   }

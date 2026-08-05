@@ -323,6 +323,7 @@ struct JSONEnvelopeContractSmokeTests {
     let configPath = temp.write(
       """
       data_root = "\(temp.url.path)/data"
+      output_root = "\(temp.url.path)/out"
 
       [llm]
       backend = "command"
@@ -342,11 +343,13 @@ struct JSONEnvelopeContractSmokeTests {
     #expect(envelope.ok)
     let output = try #require(envelope.output)
     #expect(output.hasPrefix("/"), "output must be an absolute path, got: \(output)")
-    #expect(output.hasSuffix(".clean.md"))
+    #expect(output.hasSuffix("/out/1970/01/01/1970-01-01 - mic.md"))
     #expect(FileManager.default.fileExists(atPath: output))
     let outputs = try #require(envelope.outputs)
     #expect(outputs.first == output, "outputs must lead with the primary artifact")
-    #expect(outputs.contains { $0.hasSuffix(".clean.json") }, "outputs must list the sidecar")
+    #expect(
+      outputs.contains { $0.hasSuffix("/out/1970/01/01/1970-01-01 - mic.json") },
+      "outputs must list the sidecar")
     for path in outputs {
       #expect(FileManager.default.fileExists(atPath: path), "outputs entry must exist: \(path)")
     }
