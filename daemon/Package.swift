@@ -15,6 +15,7 @@ let package = Package(
     .executable(name: "transcribe", targets: ["transcribe"]),
     .executable(name: "cleanup", targets: ["cleanup"]),
     .executable(name: "summarize", targets: ["summarize"]),
+    .executable(name: "ears-menubar", targets: ["ears-menubar"]),
   ],
   dependencies: [
     .package(url: "https://github.com/LebJe/TOMLKit", exact: "0.6.0"),
@@ -42,6 +43,11 @@ let package = Package(
         "EarsCore"
       ],
       exclude: ["README.md"]
+    ),
+
+    .target(
+      name: "EarsMenuKit",
+      dependencies: ["EarsCore"]
     ),
 
     // Shared bootstrap glue for the five executable stubs: config
@@ -285,6 +291,10 @@ let package = Package(
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
       ]
     ),
+    .executableTarget(
+      name: "ears-menubar",
+      dependencies: ["EarsMenuKit", "EarsCore", "EarsConfig", "EarsIPC", "EarsDataStore"]
+    ),
 
     // MARK: - Tests
 
@@ -388,6 +398,10 @@ let package = Package(
     .testTarget(
       name: "EarsCLISupportTests",
       dependencies: ["EarsCLISupport"]
+    ),
+    .testTarget(
+      name: "EarsMenuKitTests",
+      dependencies: ["EarsMenuKit", "EarsCoreTestSupport"]
     ),
   ]
 )
