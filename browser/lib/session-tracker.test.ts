@@ -186,7 +186,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     expect(control.ofVerb("attendee")).toHaveLength(0);
   });
 
-  it("participant-left upserts a left timestamp; the last leaver ends the session", async () => {
+  it("participant-left upserts a left timestamp; even the last leaver never ends the session", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -205,10 +205,26 @@ describe("SessionTracker (v2 signal forwarder)", () => {
       attendee: { id: "jane", left: NOW },
     });
 
+    // A seam swap (escalateSeam) drains the whole set and re-adopts moments
+    // later — zero participants is not evidence the call ended.
     tracker.participantLeft("p1", "marcus");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
-    expect(tracker.sessionActive).toBe(false);
+    expect(control.calls.at(-1)).toEqual({
+      verb: "attendee",
+      session: "m-1",
+      attendee: { id: "marcus", left: NOW },
+    });
+    expect(control.ofVerb("end")).toHaveLength(0);
+    expect(tracker.sessionActive).toBe(true);
+
+    // The new seam's tracks re-join the same live session.
+    tracker.participantJoined("p1", "meet", "webaudio-track-1");
+    await flush();
+    expect(control.calls.at(-1)).toEqual({
+      verb: "attendee",
+      session: "m-1",
+      attendee: { id: "webaudio-track-1" },
+    });
   });
 
   it("rosterUpdate upserts display-name-only attendees keyed by device id (issue #23)", async () => {
@@ -229,7 +245,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     ]);
   });
 
-  it("a roster name is identity-only: it does not enrol a capture participant or keep the session alive", async () => {
+  it("a roster name is identity-only: it does not enrol a capture participant", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -239,13 +255,23 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.participantJoined("p1", "meet", "speaker-1");
     tracker.rosterUpdate("p1", "meet", [{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
     await flush();
+    const upsertsBefore = control.ofVerb("attendee").length;
 
-    // The only capture participant leaving ends the session — the roster name
-    // must not count as a live participant that strands it open.
+    // No capture pipeline backs the roster id, so a track-teardown `left` for
+    // it must not stamp the attendee row.
+    tracker.participantLeft("p1", "spaces/s/devices/445");
+    await flush();
+    expect(control.ofVerb("attendee")).toHaveLength(upsertsBefore);
+
+    // The capture participant's leave stamps its row (and ends nothing).
     tracker.participantLeft("p1", "speaker-1");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
-    expect(tracker.sessionActive).toBe(false);
+    expect(control.calls.at(-1)).toEqual({
+      verb: "attendee",
+      session: "m-1",
+      attendee: { id: "speaker-1", left: NOW },
+    });
+    expect(control.ofVerb("end")).toHaveLength(0);
   });
 
   it("buffers roster names that arrive before meeting-started and flushes them once it lands", async () => {
@@ -284,7 +310,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     ]);
   });
 
-  it("a rename is identity-only: it does not enrol a capture participant or keep the session alive", async () => {
+  it("a rename is identity-only: it does not enrol a capture participant", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
@@ -293,11 +319,21 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.participantJoined("p1", "meet", "speaker-1");
     tracker.participantRenamed("p1", "meet", "speaker-1", "spaces/s/devices/183");
     await flush();
+    const upsertsBefore = control.ofVerb("attendee").length;
+
+    // The rename target has no capture pipeline — its `left` stamps nothing.
+    tracker.participantLeft("p1", "spaces/s/devices/183");
+    await flush();
+    expect(control.ofVerb("attendee")).toHaveLength(upsertsBefore);
 
     tracker.participantLeft("p1", "speaker-1");
     await flush();
-    expect(control.ofVerb("end")).toEqual([{ verb: "end", session: "m-1" }]);
-    expect(tracker.sessionActive).toBe(false);
+    expect(control.calls.at(-1)).toEqual({
+      verb: "attendee",
+      session: "m-1",
+      attendee: { id: "speaker-1", left: NOW },
+    });
+    expect(control.ofVerb("end")).toHaveLength(0);
   });
 
   it("buffers a rename that arrives before meeting-started and flushes it once it lands", async () => {
