@@ -5,6 +5,7 @@ import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
+import { startMeetSpeakingWatch } from "../lib/identity/meet-speaking-dom";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { perfTag, setPerfState } from "../lib/perf-main";
@@ -66,6 +67,7 @@ export default defineContentScript({
 
     let captureOn = false;
     let stopMeetingWatch: (() => void) | null = null;
+    let stopSpeakingWatch: (() => void) | null = null;
     let lastMeetingId: string | null = null;
 
     perfTag("platform", platform);
@@ -129,10 +131,23 @@ export default defineContentScript({
           lastMeetingId = id;
           perfTag("meeting", id);
         });
+        // Meet speaking-ring → per-turn device onsets for the identity
+        // correlator (meet-speaking-dom.ts). Meet-only by adapter contract.
+        if (platform === "meet" && adapter?.onDeviceSpeaking) {
+          stopSpeakingWatch = startMeetSpeakingWatch((deviceId, at) => {
+            try {
+              adapter.onDeviceSpeaking?.(deviceId, at);
+            } catch {
+              // identity is best-effort; a bad onset must never reach the page
+            }
+          });
+        }
       } else {
         stopCapture();
         stopMeetingWatch?.();
         stopMeetingWatch = null;
+        stopSpeakingWatch?.();
+        stopSpeakingWatch = null;
         lastMeetingId = null;
         perfTag("meeting", undefined);
       }

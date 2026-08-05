@@ -177,7 +177,7 @@ export type PortMessage =
   | { type: "joined"; participantId: ParticipantId; platform: Platform; displayName?: string }
   // Identity-only roster names (see MainMessage "participant-roster"). The
   // background upserts each onto the daemon session's attendee roster without
-  // treating them as capture participants (they don't gate session-end).
+  // treating them as capture participants (no `left` is ever stamped on them).
   | { type: "roster"; platform: Platform; entries: RosterEntry[] }
   // A late identity for a dead-track participant (see MainMessage
   // "participant-renamed"): the background upserts `fromId`'s source label

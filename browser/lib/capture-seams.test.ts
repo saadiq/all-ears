@@ -5,6 +5,7 @@ import {
   seamUsesReceiverTracks,
   seamOrderFor,
   seamTracksToAdopt,
+  type TrackProvenanceInfo,
 } from "./capture-seams";
 
 // Pure tier-0 unit: every timestamp is injected, nothing reads the clock.
@@ -161,5 +162,65 @@ describe("seamTracksToAdopt", () => {
     // same source track would gain a new pipeline on every sweep.
     expect(seamTracksToAdopt("webaudio-track", ["t1", "t2"], new Set(["t1"]))).toEqual(["t2"]);
     expect(seamTracksToAdopt("webaudio-track", ["t1"], new Set(["t1"]))).toEqual([]);
+  });
+});
+
+describe("seamTracksToAdopt with provenance", () => {
+  const info = (origin: "local" | "remote", rootId: string, seq: number): TrackProvenanceInfo => ({
+    origin,
+    rootId,
+    seq,
+  });
+
+  it("skips local-origin tracks: the 2026-08-05 call fixture", () => {
+    // Six webaudio tracks: three clones of the local mic (self-audio the
+    // daemon's mic source already records), one remote, two unknown. The
+    // policy must adopt the remote and the unknowns and drop the mic copies —
+    // the actual call adopted all six and quadruplicated every utterance.
+    const provenance = new Map([
+      ["t1", info("local", "mic-root", 1)],
+      ["t2", info("local", "mic-root", 2)],
+      ["t6", info("local", "mic-root", 3)],
+      ["t3", info("remote", "t3", 4)],
+    ]);
+    expect(
+      seamTracksToAdopt("webaudio-track", ["t1", "t2", "t3", "t4", "t5", "t6"], new Set(), provenance),
+    ).toEqual(["t3", "t4", "t5"]);
+  });
+
+  it("adopts one track per lineage root — the earliest-registered clone", () => {
+    const provenance = new Map([
+      ["late", info("remote", "r", 9)],
+      ["early", info("remote", "r", 2)],
+    ]);
+    expect(seamTracksToAdopt("webaudio-track", ["late", "early"], new Set(), provenance)).toEqual([
+      "early",
+    ]);
+  });
+
+  it("treats a root with an already-adopted member as settled", () => {
+    // The adopted clone may have ended (gone from available) — its sibling
+    // still carries the same audio and must not gain a second pipeline.
+    const provenance = new Map([
+      ["sibling", info("remote", "r", 5)],
+      ["captured", info("remote", "r", 1)],
+    ]);
+    expect(
+      seamTracksToAdopt("webaudio-track", ["sibling"], new Set(["captured"]), provenance),
+    ).toEqual([]);
+  });
+
+  it("adopts unknown-origin tracks — dropping a real remote is data loss", () => {
+    const provenance = new Map([["t1", info("local", "t1", 1)]]);
+    expect(seamTracksToAdopt("webaudio-track", ["t1", "mystery"], new Set(), provenance)).toEqual([
+      "mystery",
+    ]);
+  });
+
+  it("keeps unknown ids as their own roots — two unknowns both adopt", () => {
+    expect(seamTracksToAdopt("webaudio-track", ["u1", "u2"], new Set(), new Map())).toEqual([
+      "u1",
+      "u2",
+    ]);
   });
 });

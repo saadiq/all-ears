@@ -193,3 +193,52 @@ export function readVarintAtPath(bytes: Uint8Array, path: readonly number[]): nu
     return null;
   }
 }
+
+// Sniff-summary bounds: enough to recognize a schema at a glance in a debug
+// log without ever dumping payload content, and a hard cap so a pathological
+// message can't produce an unbounded log line.
+const SNIFF_MAX_FIELDS_PER_LEVEL = 8;
+const SNIFF_MAX_CHARS = 240;
+
+const WIRE_TYPE_NAMES: Record<number, string> = {
+  0: "varint",
+  1: "fix64",
+  2: "len",
+  5: "fix32",
+};
+
+/**
+ * Field-number/wire-type sketch of a protobuf message, e.g.
+ * `1:{2:{6:len,10:{1:varint}}},3:varint` — structure only, never decoded
+ * values, so it stays inside the MUST-NOT #6 exception's spirit (schema
+ * discovery, not content reading). Length-delimited fields are descended when
+ * they re-parse as messages and `depth` allows; otherwise reported as `len`.
+ * Returns null when the top level doesn't parse as protobuf. Never throws.
+ */
+export function summarizeFields(bytes: Uint8Array, depth: number): string | null {
+  try {
+    const s = sketch(bytes, depth);
+    if (s === null) return null;
+    return s.length > SNIFF_MAX_CHARS ? `${s.slice(0, SNIFF_MAX_CHARS)}…` : s;
+  } catch {
+    return null;
+  }
+}
+
+function sketch(bytes: Uint8Array, depth: number): string | null {
+  const fields = parseFields(bytes);
+  if (!fields) return null;
+  const parts: string[] = [];
+  const numbers = [...fields.keys()].sort((a, b) => a - b);
+  for (const n of numbers.slice(0, SNIFF_MAX_FIELDS_PER_LEVEL)) {
+    const field = fields.get(n)![fields.get(n)!.length - 1]!;
+    let desc = WIRE_TYPE_NAMES[field.wireType] ?? `wt${field.wireType}`;
+    if (field.wireType === 2 && field.bytes && depth > 0 && field.bytes.length > 0) {
+      const nested = sketch(field.bytes, depth - 1);
+      if (nested !== null) desc = `{${nested}}`;
+    }
+    parts.push(`${n}:${desc}`);
+  }
+  if (numbers.length > SNIFF_MAX_FIELDS_PER_LEVEL) parts.push("…");
+  return parts.join(",");
+}

@@ -3,9 +3,11 @@ import {
   liveTracks,
   setEncodedAudioListener,
   setTrackSink,
+  trackProvenance,
   webAudioTracks,
   type EncodedAudioFrameLike,
   type EncodedAudioListener,
+  type TrackProvenanceRecord,
   type TrackSink,
 } from "./rtc-hook";
 import {
@@ -317,19 +319,36 @@ function activeSeam(): SeamId {
  * given. Cloning keeps Meet's own playback whole — verified read-only during
  * the live investigation before this path existed (journal #105).
  */
+/** Skip decisions already logged, so the 3s reconcile sweep states each one
+ * once instead of repeating it for the rest of the call. */
+const loggedSeamSkips = new Set<string>();
+
 function adoptSeamTracks(): void {
   const seam = activeSeam();
   if (seam !== "webaudio-track") return; // no other seam self-discovers tracks
   const available = webAudioTracks();
-  const wanted = new Set(
-    seamTracksToAdopt(
-      seam,
-      available.map((t) => t.id),
-      new Set(adoptedSeamTracks.keys()),
-    ),
-  );
+  const adopted = new Set(adoptedSeamTracks.keys());
+  // Provenance for available AND adopted ids: an already-adopted clone must
+  // settle its whole lineage root, or the sweep adopts its siblings later.
+  const provenance = new Map<string, TrackProvenanceRecord>();
+  for (const id of [...available.map((t) => t.id), ...adopted]) {
+    const record = trackProvenance(id);
+    if (record) provenance.set(id, record);
+  }
+  const wanted = new Set(seamTracksToAdopt(seam, available.map((t) => t.id), adopted, provenance));
   for (const source of available) {
-    if (!wanted.has(source.id)) continue;
+    if (!wanted.has(source.id)) {
+      if (!adopted.has(source.id) && !loggedSeamSkips.has(source.id)) {
+        loggedSeamSkips.add(source.id);
+        const record = provenance.get(source.id);
+        const reason =
+          record?.origin === "local"
+            ? `local via=${record.via} root=${record.rootId}`
+            : `duplicate of root ${record?.rootId ?? source.id}`;
+        console.debug(`[ears][capture] skip webaudio track ${source.id}: ${reason}`);
+      }
+      continue;
+    }
     let clone: MediaStreamTrack;
     try {
       clone = source.clone();
@@ -337,6 +356,11 @@ function adoptSeamTracks(): void {
       console.debug(`[ears][capture] could not clone webaudio track ${source.id}: ${String(err)}`);
       continue;
     }
+    const record = provenance.get(source.id);
+    console.debug(
+      `[ears][capture] adopt webaudio track ${source.id} ` +
+        `(${record ? `${record.origin} via=${record.via}` : "unknown provenance"})`,
+    );
     adoptedSeamTracks.set(source.id, clone);
     startPipeline(clone, { seam, sourceTrackId: source.id });
   }
@@ -360,6 +384,7 @@ function escalateSeam(from: SeamId, to: SeamId): void {
   for (const track of [...pipelines.keys()]) stopPipeline(track);
   for (const clone of adoptedSeamTracks.values()) clone.stop();
   adoptedSeamTracks.clear();
+  loggedSeamSkips.clear(); // the new seam re-decides every track — re-log
   // Re-adopt under the new seam. A seam with nothing to adopt right now still
   // gets its full grace — tracks can appear later when a participant joins,
   // and the arbiter re-arms on the next unmute either way.
@@ -443,6 +468,7 @@ function teardownAll(): void {
   // untouched. Stopping them releases the processors holding them open.
   for (const clone of adoptedSeamTracks.values()) clone.stop();
   adoptedSeamTracks.clear();
+  loggedSeamSkips.clear();
 }
 
 /** Adopt any epoch-owned live track that lost (or never got) a pipeline, and

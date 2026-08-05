@@ -172,9 +172,9 @@ export class SessionTracker {
    * Resolved participant names from the platform roster (id → display name),
    * independent of capture. Upserts each onto the daemon session's attendee
    * roster so names land even for a participant whose track never correlated to
-   * this id — unlike participantJoined, a roster entry is identity only and does
-   * NOT enrol the id as a capture participant (it must not keep the session
-   * alive or gate its end). See issue #23.
+   * this id — unlike participantJoined, a roster entry is identity only and is
+   * NOT enrolled as a capture participant (no capture pipeline exists for it,
+   * so a track-teardown `left` must never stamp it). See issue #23.
    */
   rosterUpdate(portId: string, platform: Platform, entries: RosterEntry[]): void {
     if (entries.length === 0) return;
@@ -251,8 +251,9 @@ export class SessionTracker {
   private applyRoster(record: SessionRecord, entries: RosterEntry[]): void {
     for (const entry of entries) {
       if (!entry.displayName) continue; // never upsert an empty name (issue #23)
-      // Identity only — deliberately NOT added to record.participants, so a
-      // named-but-never-captured attendee can't keep the session from ending.
+      // Identity only — deliberately NOT added to record.participants: no
+      // capture pipeline backs this id, so no pipeline-teardown `left` should
+      // ever be stamped on it.
       this.upsertAttendee(record, { id: entry.participantId, display_name: entry.displayName });
     }
   }
@@ -278,13 +279,18 @@ export class SessionTracker {
     }
   }
 
-  /** A participant left; when the last one goes, the call is over. */
+  /** A participant left: upsert their roster `left` timestamp — never end the
+   * session. The participant set drains to zero on a capture-seam swap
+   * (escalateSeam stops every pipeline, then re-adopts under the new seam), so
+   * "zero participants" is not evidence the call ended; treating it as an end
+   * killed a live session 17s in and lost the rest of the meeting. Real ends
+   * come from meeting-ended, the port disconnect (Meet's post-call redirect),
+   * and the daemon's ingest-idle / superseded nets. */
   participantLeft(portId: string, participantId: ParticipantId): void {
     for (const record of this.sessions.values()) {
       if (record.portId !== portId || record.ended) continue;
       if (!record.participants.delete(participantId)) continue;
       this.upsertAttendee(record, { id: participantId, left: this.nowISO() });
-      if (record.participants.size === 0) this.endSession(record);
     }
   }
 

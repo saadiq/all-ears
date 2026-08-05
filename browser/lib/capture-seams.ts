@@ -102,20 +102,56 @@ export function seamUsesReceiverTracks(seam: SeamId): boolean {
 }
 
 /**
- * Which of the seam's currently-available tracks are not yet captured.
+ * Track provenance as the adoption policy consumes it — data in, so this
+ * tier-0 module stays pure. Mirrors rtc-hook.ts's TrackProvenanceRecord; an
+ * id with no entry is simply unknown.
+ */
+export interface TrackProvenanceInfo {
+  origin: "local" | "remote";
+  /** Lineage root — clones of one root carry the same audio. */
+  rootId: string;
+  /** Registration order; the earliest-registered track per root is kept. */
+  seq: number;
+}
+
+/**
+ * Which of the seam's currently-available tracks to adopt.
  *
- * Pure so the two rules that matter are testable without a DOM: the receiver
- * seam never adopts here (its tracks arrive through the `ontrack` sink, and
- * adopting them again would double-capture), and a track already adopted is
- * never adopted twice however often the reconcile sweep runs.
+ * Pure so the rules are testable without a DOM:
+ * - the receiver seam never adopts here (its tracks arrive through the
+ *   `ontrack` sink, and adopting them again would double-capture);
+ * - a `local`-origin track is never adopted — that is the user's own audio,
+ *   which the daemon's mic source already records (the 2026-08-05 call
+ *   adopted three copies of the local mic and quadruplicated the transcript);
+ * - one track per lineage root: clones carry identical audio, so the
+ *   earliest-registered wins, and a root with any member already adopted is
+ *   settled;
+ * - a track already adopted is never adopted twice however often the
+ *   reconcile sweep runs;
+ * - an id with no provenance entry always adopts (its own root): a wrongly
+ *   dropped remote track is unrecoverable data loss, so unknown fails safe.
  */
 export function seamTracksToAdopt(
   seam: SeamId,
   availableIds: readonly string[],
   adoptedIds: ReadonlySet<string>,
+  provenance?: ReadonlyMap<string, TrackProvenanceInfo>,
 ): string[] {
   if (seamUsesReceiverTracks(seam)) return [];
-  return availableIds.filter((id) => !adoptedIds.has(id));
+  const rootOf = (id: string): string => provenance?.get(id)?.rootId ?? id;
+  const seqOf = (id: string): number => provenance?.get(id)?.seq ?? Number.MAX_SAFE_INTEGER;
+  const adoptedRoots = new Set<string>();
+  for (const id of adoptedIds) adoptedRoots.add(rootOf(id));
+  const keeperByRoot = new Map<string, string>();
+  for (const id of availableIds) {
+    if (provenance?.get(id)?.origin === "local") continue;
+    const root = rootOf(id);
+    if (adoptedRoots.has(root)) continue;
+    const keeper = keeperByRoot.get(root);
+    if (keeper === undefined || seqOf(id) < seqOf(keeper)) keeperByRoot.set(root, id);
+  }
+  const keep = new Set(keeperByRoot.values());
+  return availableIds.filter((id) => keep.has(id) && !adoptedIds.has(id));
 }
 
 /**

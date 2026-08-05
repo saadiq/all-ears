@@ -1,6 +1,15 @@
 import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { installHook, setCollectionsListener, setEncodedAudioListener, type EncodedAudioFrameLike } from "./rtc-hook";
+import {
+  formatChannelSummary,
+  installHook,
+  PROVENANCE_MAX_ENTRIES,
+  registerTrackProvenance,
+  setCollectionsListener,
+  setEncodedAudioListener,
+  trackProvenance,
+  type EncodedAudioFrameLike,
+} from "./rtc-hook";
 import type { CollectionsMuteEvent } from "./identity/meet-collections";
 
 // Node has global ReadableStream/WritableStream (18+); no DOM needed. We fake
@@ -58,6 +67,8 @@ function setUpGlobals(host: string, nativeCreateEncodedStreams?: (...a: unknown[
   delete g.__earsOnTrack;
   delete g.__earsLiveTracks;
   delete g.__earsEncodedAudioListeners;
+  delete g.__earsTrackProvenance;
+  delete g.__earsTrackProvenanceSeq;
   g.window = globalThis;
   g.location = { host };
 
@@ -362,5 +373,179 @@ describe("Meet collections datachannel (rtc-hook.ts)", () => {
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
     expect(events).toEqual([]);
+  });
+});
+
+// ── Track provenance (registry + passive wraps) ─────────────────────────────
+
+describe("track provenance", () => {
+  let cloneCounter: number;
+
+  class FakeMediaStreamTrack {
+    readonly readyState = "live";
+    constructor(
+      public id: string,
+      public kind: "audio" | "video" = "audio",
+    ) {}
+    addEventListener(): void {}
+    clone(): FakeMediaStreamTrack {
+      return new FakeMediaStreamTrack(`${this.id}-c${++cloneCounter}`, this.kind);
+    }
+  }
+
+  function fakeStream(...tracks: FakeMediaStreamTrack[]): { getAudioTracks(): FakeMediaStreamTrack[] } {
+    return { getAudioTracks: () => tracks.filter((t) => t.kind === "audio") };
+  }
+
+  /** Meet host (the wraps are Meet-only) plus the capture-surface fakes the
+   * provenance wraps hang off: mediaDevices, MediaStreamTrack, RTCRtpSender,
+   * and sender methods on the fake RTCPeerConnection prototype. */
+  function setUpProvenance(gumTracks: FakeMediaStreamTrack[]) {
+    const native = () => ({ readable: new ReadableStream(), writable: new WritableStream() });
+    setUpGlobals("meet.google.com", native);
+    cloneCounter = 0;
+    const g = globalThis as unknown as Record<string, unknown>;
+
+    g.MediaStreamTrack = FakeMediaStreamTrack;
+
+    const getUserMedia = vi.fn(async () => fakeStream(...gumTracks));
+    // Node ≥21 defines a global navigator getter; defineProperty replaces it.
+    Object.defineProperty(g, "navigator", {
+      value: { mediaDevices: { getUserMedia } },
+      configurable: true,
+      writable: true,
+    });
+
+    class FakeRTCRtpSender {
+      replaceTrack(_track: unknown): Promise<void> {
+        return Promise.resolve();
+      }
+    }
+    g.RTCRtpSender = FakeRTCRtpSender;
+
+    const proto = (g.RTCPeerConnection as { prototype: Record<string, unknown> }).prototype;
+    proto.addTrack = function (_track: unknown): string {
+      return "native-sender";
+    };
+    proto.addTransceiver = function (_trackOrKind: unknown): string {
+      return "native-transceiver";
+    };
+
+    installHook();
+    return { getUserMedia };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("marks getUserMedia audio tracks local and returns the stream untouched", async () => {
+    const mic = new FakeMediaStreamTrack("mic-1");
+    setUpProvenance([mic]);
+
+    const nav = (globalThis as unknown as { navigator: { mediaDevices: { getUserMedia(): Promise<unknown> } } })
+      .navigator;
+    const stream = await nav.mediaDevices.getUserMedia();
+    expect((stream as { getAudioTracks(): unknown[] }).getAudioTracks()).toEqual([mic]);
+
+    expect(trackProvenance("mic-1")).toMatchObject({ origin: "local", via: "gum", rootId: "mic-1" });
+  });
+
+  it("clones inherit origin and lineage root, transitively", async () => {
+    const mic = new FakeMediaStreamTrack("mic-1");
+    setUpProvenance([mic]);
+    const nav = (globalThis as unknown as { navigator: { mediaDevices: { getUserMedia(): Promise<unknown> } } })
+      .navigator;
+    await nav.mediaDevices.getUserMedia();
+
+    const c1 = mic.clone();
+    const c2 = c1.clone();
+    expect(trackProvenance(c1.id)).toMatchObject({ origin: "local", via: "clone", rootId: "mic-1" });
+    expect(trackProvenance(c2.id)).toMatchObject({ origin: "local", via: "clone", rootId: "mic-1" });
+  });
+
+  it("a clone of an unregistered parent stays unknown", () => {
+    setUpProvenance([]);
+    const stranger = new FakeMediaStreamTrack("stranger");
+    const c = stranger.clone();
+    expect(trackProvenance(c.id)).toBeUndefined();
+  });
+
+  it("marks addTrack/addTransceiver audio arguments local, passing results through", () => {
+    setUpProvenance([]);
+    const g = globalThis as unknown as {
+      RTCPeerConnection: new () => { addTrack(t: unknown): unknown; addTransceiver(t: unknown): unknown };
+    };
+    const pc = new g.RTCPeerConnection();
+
+    expect(pc.addTrack(new FakeMediaStreamTrack("out-1"))).toBe("native-sender");
+    expect(trackProvenance("out-1")).toMatchObject({ origin: "local", via: "sender" });
+
+    expect(pc.addTransceiver(new FakeMediaStreamTrack("out-2"))).toBe("native-transceiver");
+    expect(trackProvenance("out-2")).toMatchObject({ origin: "local", via: "sender" });
+
+    // A kind string and a video track both fall outside the audio-track guard.
+    pc.addTransceiver("audio");
+    pc.addTrack(new FakeMediaStreamTrack("cam-1", "video"));
+    expect(trackProvenance("cam-1")).toBeUndefined();
+  });
+
+  it("marks replaceTrack replacements local and skips null", async () => {
+    setUpProvenance([]);
+    const g = globalThis as unknown as {
+      RTCRtpSender: new () => { replaceTrack(t: unknown): Promise<void> };
+    };
+    const sender = new g.RTCRtpSender();
+    await sender.replaceTrack(new FakeMediaStreamTrack("swap-1"));
+    await sender.replaceTrack(null);
+    expect(trackProvenance("swap-1")).toMatchObject({ origin: "local", via: "replaceTrack" });
+  });
+
+  it("marks ontrack deliveries remote, and first write wins over a later sender call", () => {
+    setUpProvenance([]);
+    const g = globalThis as unknown as {
+      RTCPeerConnection: new () => {
+        dispatch(type: string, ev: unknown): void;
+        addTrack(t: unknown): unknown;
+      };
+    };
+    const pc = new g.RTCPeerConnection();
+    const incoming = new FakeMediaStreamTrack("in-1");
+    pc.dispatch("track", { track: incoming, streams: [{}], transceiver: {} });
+    expect(trackProvenance("in-1")).toMatchObject({ origin: "remote", via: "ontrack" });
+
+    // Looping the remote track back into a sender must not relabel its content.
+    pc.addTrack(incoming);
+    expect(trackProvenance("in-1")).toMatchObject({ origin: "remote", via: "ontrack" });
+
+    // Its clone carries the remote lineage too.
+    expect(trackProvenance(incoming.clone().id)).toMatchObject({ origin: "remote", rootId: "in-1" });
+  });
+
+  it("caps the registry, evicting oldest-first", () => {
+    setUpProvenance([]);
+    for (let i = 0; i < PROVENANCE_MAX_ENTRIES + 1; i++) {
+      registerTrackProvenance(`t-${i}`, "local", "gum");
+    }
+    expect(trackProvenance("t-0")).toBeUndefined();
+    expect(trackProvenance(`t-${PROVENANCE_MAX_ENTRIES}`)).toMatchObject({ origin: "local" });
+  });
+});
+
+describe("formatChannelSummary (audioprocessor tee)", () => {
+  it("buckets sizes and includes the sketch", () => {
+    const samples = [
+      { t: 0, byteLength: 40 },
+      { t: 100, byteLength: 200 },
+      { t: 200, byteLength: 200 },
+      { t: 300, byteLength: 5000 },
+    ];
+    expect(formatChannelSummary(samples, "1:varint")).toBe(
+      "4 msgs sizes{≤64B:1 ≤256B:2 >1KB:1} fields=1:varint",
+    );
+  });
+
+  it("marks an unsniffed window", () => {
+    expect(formatChannelSummary([], null)).toBe("0 msgs sizes{} fields=unsniffed");
   });
 });

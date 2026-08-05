@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONFIRM_THRESHOLD,
   PARTICIPANT_ID_ATTRIBUTES,
   extractDisplayName,
   extractParticipantId,
@@ -349,5 +350,11 @@ describe("rosterDelta", () => {
 
     expect(fresh).toEqual([{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
     expect(emitted.get("spaces/s/devices/445")).toBe("Tom Elliot");
+  });
+});
+
+describe("CONFIRM_THRESHOLD", () => {
+  it("requires at least 2 corroborating turns (2026-08-05: a 1-turn join misattributed under same-room audio)", () => {
+    expect(CONFIRM_THRESHOLD).toBeGreaterThanOrEqual(2);
   });
 });
