@@ -1,5 +1,10 @@
 import { claimInstall } from "./epoch";
-import { parseCollectionsMessage, type CollectionsMuteEvent } from "./identity/meet-collections";
+import {
+  inflateGzip,
+  parseCollectionsMessage,
+  summarizeFields,
+  type CollectionsMuteEvent,
+} from "./identity/meet-collections";
 import { AudioGraphRegistry } from "./meet-audio-graph";
 
 // The RTCPeerConnection constructor hook — the singleton part of the capture
@@ -253,8 +258,107 @@ function attachCollectionsLogger(ch: RTCDataChannel): void {
 
 function installMeetCollectionsTracer(pc: RTCPeerConnection): void {
   pc.addEventListener("datachannel", (ev: RTCDataChannelEvent) => {
-    if (ev.channel.label !== "collections") return;
-    attachCollectionsLogger(ev.channel);
+    if (ev.channel.label === "collections") attachCollectionsLogger(ev.channel);
+    else if (ev.channel.label === "audioprocessor") maybeAttachAudioprocessorTee(ev.channel);
+  });
+}
+
+// ── Meet audioprocessor datachannel tee (debug-gated, investigation) ────────
+//
+// Open question from the 2026-08-05 live probes: `audioprocessor` runs at a
+// steady ~2/s regardless of speech, but its payloads have never been examined
+// — and meet.new now auto-joins with no pre-join screen, so every channel
+// opens before injected page JS can attach. This document_start tee is the
+// only remaining way to see them. Purpose: settle whether the channel carries
+// per-device activity data. Unlike the collections tracer above it is
+// investigation-scoped: gated on `__earsDebugAudio` (read once at channel
+// open, same flag as the energy probes), records only {timestamp, byteLength}
+// plus a field-number/wire-type sketch (summarizeFields — structure, never
+// content), and logs one throttled summary line per window.
+
+const AUDIOPROCESSOR_SUMMARY_MS = 10_000;
+/** Backstop on per-window sample growth; ~2/s observed, so never reached. */
+const AUDIOPROCESSOR_RING_MAX = 512;
+
+export interface ChannelSample {
+  t: number;
+  byteLength: number;
+}
+
+/** One log line per summary window: count, size histogram, payload sketch.
+ * Pure and exported for tests. */
+export function formatChannelSummary(samples: readonly ChannelSample[], sniff: string | null): string {
+  const buckets = { "≤64B": 0, "≤256B": 0, "≤1KB": 0, ">1KB": 0 };
+  for (const s of samples) {
+    if (s.byteLength <= 64) buckets["≤64B"]++;
+    else if (s.byteLength <= 256) buckets["≤256B"]++;
+    else if (s.byteLength <= 1024) buckets["≤1KB"]++;
+    else buckets[">1KB"]++;
+  }
+  const sizes = Object.entries(buckets)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${k}:${n}`)
+    .join(" ");
+  return `${samples.length} msgs sizes{${sizes}} fields=${sniff ?? "unsniffed"}`;
+}
+
+function maybeAttachAudioprocessorTee(ch: RTCDataChannel): void {
+  try {
+    if (!energyProbeEnabled()) return;
+  } catch {
+    return;
+  }
+  let samples: ChannelSample[] = [];
+  let windowStart = 0;
+  let sniff: string | null = null;
+  let sniffPending = false;
+
+  ch.addEventListener("message", (ev: MessageEvent) => {
+    try {
+      const t = Date.now();
+      const data: unknown = ev.data;
+      const byteLength =
+        data instanceof ArrayBuffer
+          ? data.byteLength
+          : data instanceof Blob
+            ? data.size
+            : ArrayBuffer.isView(data)
+              ? data.byteLength
+              : typeof data === "string"
+                ? data.length
+                : 0;
+      if (windowStart === 0) windowStart = t;
+      if (samples.length < AUDIOPROCESSOR_RING_MAX) samples.push({ t, byteLength });
+
+      // One payload sketch per window — enough to recognize the schema
+      // without touching every message.
+      if (sniff === null && !sniffPending) {
+        const bufPromise = bufferFromMessageData(data);
+        if (bufPromise) {
+          sniffPending = true;
+          void bufPromise
+            .then(async (buf) => {
+              const bytes = (await inflateGzip(buf)) ?? new Uint8Array(buf);
+              sniff = summarizeFields(bytes, 2) ?? "unparsed";
+            })
+            .catch(() => {
+              sniff = "unparsed";
+            })
+            .finally(() => {
+              sniffPending = false;
+            });
+        }
+      }
+
+      if (t - windowStart >= AUDIOPROCESSOR_SUMMARY_MS) {
+        console.debug(`[ears][probe][audioprocessor] ${formatChannelSummary(samples, sniff)}`);
+        samples = [];
+        windowStart = t;
+        sniff = null; // re-sniff next window — schema may vary by message type
+      }
+    } catch {
+      // diagnostic only — never throws into Meet's channel handling
+    }
   });
 }
 

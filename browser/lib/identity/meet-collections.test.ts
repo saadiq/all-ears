@@ -1,6 +1,12 @@
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { inflateGzip, parseCollectionsMessage, readStringAtPath, readVarintAtPath } from "./meet-collections";
+import {
+  inflateGzip,
+  parseCollectionsMessage,
+  readStringAtPath,
+  readVarintAtPath,
+  summarizeFields,
+} from "./meet-collections";
 
 // NOTE on fixtures, corrected 2026-07-19 after live verification: the
 // implementation prompt's one "known-good" gzip hex fixture (claimed to
@@ -274,5 +280,45 @@ describe("readStringAtPath / readVarintAtPath (pure walker, no gzip)", () => {
   it("uses the last occurrence when a field number repeats (protobuf semantics)", () => {
     const msg = Uint8Array.from([...varintField(1, 0), ...varintField(1, 1)]);
     expect(readVarintAtPath(msg, [1])).toBe(1);
+  });
+});
+
+describe("summarizeFields (audioprocessor sniff)", () => {
+  it("sketches field numbers and wire types, descending nested messages", () => {
+    const msg = Uint8Array.from([
+      ...lenDelim(1, [...stringField(6, "spaces/s/devices/1"), ...varintField(10, 3)]),
+      ...varintField(4, 7),
+    ]);
+    expect(summarizeFields(msg, 2)).toBe("1:{6:len,10:varint},4:varint");
+  });
+
+  it("reports len without descending when depth is exhausted", () => {
+    const msg = Uint8Array.from(lenDelim(1, varintField(2, 1)));
+    expect(summarizeFields(msg, 0)).toBe("1:len");
+  });
+
+  it("reports len when the payload does not re-parse as a message", () => {
+    // "hi" parses as tag 0x68 → field 13 wiretype 0 varint 0x69... actually
+    // arbitrary text CAN parse; use bytes that cannot: wire type 7 is invalid.
+    const msg = Uint8Array.from(lenDelim(1, [0x0f]));
+    expect(summarizeFields(msg, 2)).toBe("1:len");
+  });
+
+  it("never dumps content — a string field is only ever `len`", () => {
+    const msg = Uint8Array.from(stringField(6, "sekrit-name"));
+    expect(summarizeFields(msg, 2)).not.toContain("sekrit");
+  });
+
+  it("returns null when the top level is not protobuf-shaped", () => {
+    expect(summarizeFields(Uint8Array.from([0x0f, 0xff]), 2)).toBeNull();
+  });
+
+  it("caps the fields listed per level", () => {
+    const parts: number[] = [];
+    for (let n = 1; n <= 12; n++) parts.push(...varintField(n, 1));
+    const sketch = summarizeFields(Uint8Array.from(parts), 0)!;
+    expect(sketch.endsWith(",…")).toBe(true);
+    expect(sketch).toContain("8:varint");
+    expect(sketch).not.toContain("9:varint");
   });
 });

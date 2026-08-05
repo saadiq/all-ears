@@ -1,6 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  formatChannelSummary,
   installHook,
   PROVENANCE_MAX_ENTRIES,
   registerTrackProvenance,
@@ -528,5 +529,23 @@ describe("track provenance", () => {
     }
     expect(trackProvenance("t-0")).toBeUndefined();
     expect(trackProvenance(`t-${PROVENANCE_MAX_ENTRIES}`)).toMatchObject({ origin: "local" });
+  });
+});
+
+describe("formatChannelSummary (audioprocessor tee)", () => {
+  it("buckets sizes and includes the sketch", () => {
+    const samples = [
+      { t: 0, byteLength: 40 },
+      { t: 100, byteLength: 200 },
+      { t: 200, byteLength: 200 },
+      { t: 300, byteLength: 5000 },
+    ];
+    expect(formatChannelSummary(samples, "1:varint")).toBe(
+      "4 msgs sizes{≤64B:1 ≤256B:2 >1KB:1} fields=1:varint",
+    );
+  });
+
+  it("marks an unsniffed window", () => {
+    expect(formatChannelSummary([], null)).toBe("0 msgs sizes{} fields=unsniffed");
   });
 });
