@@ -35,7 +35,9 @@ struct CleanupPipelineTests {
     writeSidecar: Bool = true,
     session: String? = nil,
     title: String? = nil,
-    started: Instant? = nil
+    started: Instant? = nil,
+    sources: [SourceID] = ["mic"],
+    name: String = "standup.transcript.md"
   ) throws -> URL {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let frontmatter = TranscriptFrontmatter(
@@ -45,7 +47,7 @@ struct CleanupPipelineTests {
       session: session,
       title: title,
       started: started,
-      sources: ["mic"],
+      sources: sources,
       range: TimeRange(start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 60)),
       model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
       diarization: TranscriptDiarizationInfo(enabled: false),
@@ -56,11 +58,11 @@ struct CleanupPipelineTests {
       vocab: []
     )
     let document = TranscriptDocument(frontmatter: frontmatter, segments: segments)
-    let markdownURL = directory.appendingPathComponent("standup.transcript.md")
+    let markdownURL = directory.appendingPathComponent(name)
     try TranscriptRenderer.renderMarkdown(document).write(
       to: markdownURL, atomically: true, encoding: .utf8)
     if writeSidecar {
-      let jsonURL = directory.appendingPathComponent("standup.transcript.json")
+      let jsonURL = markdownURL.deletingPathExtension().appendingPathExtension("json")
       try TranscriptRenderer.renderJSON(document).write(
         to: jsonURL, atomically: true, encoding: .utf8)
     }
@@ -485,6 +487,38 @@ struct CleanupPipelineTests {
     #expect(
       FileManager.default.fileExists(
         atPath: directory.appendingPathComponent("53/New Year.md").path))
+  }
+
+  @Test("a --file transcript with no session context publishes under the input's basename")
+  func fileTranscriptFallsBackToBasename() async throws {
+    let directory = Self.makeTempDirectory("file-fallback")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // `transcribe --file memo.m4a` names its single source after the file, so
+    // a transcript with neither a title nor a session still resolves
+    // `{title}` — through `{slug}` — to something that identifies the input.
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "memo", speaker: "memo",
+          segment: Segment(start: 0, end: 3, text: "Hi.", confidence: 1.0))
+      ],
+      sources: ["memo"],
+      name: "memo.transcript.md")
+
+    let (deps, _) = Self.dependencies(llmResults: [])
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: []),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    #expect(
+      FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("published/1970-01-01 - memo.md").path))
   }
 
   @Test("a missing transcript file is a clear, non-zero error")
