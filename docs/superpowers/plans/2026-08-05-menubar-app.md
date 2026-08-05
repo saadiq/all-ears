@@ -2312,7 +2312,21 @@ MENUBAR_PLIST := packaging/ears-menubar.Info.plist
 ICON_SRC      := docs/brand/exports/icon-tile-light-1024.png
 ```
 
-Targets (mirror the `sign` recipe's identity-detection block verbatim — the Makefile deliberately stays plain, so duplicating those 8 lines beats a macro):
+First extract the identity detection into a shared macro (still stock Make — no external tooling) and refactor the existing `sign` recipe (Makefile:70-96) to use it, preserving `sign`'s existing no-identity warning echos:
+
+```make
+# Resolve the codesign identity: explicit SIGN_IDENTITY, else the first
+# "Developer ID Application" in the keychain, else ad-hoc ("-").
+define RESOLVE_IDENTITY
+IDENTITY="$(SIGN_IDENTITY)"; \
+if [ -z "$$IDENTITY" ]; then \
+  IDENTITY="$$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/Developer ID Application/ {print $$2; exit}')"; \
+fi; \
+if [ -z "$$IDENTITY" ]; then IDENTITY="-"; fi
+endef
+```
+
+Targets (the `menubar` recipe invokes the macro instead of inlining the detection):
 
 ```make
 menubar: build
@@ -2330,11 +2344,7 @@ menubar: build
 	  sips -z $$d $$d "$(ICON_SRC)" --out "$(RELEASE)/AppIcon.iconset/icon_$${s}x$${s}@2x.png" >/dev/null; \
 	done
 	@iconutil -c icns "$(RELEASE)/AppIcon.iconset" -o "$(APP_STAGE)/Contents/Resources/AppIcon.icns"
-	@IDENTITY="$(SIGN_IDENTITY)"; \
-	if [ -z "$$IDENTITY" ]; then \
-	  IDENTITY="$$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/Developer ID Application/ {print $$2; exit}')"; \
-	fi; \
-	if [ -z "$$IDENTITY" ]; then IDENTITY="-"; fi; \
+	@$(RESOLVE_IDENTITY); \
 	echo "  codesign $(APP_NAME).app (identity: $$IDENTITY)"; \
 	codesign --force --options runtime --sign "$$IDENTITY" "$(APP_STAGE)"
 	@echo "==> Installing to $(APP_DEST)"
