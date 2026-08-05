@@ -23,6 +23,10 @@ public enum LLMStagesConfigSchema {
       // Empty => the built-in cleanup prompt (CleanupPromptBuilder's default).
       "prompt_file": .string(""),
       "use_vocab": .bool(true),
+      // The smart default for the *published* cleaned transcript: a
+      // date-foldered `<date> - <title>.md` under `output_root`. Raw
+      // transcripts never land here — they stay in the data store.
+      "output": .string("{output_root}/{year}/{month}/{day}/{date} - {title}.md"),
     ]),
     "summarize": .table([
       "preset": .array([])
@@ -39,6 +43,19 @@ public enum LLMStagesConfigSchema {
       "name": ConfigSchema.Field(type: .string, description: "Preset name, selected via --preset."),
       "prompt_file": ConfigSchema.Field(
         type: .string, description: "Path to this preset's summary prompt."),
+      "notes": ConfigSchema.Field(
+        type: .string,
+        description:
+          "Path template for a companion notes file, read as plain Markdown alongside the transcript.",
+        pathTemplateTokens: PathTemplate.publishedTokens),
+      "out": ConfigSchema.Field(
+        type: .string,
+        description:
+          "Path template for this preset's output; {notes} writes back over the notes file.",
+        pathTemplateTokens: PathTemplate.presetOutTokens),
+      "frontmatter": ConfigSchema.Field(
+        type: .bool,
+        description: "Emit the ears YAML frontmatter block; false writes the summary body alone."),
     ]
   )
 
@@ -70,6 +87,10 @@ public enum LLMStagesConfigSchema {
             ),
             "use_vocab": ConfigSchema.Field(
               type: .bool, description: "Apply the vocabulary list as a correction backstop."),
+            "output": ConfigSchema.Field(
+              type: .string,
+              description: "Path template for the published cleaned transcript.",
+              pathTemplateTokens: PathTemplate.publishedTokens),
           ]
         ),
         description: "Transcript-cleanup stage settings."),
@@ -79,7 +100,9 @@ public enum LLMStagesConfigSchema {
           fields: [
             "preset": ConfigSchema.Field(
               type: .array, elementSchema: presetElementSchema,
-              description: "Named summary presets, each a name and a prompt_file.")
+              description:
+                "Named summary presets: a name, a prompt_file, and optional notes/out/frontmatter."
+            )
           ]
         ),
         description: "Summary stage settings."),

@@ -10,6 +10,10 @@ public struct ConfigError: Sendable, Hashable, Error {
     case unknownKey
     /// The value at this key path is the wrong `ConfigValueKind`.
     case typeMismatch(expected: ConfigValueKind, got: ConfigValueKind)
+    /// The value is the right kind but not a usable one — e.g. a path
+    /// template naming a token that doesn't exist. Carries its own full
+    /// phrase, since the useful detail differs per rule.
+    case invalidValue(String)
 
     /// The reason phrase, e.g. `"unknown key"` or `"expected string, got
     /// integer"`.
@@ -19,6 +23,8 @@ public struct ConfigError: Sendable, Hashable, Error {
         "unknown key"
       case .typeMismatch(let expected, let got):
         "expected \(expected.description), got \(got.description)"
+      case .invalidValue(let detail):
+        detail
       }
     }
   }

@@ -22,17 +22,25 @@ public struct ConfigSchema: Sendable {
     /// not yet documented here; a `.table` or array-of-tables field describes
     /// the group while its children carry their own leaf descriptions.
     public var description: String?
+    /// For a `.string` field holding a ``PathTemplate``, the token names it
+    /// may reference (``PathTemplate/publishedTokens`` or
+    /// ``PathTemplate/presetOutTokens``). Declaring it here is what turns a
+    /// mistyped `{titel}` into a reported config error instead of a literal
+    /// brace in a filename. `nil` for every field that isn't a template.
+    public var pathTemplateTokens: Set<String>?
 
     public init(
       type: ConfigValueKind,
       children: ConfigSchema? = nil,
       elementSchema: ConfigSchema? = nil,
-      description: String? = nil
+      description: String? = nil,
+      pathTemplateTokens: Set<String>? = nil
     ) {
       self.type = type
       self.children = children
       self.elementSchema = elementSchema
       self.description = description
+      self.pathTemplateTokens = pathTemplateTokens
     }
   }
 

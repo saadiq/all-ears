@@ -115,6 +115,41 @@ struct PathExpansionTests {
         ]))
   }
 
+  @Test("path templates get ~ expansion only, never resolution against data_root")
+  func pathTemplateTildeExpansion() {
+    let config: ConfigValue = .table([
+      "data_root": .string("/custom/data"),
+      "cleanup": .table(["output": .string("~/vault/{date} - {title}.md")]),
+      "summarize": .table([
+        "preset": .array([
+          .table([
+            "name": .string("notes"),
+            "notes": .string("~/vault/daily/{date}.md"),
+            "out": .string("{notes}"),
+          ])
+        ])
+      ]),
+    ])
+    let expanded = expandConfigPaths(config, homeDirectory: "/Users/tom")
+    #expect(
+      expanded
+        == .table([
+          "data_root": .string("/custom/data"),
+          "cleanup": .table(["output": .string("/Users/tom/vault/{date} - {title}.md")]),
+          "summarize": .table([
+            "preset": .array([
+              .table([
+                "name": .string("notes"),
+                "notes": .string("/Users/tom/vault/daily/{date}.md"),
+                // `{output_root}`-rooted and `{notes}` templates are left
+                // exactly as written: their base is a token, not the cwd.
+                "out": .string("{notes}"),
+              ])
+            ])
+          ]),
+        ]))
+  }
+
   @Test("expanding the Phase 0 defaults against a home directory produces absolute paths")
   func expandsPhase0Defaults() {
     let expanded = expandConfigPaths(Phase0ConfigSchema.defaults, homeDirectory: "/Users/tom")
@@ -124,6 +159,7 @@ struct PathExpansionTests {
           "data_root": .string("/Users/tom/Library/Application Support/ears"),
           "output_root": .string("/Users/tom/Documents/Transcripts"),
           "socket_path": .string(""),
+          "week_numbering": .string("us"),
           "log": .table([
             "level": .string("info"),
             "file": .string(""),
