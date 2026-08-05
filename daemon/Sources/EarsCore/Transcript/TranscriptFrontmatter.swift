@@ -7,6 +7,8 @@
 /// kind: transcript
 /// range_run: 2026-07-17T10-30-00Z_standup
 /// sources: [mic, "app:us.zoom.xos"]
+/// title: Weekly standup
+/// started: 2026-07-17T10:30:00Z
 /// range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }
 /// model: { name: parakeet, backend: fluidaudio, version: "0.x" }
 /// diarization: { enabled: true, backend: pyannote }
@@ -33,6 +35,18 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
   /// (`transcribe --session`); `nil` for plain range transcripts.
   /// Rendered as a `session:` line.
   public var session: String?
+  /// The session's display title at the time this document was written —
+  /// the `{title}` a downstream stage's path template expands. `nil` for a
+  /// transcript with no session context (a plain range run, a `--file` run),
+  /// where `{title}` degrades to the slug or the input's basename.
+  public var title: String?
+  /// When the session (or range) this transcript covers *began*, as distinct
+  /// from ``range``'s start: a `--from`/`--to` rerun narrows the range but
+  /// not the session, so this is what the date tokens key on. Filing by it
+  /// means a call that ran past midnight, or is re-cleaned a week later,
+  /// always lands under the day it started. `nil` when there is no session
+  /// context; consumers then fall back to `range.start`.
+  public var started: Instant?
   public var sources: [SourceID]
   public var range: TimeRange
   public var model: TranscriptModelInfo
@@ -65,6 +79,8 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
     kind: TranscriptKind,
     rangeRun: String? = nil,
     session: String? = nil,
+    title: String? = nil,
+    started: Instant? = nil,
     sources: [SourceID],
     range: TimeRange,
     model: TranscriptModelInfo,
@@ -82,6 +98,8 @@ public struct TranscriptFrontmatter: Sendable, Hashable {
     self.kind = kind
     self.rangeRun = rangeRun
     self.session = session
+    self.title = title
+    self.started = started
     self.sources = sources
     self.range = range
     self.model = model

@@ -209,14 +209,16 @@ struct OnEndChainSmokeTests {
 
     // The chain's artifacts exist on disk: each stage's envelope named a real
     // file that fed the next stage.
+    // The raw transcript is an intermediate: it lands in the session's own
+    // data-store directory, never under `output_root`.
     #expect(
-      !Self.files(withSuffix: ".transcript.md", under: outputRoot).isEmpty,
-      "expected a .transcript.md under \(outputRoot)")
+      !Self.files(withSuffix: "sessions/\(session.id)/transcript.md", under: dataRoot).isEmpty,
+      "expected the session's raw transcript under \(dataRoot)")
     #expect(
-      !Self.files(withSuffix: ".clean.md", under: outputRoot).isEmpty,
-      "expected a .clean.md under \(outputRoot)")
+      !Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
+      "expected a .clean.md under \(dataRoot)")
     #expect(
-      !Self.files(withSuffix: ".summary.md", under: outputRoot).isEmpty,
-      "expected a .summary.md under \(outputRoot)")
+      !Self.files(withSuffix: ".summary.md", under: dataRoot).isEmpty,
+      "expected a .summary.md under \(dataRoot)")
   }
 }

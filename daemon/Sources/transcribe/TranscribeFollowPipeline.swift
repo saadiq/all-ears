@@ -154,7 +154,6 @@ enum TranscribeFollowPipeline {
   static func run(
     inputs: Inputs,
     dataRoot: URL,
-    outputRoot: URL,
     backendName: String,
     dependencies: Dependencies
   ) async -> Int32 {
@@ -212,14 +211,23 @@ enum TranscribeFollowPipeline {
       return ExitClass.stageFailed.code
     }
 
+    // The live transcript is an intermediate like every other raw transcript:
+    // it lands in the session's own data-store directory, per-source so two
+    // followers never collide, and never under `output_root`.
+    let paths =
+      inputs.out.map(TranscriptStorePaths.explicit)
+      ?? TranscriptStorePaths.follow(
+        dataRoot: dataRoot, sessionID: session.id, sourceID: sourceID)
+
     let run = FollowRun(
       inputs: inputs,
       dataRoot: sessionRoot,
-      outputRoot: outputRoot,
+      paths: paths,
       backendName: backendName,
       dependencies: dependencies,
       sourceID: sourceID,
       sessionID: session.id,
+      sessionTitle: session.title,
       asrSampleRate: descriptor.asrSampleRate,
       streaming: streaming
     )
@@ -243,7 +251,10 @@ private final class FollowRun {
   /// The session whose capture this follow run attached to — the transcript
   /// frontmatter's `session:` key and the `segment.publish` correlation key.
   private let sessionID: String
-  private let paths: OutputPathResolution.Paths
+  /// The session's display title, stamped into the live transcript's
+  /// frontmatter so a downstream stage's `{title}` resolves from the document.
+  private let sessionTitle: String?
+  private let paths: TranscriptStorePaths.Paths
   private let modelInfo: TranscriptModelInfo
 
   private var tail: IndexTailReader
@@ -286,11 +297,12 @@ private final class FollowRun {
   init(
     inputs: TranscribeFollowPipeline.Inputs,
     dataRoot: URL,
-    outputRoot: URL,
+    paths: TranscriptStorePaths.Paths,
     backendName: String,
     dependencies: TranscribeFollowPipeline.Dependencies,
     sourceID: SourceID,
     sessionID: String,
+    sessionTitle: String?,
     asrSampleRate: Int,
     streaming: any StreamingTranscriber
   ) {
@@ -299,16 +311,15 @@ private final class FollowRun {
     self.dependencies = dependencies
     self.sourceID = sourceID
     self.sessionID = sessionID
+    self.sessionTitle = sessionTitle
     self.asrSampleRate = asrSampleRate
     self.streaming = streaming
     self.speaker = TranscriptAssembly.speakerLabel(for: sourceID)
+    self.paths = paths
 
     let followStart = dependencies.clock.now()
     self.followStart = followStart
     self.latestBoundary = followStart
-    self.paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: followStart, sourceIDs: [sourceID],
-      explicitOut: inputs.out)
     self.modelInfo = TranscriptModelInfo(
       name: streaming.info.name, backend: backendName, version: streaming.info.version)
     self.batcher = StepBatcher(
@@ -646,6 +657,8 @@ private final class FollowRun {
       transcriptions: [SourceTranscription(sourceID: sourceID, segments: committedSegments)],
       requested: requested,
       session: sessionID,
+      title: sessionTitle,
+      started: followStart,
       model: modelInfo,
       generated: dependencies.clock.now(),
       speechSeconds: speechSeconds

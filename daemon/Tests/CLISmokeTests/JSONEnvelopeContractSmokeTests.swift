@@ -263,11 +263,13 @@ struct JSONEnvelopeContractSmokeTests {
     #expect(envelope.ok)
     let output = try #require(envelope.output)
     #expect(output.hasPrefix("/"), "output must be an absolute path, got: \(output)")
-    #expect(output.hasSuffix(".transcript.md"))
+    #expect(output.hasSuffix("/sessions/\(sessionID)/transcript.md"))
     #expect(FileManager.default.fileExists(atPath: output))
     let outputs = try #require(envelope.outputs)
     #expect(outputs.first == output, "outputs must lead with the primary artifact")
-    #expect(outputs.contains { $0.hasSuffix(".transcript.json") }, "outputs must list the sidecar")
+    #expect(
+      outputs.contains { $0.hasSuffix("/sessions/\(sessionID)/transcript.json") },
+      "outputs must list the sidecar")
     for path in outputs {
       #expect(path.hasPrefix("/"), "every outputs entry must be absolute, got: \(path)")
       #expect(FileManager.default.fileExists(atPath: path), "outputs entry must exist: \(path)")

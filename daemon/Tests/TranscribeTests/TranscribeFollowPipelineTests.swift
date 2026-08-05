@@ -41,7 +41,6 @@ struct TranscribeFollowPipelineTests {
   /// the nominal chunk durations.
   private final class Fixture: Sendable {
     let dataRoot: URL
-    let outputRoot: URL
     let appender: IndexAppender
     let vadWriter: VADSegmentWriter
     let sourceID: SourceID
@@ -57,7 +56,6 @@ struct TranscribeFollowPipelineTests {
       let base = FileManager.default.temporaryDirectory.appendingPathComponent(
         "FollowPipelineTests-\(label)-\(UUID().uuidString)")
       dataRoot = base.appendingPathComponent("data")
-      outputRoot = base.appendingPathComponent("output")
       try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
       sessionID = UUID().uuidString
       try SessionStore.write(
@@ -180,10 +178,9 @@ struct TranscribeFollowPipelineTests {
   ) -> Task<Int32, Never> {
     let inputs = TranscribeFollowPipeline.Inputs(source: sourceID.rawValue, json: json, out: nil)
     let dataRoot = fixture.dataRoot
-    let outputRoot = fixture.outputRoot
     return Task {
       await TranscribeFollowPipeline.run(
-        inputs: inputs, dataRoot: dataRoot, outputRoot: outputRoot,
+        inputs: inputs, dataRoot: dataRoot,
         backendName: "fluidaudio", dependencies: dependencies)
     }
   }
@@ -251,8 +248,8 @@ struct TranscribeFollowPipelineTests {
 
     // Transcript file: the same renderer/format batch mode writes, complete
     // and well-formed at exit.
-    let paths = OutputPathResolution.resolve(
-      outputRoot: fixture.outputRoot, requestedStart: now, sourceIDs: [sourceID], explicitOut: nil)
+    let paths = TranscriptStorePaths.follow(
+      dataRoot: fixture.dataRoot, sessionID: fixture.sessionID, sourceID: sourceID)
     let markdown = try String(contentsOf: paths.markdown, encoding: .utf8)
     #expect(markdown.hasPrefix("---\n"))
     #expect(markdown.contains("kind: transcript"))
@@ -437,7 +434,7 @@ struct TranscribeFollowPipelineTests {
 
     let exitCode = await TranscribeFollowPipeline.run(
       inputs: TranscribeFollowPipeline.Inputs(source: "app:no.such.app", json: false, out: nil),
-      dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
+      dataRoot: fixture.dataRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
     #expect(exitCode == 3)
@@ -466,7 +463,7 @@ struct TranscribeFollowPipelineTests {
 
     let exitCode = await TranscribeFollowPipeline.run(
       inputs: TranscribeFollowPipeline.Inputs(source: sourceID.rawValue, json: false, out: nil),
-      dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
+      dataRoot: fixture.dataRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
     #expect(exitCode == 3)
@@ -485,7 +482,7 @@ struct TranscribeFollowPipelineTests {
 
     let exitCode = await TranscribeFollowPipeline.run(
       inputs: TranscribeFollowPipeline.Inputs(source: sourceID.rawValue, json: false, out: nil),
-      dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
+      dataRoot: fixture.dataRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
     #expect(exitCode == 3)
@@ -537,7 +534,7 @@ struct TranscribeFollowPipelineTests {
 
     let exitCode = await TranscribeFollowPipeline.run(
       inputs: TranscribeFollowPipeline.Inputs(source: sourceID.rawValue, json: false, out: nil),
-      dataRoot: fixture.dataRoot, outputRoot: fixture.outputRoot, backendName: "fluidaudio",
+      dataRoot: fixture.dataRoot, backendName: "fluidaudio",
       dependencies: dependencies)
 
     #expect(exitCode == 4)

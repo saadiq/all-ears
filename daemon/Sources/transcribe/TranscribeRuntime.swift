@@ -9,9 +9,10 @@ import Foundation
 /// same schema `EarsCLI.run` already validated once for the day-one
 /// contract -- this is a second, `transcribe`-scoped load, exactly the
 /// pattern `EarsdRuntime`'s own doc comment describes and `loadConfig`'s
-/// invites), resolves `data_root`/`output_root`/`[transcribe]`'s
+/// invites), resolves `data_root` and `[transcribe]`'s
 /// `backend`/`model`/`compute`, and delegates to ``TranscribePipeline`` for
-/// the actual behaviour.
+/// the actual behaviour. `output_root` is deliberately absent: `transcribe`
+/// writes intermediates into the data store, and only `cleanup` publishes.
 ///
 /// This is deliberately thin: real environment/home-directory/config-file
 /// reads live here and nowhere else, so ``TranscribePipeline`` -- almost
@@ -67,7 +68,6 @@ enum TranscribeRuntime {
       diagnostics.recordError(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
-    let outputRootPath = stringValue(root, ["output_root"])
     let backendName = stringValue(root, ["transcribe", "backend"], default: "fluidaudio")
     let modelIdentifier = stringValue(root, ["transcribe", "model"])
     let compute = computePreference(
@@ -124,7 +124,6 @@ enum TranscribeRuntime {
     let code = await TranscribePipeline.run(
       inputs: inputs,
       dataRoot: URL(fileURLWithPath: dataRootPath),
-      outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath),
       backendName: backendName,
       socketPath: socketPath,
       dependencies: dependencies

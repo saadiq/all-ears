@@ -285,7 +285,10 @@ struct PlainModeContractSmokeTests {
         + mode.extraArguments,
       environment: ["ALLEARS_TRANSCRIBE_BACKEND": "null"])
 
-    Self.expectSingleResultLine(result, suffix: ".transcript.md", mode: mode)
+    // A session run's raw transcript is an intermediate: `sessions/<id>/
+    // transcript.md` in the data store, never under `output_root`.
+    Self.expectSingleResultLine(
+      result, suffix: "/sessions/\(sessionID)/transcript.md", mode: mode)
     if mode == .verbose {
       // Diagnostics exist and land on stderr — never on stdout.
       #expect(!result.stderr.isEmpty)
