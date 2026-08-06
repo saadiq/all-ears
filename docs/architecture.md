@@ -96,7 +96,7 @@ One Swift package (`daemon/`), split so almost all logic is unit-testable withou
 - **`EarsCore`** — pure library, no I/O: VAD-index reading and range reconstruction, segment merging, streaming-delta emission, frontmatter serialisation, socket message types, config layering. Deterministic and tested in isolation.
 - **Protocol seams at every hardware/model boundary:** `CaptureBackend`, `Transcriber`, `StreamingTranscriber`, `Diarizer`, `VAD`, `PermissionProviding`. Each has a mockable default; the [model interface](./specs/model-interface.md) specifies the ASR/diarization ones.
 - **Thin shims behind those protocols:** `EarsCaptureKit` (Core Audio, process taps), `EarsTranscribeKit` (FluidAudio/Parakeet), `EarsDataStore` (chunk I/O), `EarsIPC` (sockets, WebSocket servers), `EarsLLMKit` (LLM subprocess), plus `EarsConfig`, `EarsLogging`, `EarsCLISupport`, and `EarsDaemonKit` (daemon wiring).
-- **Executables** (`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`) are small — they wire libraries together and own no business logic.
+- **Executables** (`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`, `ears-menubar`) are small — they wire libraries together and own no business logic.
 
 ## Failure and robustness
 
