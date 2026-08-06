@@ -66,6 +66,22 @@ struct ConnectionReductionTests {
     #expect(state.connection == .unreachable)
     #expect(state.sessions.count == 1)
   }
+
+  @Test("resubscribing() stops claiming a live connection and re-arms the gap check")
+  func resubscribingLeavesConnected() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(sessions: [makeSession()]))
+    MenuStateReducer.resubscribing(&state)
+    #expect(state.connection == .connecting)
+    #expect(state.lastRev == nil)
+    // The socket is gone, so the menu must not offer verbs against it.
+    #expect(MenuRenderer.render(state, now: instant(1_001)).verbs.isEmpty)
+    // Every frame still queued from the dead stream reduces to `.gap` too.
+    #expect(
+      MenuStateReducer.apply(&state, EventFrame(event: .session(makeSession()), rev: 42)) == .gap)
+  }
 }
 
 @Suite("MenuStateReducer: event application")

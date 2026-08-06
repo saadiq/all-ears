@@ -29,6 +29,18 @@ public enum MenuStateReducer {
     state.connection = .unreachable
   }
 
+  /// A rev gap: this client's mirror of the daemon's state is no longer
+  /// trustworthy, so the socket is bounced and resubscribed. `.connecting`
+  /// rather than `.unreachable` — the daemon is very likely alive; what is
+  /// gone is *our* sync — and either way the menu must stop offering Pause/End
+  /// for a session it can no longer control over a socket that no longer
+  /// exists. Clearing `lastRev` also makes every already-queued stale frame
+  /// reduce to `.gap` again, which the caller uses to bounce exactly once.
+  public static func resubscribing(_ state: inout MenuState) {
+    state.connection = .connecting
+    state.lastRev = nil
+  }
+
   public static func apply(_ state: inout MenuState, _ frame: EventFrame) -> ReduceOutcome {
     switch frame.event {
     case .session(let session):

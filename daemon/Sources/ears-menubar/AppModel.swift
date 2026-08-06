@@ -84,7 +84,13 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
       case .event(let frame):
         switch MenuStateReducer.apply(&state, frame) {
         case .gap:
-          await connection.bounce()
+          // Only the first gap bounces: the frames already queued behind it are
+          // from the same dead stream and all reduce to `.gap` too, and a bounce
+          // each would redial in a loop.
+          if state.connection == .connected {
+            MenuStateReducer.resubscribing(&state)
+            await connection.bounce()
+          }
         case .applied:
           handleApplied(frame)
         case .ignoredStale:
