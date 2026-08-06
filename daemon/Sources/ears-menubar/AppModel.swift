@@ -106,6 +106,9 @@ import os
         // dropping *from*.
         announcements.warnAtRisk(state: state)
         MenuStateReducer.disconnected(&state)
+        // The anchor belongs to the process that just died; keeping it would
+        // have the Daemon submenu counting up for something that is gone.
+        uptime = nil
       }
       rerender()
     }
@@ -237,11 +240,21 @@ import os
     }
   }
 
+  /// Re-anchors the Daemon submenu's uptime against the process now on the
+  /// other end of the socket.
+  ///
+  /// Clears the anchor when the `status` round-trip fails instead of leaving
+  /// the previous one: it belongs to a *different* process, so keeping it made
+  /// `daemonLine` report the dead daemon's uptime — "up 2d 6h" for something
+  /// that started thirty seconds ago, telling a user who just clicked Restart
+  /// Daemon that nothing happened. No anchor renders the bare version line,
+  /// which claims nothing.
   private func anchorUptime(_ connection: DaemonConnection) {
     Task { [weak self] in
-      guard let seconds = await connection.status()?.uptimeSeconds else { return }
-      self?.uptime = DaemonUptime(reported: Double(seconds), anchor: Self.now())
-      self?.rerender()
+      let seconds = await connection.status()?.uptimeSeconds
+      guard let self else { return }
+      self.uptime = seconds.map { DaemonUptime(reported: Double($0), anchor: Self.now()) }
+      self.rerender()
     }
   }
 
@@ -263,10 +276,7 @@ import os
   }
 
   var daemonLine: String {
-    guard let daemon = state.daemon else { return "Not connected" }
-    guard let uptime else { return daemon }
-    let seconds = uptime.seconds(at: Self.now())
-    return "\(daemon) · up \(EarsMenuKit.ElapsedFormatter.compactDuration(seconds))"
+    DaemonUptime.line(daemon: state.daemon, uptime: uptime, now: Self.now())
   }
 
   func restartDaemon() {
