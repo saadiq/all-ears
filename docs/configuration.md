@@ -173,6 +173,8 @@ prompt_file = "prompts/action-items.md"
 # notes = "~/vault/daily-notes/{year}/{month}/{week}/{date}/{date} - {title}.md"
 # out = "{notes}"          # write the result back over that same note
 # frontmatter = false      # body only — the vault owns its own frontmatter
+# A call with no note waiting at that path still summarizes — the jotted-notes
+# section comes through empty and the missing file is warned about on stderr.
 
 # --- Vocabulary ---
 [vocab]
