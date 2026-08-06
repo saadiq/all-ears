@@ -109,6 +109,12 @@ a source of a live session died, or the daemon is unreachable).
   drop — a crash-looping daemon reconnects between crashes, and each reconnect would
   otherwise re-arm the warning about the same recording.
 - Explicitly quiet: session start/end/pause/resume — the user did those themselves.
+- A **denied grant** drops all of the above silently: macOS accepts the post,
+  `UNUserNotificationCenter.add` reports success, and `usernoted` discards the record as
+  `ineligible for pipeline … authorizationStatus: Denied`. The prompt is one-shot, so the
+  app cannot re-ask; instead it records the outcome (unified logging) and carries a menu
+  warning with a shortcut to the Notifications settings pane. Not warning until the grant
+  resolves keeps a launch from flashing it.
 
 ## Daemon-side change: job events for every on-end stage
 
