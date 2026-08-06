@@ -36,9 +36,17 @@ public enum NotificationPolicy {
 
   /// Edge-triggered: fires only on the transition into disconnection, not on every
   /// redial failure while already unreachable. The pump calls this before reducing,
-  /// so a still-`.connected` state means this is the drop itself; once `disconnected()`
-  /// has flipped `state.connection`, subsequent redial failures stay quiet until the
-  /// next successful reconnect re-arms the warning.
+  /// so any state but `.unreachable` means this is the drop itself; once
+  /// `disconnected()` has flipped `state.connection`, subsequent redial failures stay
+  /// quiet until the next successful reconnect re-arms the warning.
+  ///
+  /// `.connecting` has to arm it too, not just `.connected`: a rev gap bounces
+  /// the socket through `resubscribing()`, which parks the state at
+  /// `.connecting` while the redial is in flight. Gating on `.connected` alone
+  /// meant a daemon that died during that window — a dropped frame *because*
+  /// the daemon was in trouble is the likely case, not a coincidence — warned
+  /// about nothing at all, leaving the menu bar glyph as the only signal that
+  /// a recording had stopped.
   ///
   /// The edge alone is not enough: a crash-looping daemon reconnects between
   /// crashes, re-arming the edge every second or so, and each post carries a
@@ -48,7 +56,7 @@ public enum NotificationPolicy {
   public static func onDisconnect(
     state: MenuState, warnedSessions: Set<String> = []
   ) -> NotificationRequest? {
-    guard state.connection == .connected else { return nil }
+    guard state.connection != .unreachable else { return nil }
     guard let session = state.activeSession, !warnedSessions.contains(session.id) else {
       return nil
     }

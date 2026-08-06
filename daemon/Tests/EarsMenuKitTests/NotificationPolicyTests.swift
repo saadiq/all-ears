@@ -95,6 +95,23 @@ struct NotificationPolicyTests {
           body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
   }
 
+  @Test("a daemon that dies during a rev-gap resubscribe still warns")
+  func warnsWhileResubscribing() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+    // A dropped frame is a rev gap, which bounces the socket and leaves the
+    // state `.connecting` — the daemon is presumed alive. If it then dies,
+    // this drop is still the news the warning exists for.
+    MenuStateReducer.resubscribing(&state)
+    #expect(
+      NotificationPolicy.onDisconnect(state: state)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+  }
+
   @Test("a crash-looping daemon warns once per session, not once per crash")
   func atRiskWarningIsPerSession() {
     var state = MenuState()
