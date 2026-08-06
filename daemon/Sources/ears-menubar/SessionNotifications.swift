@@ -20,7 +20,8 @@ import Foundation
   /// Asks for the grant and wires notification clicks to the artifacts they
   /// name.
   ///
-  /// - Parameter report: receives the resolved availability.
+  /// - Parameter report: receives the resolved availability, here and on every
+  ///   later ``refreshAvailability(report:)``.
   func bootstrap(
     dataRoot: String, provider: RecentSessionsProvider,
     report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
@@ -41,6 +42,15 @@ import Foundation
     } report: { availability in
       report(availability)
     }
+  }
+
+  /// Re-reads the delivery grant — see ``Notifier/refreshAvailability(report:)``
+  /// for why the launch-time answer cannot be trusted for the life of a login
+  /// item.
+  func refreshAvailability(
+    report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
+  ) {
+    notifier.refreshAvailability(report: report)
   }
 
   /// Announces an applied event if the policy says it is worth announcing.

@@ -200,6 +200,11 @@ import os
     rerender()
     refreshRecents()
     reloadDeclarations()
+    // Cheap, and the only thing that can clear the "Notifications are off"
+    // warning after the user acts on it — or raise it after a revoked grant.
+    announcements.refreshAvailability { [weak self] availability in
+      self?.notifications = availability
+    }
   }
 
   /// Re-reads `sources`/`onEndStages` from the config layers. The rest of

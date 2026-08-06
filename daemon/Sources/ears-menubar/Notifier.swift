@@ -45,6 +45,34 @@ final class Notifier: NSObject {
     }
   }
 
+  /// Re-reads the grant and reports it.
+  ///
+  /// The prompt is one-shot, so ``bootstrap(resolve:report:)``'s answer is the
+  /// only one the app ever hears — and it goes stale in both directions. A
+  /// user who follows the menu's own "Open Notification Settings" and turns
+  /// notifications *on* would otherwise keep the warning for the life of the
+  /// process (indefinite, for a login item). Worse in reverse: a grant revoked
+  /// after launch leaves the app believing it is authorized while macOS
+  /// accepts every post and drops it — the exact silent failure
+  /// ``NotificationAvailability`` exists to surface.
+  func refreshAvailability(
+    report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
+  ) {
+    guard available else { return }
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      // Read the one field here — `UNNotificationSettings` is not `Sendable`,
+      // so only the resolved availability crosses to the main actor, where
+      // `report` mutates the model.
+      //
+      // `.notDetermined` only survives a failed request; treat it like the
+      // pre-answer state and stay quiet rather than warn about a grant the
+      // user has not been asked for.
+      let availability: NotificationAvailability =
+        settings.authorizationStatus == .denied ? .denied : .authorized
+      Task { @MainActor in report(availability) }
+    }
+  }
+
   func post(_ request: NotificationRequest) {
     guard available else { return }
     let content = UNMutableNotificationContent()
