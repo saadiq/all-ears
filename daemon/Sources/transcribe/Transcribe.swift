@@ -86,6 +86,17 @@ struct Transcribe: AsyncParsableCommand {
     help: "Union a session's transcription intervals into one transcript (session id).")
   var session: String?
 
+  // The spawner's correlation id for this run's `job.publish` events. Hidden
+  // because it is not a knob: `earsd` passes it so its own failure reports
+  // and this run's self-reported progress land on one job row instead of two
+  // (see `OnClosePipelineRunner`). Absent — every hand-run — mints one.
+  @Option(
+    name: .customLong("job-id"),
+    help: ArgumentHelp(
+      "Job id to report this run's progress under (set by the spawning daemon).",
+      visibility: .hidden))
+  var jobID: String?
+
   @Option(name: .customLong("source"), help: "Source(s) to transcribe; repeatable.")
   var sources: [String] = []
 
@@ -176,7 +187,7 @@ struct Transcribe: AsyncParsableCommand {
       return await TranscribeRuntime.run(
         arguments: arguments,
         inputs: TranscribePipeline.Inputs(
-          last: last, from: from, to: to, session: session, sourceIDs: sources,
+          last: last, from: from, to: to, session: session, jobID: jobID, sourceIDs: sources,
           out: out),
         diagnostics: diagnostics,
         spans: bootstrap.stageSpans(tool: "transcribe"),

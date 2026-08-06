@@ -245,8 +245,13 @@ struct OnEndChainSmokeTests {
     // Every stage was spawned in --json mode and succeeded — the envelopes
     // really were parsed (a parse failure would log "exited 0 but failed"
     // and stop the chain before summarize).
+    // `--job-id` carries the daemon's own job identity into the child, so the
+    // two event streams are one row (see OnClosePipelineRunner).
     #expect(
-      daemonLog.contains("spawning transcribe --session \(session.id) --json"),
+      daemonLog.contains("spawning transcribe --session \(session.id) --job-id transcribe-"),
+      "expected the transcribe spawn line with --job-id; daemon log:\n\(daemonLog)")
+    #expect(
+      daemonLog.contains("--json for session '\(session.id)'"),
       "expected the transcribe spawn line with --json; daemon log:\n\(daemonLog)")
     for stage in ["transcribe", "cleanup", "summarize"] {
       #expect(

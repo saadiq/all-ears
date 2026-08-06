@@ -27,6 +27,8 @@ Multiple sources are transcribed independently, then merged for output — keepi
 
 `--session <uuid>` transcribes one daemon-owned session: it reads `session.toml`, unions the session's transcription intervals into the read range (paused spans are skipped exactly like silence), and takes the session's own source list and roster (so real participant names flow straight into speaker labels). This is the mode the daemon's session-end pipeline invokes.
 
+A session run reports its lifecycle to the daemon as `job.publish` events (best-effort — a publish failure never fails the run). The job id is minted per run, unless the spawner supplies one with `--job-id <id>`: the daemon does, so its own failure reports and this run's self-reported progress land on a single job row (see [capture-daemon](capture-daemon.md#session-end-pipeline)). The flag is hidden from `--help` — it is a spawner's correlation id, not a knob.
+
 **Per-source store lookup order.** A session's audio can live in two places, and `--session` resolves each source independently:
 
 - the **per-session copy** under `sessions/<id>/sources/<source>/` — where session-scoped capture writes, and the authoritative copy for an ended session;

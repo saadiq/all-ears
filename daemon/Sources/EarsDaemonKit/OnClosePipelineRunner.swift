@@ -113,8 +113,10 @@ public struct OnClosePipelineRunner: Sendable {
 
   /// How the runner reports per-stage job lifecycle to subscribers. Wired to
   /// the daemon's EventBus in production; a no-op by default so existing
-  /// callers and tests are unaffected. `transcribe` is absent here on
-  /// purpose — it reports itself over the socket (`JobEventPublisher`).
+  /// callers and tests are unaffected. `transcribe` reports its own progress
+  /// over the socket (`JobEventPublisher`) under the job id this runner hands
+  /// it, so the two streams share one row; the runner publishes for it only
+  /// on the failures the child cannot report itself.
   public typealias JobPublisher = @Sendable (JobPublishParams) async -> Void
 
   private let runProcess: ProcessRunner
@@ -152,16 +154,30 @@ public struct OnClosePipelineRunner: Sendable {
     // so a mis-wired caller degrades to a no-op, not a cleanup of nothing.
     guard stages.contains(.transcribe) else { return false }
 
+    // The spawner owns the transcribe job's identity and hands it to the
+    // child (`--job-id`), so the child's own events and the daemon's are one
+    // row rather than two: `upsertJob` keys on this id. That is what lets the
+    // daemon report a failure the child could not — one that killed it before
+    // it ever published anything (`transcribe` off PATH → exit 127, a
+    // `Process.run()` throw, a pre-pipeline config bail) — without
+    // double-reporting the ordinary failures the child does publish.
+    let transcribeJobID = Self.jobID(for: .transcribe)
     let transcriptPath: String
     switch await runPathStage(
-      .transcribe, arguments: ["--session", sessionID, "--json"], sessionID: sessionID,
-      context: context)
+      .transcribe, arguments: ["--session", sessionID, "--job-id", transcribeJobID, "--json"],
+      sessionID: sessionID, context: context)
     {
     case .success(let path):
       transcriptPath = path
-    case .exitFailure:
-      // A non-zero exit is already on the socket: `transcribe` publishes its
-      // own job events and reports `.failed` for it.
+    case .exitFailure(let code):
+      // Usually a re-statement of what the child already published; the case
+      // that matters is the child that never got far enough to publish, where
+      // silence here left the menu with no row, no notification, and an idle
+      // icon — indistinguishable from a run that never happened.
+      await publishJob(
+        JobPublishParams(
+          job: transcribeJobID, kind: OnEndStage.transcribe.rawValue, session: sessionID,
+          state: .failed, detail: "exit \(code)"))
       return false
     case .contractViolation:
       // Exit 0 means `transcribe` published `.done` — so without this, a
@@ -169,7 +185,7 @@ public struct OnClosePipelineRunner: Sendable {
       // followed by silence: no cleanup, no summary, no failure anywhere.
       await publishJob(
         JobPublishParams(
-          job: Self.jobID(for: .transcribe), kind: OnEndStage.transcribe.rawValue,
+          job: transcribeJobID, kind: OnEndStage.transcribe.rawValue,
           session: sessionID, state: .failed, detail: "invalid result envelope"))
       return false
     }
@@ -219,13 +235,13 @@ public struct OnClosePipelineRunner: Sendable {
     return true
   }
 
-  /// How a path-producing stage ended. The two failure cases are distinct on
-  /// the wire: a non-zero exit is a failure the stage itself reports, while a
-  /// contract violation happened *under* an exit 0 the stage has already
-  /// published as success — so only the caller can say it failed.
+  /// How a path-producing stage ended. The two failure cases stay distinct
+  /// because they need different job `detail` text: a non-zero exit carries
+  /// the code, while a contract violation happened *under* an exit 0 the
+  /// stage has already published as success.
   enum PathStageOutcome: Sendable, Equatable {
     case success(String)
-    case exitFailure
+    case exitFailure(Int32)
     case contractViolation
 
     var path: String? {
@@ -246,7 +262,7 @@ public struct OnClosePipelineRunner: Sendable {
     _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
   ) async -> PathStageOutcome {
     let outcome = await spawn(stage, arguments: arguments, sessionID: sessionID, context: context)
-    guard outcome.exitCode == 0 else { return .exitFailure }
+    guard outcome.exitCode == 0 else { return .exitFailure(outcome.exitCode) }
     let envelope: StageResultEnvelope
     switch StageResultEnvelope.decodeSuccessDocument(stdout: outcome.stdout, tool: stage.rawValue)
     {

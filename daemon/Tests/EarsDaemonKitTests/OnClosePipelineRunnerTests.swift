@@ -111,7 +111,12 @@ struct OnClosePipelineRunnerTests {
 
     #expect(transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
-    #expect(runner.calls[0].arguments == ["--session", "b7acc61f", "--json"])
+    #expect(
+      runner.calls[0].arguments
+        == [
+          "--session", "b7acc61f", "--job-id",
+          Self.jobID(passedTo: runner.calls[0].arguments) ?? "", "--json",
+        ])
     // cleanup consumes the `output` path transcribe's envelope named…
     #expect(runner.calls[1].arguments == [transcript, "--json"])
     // …and summarize consumes the cleaned path cleanup's envelope named.
@@ -417,14 +422,56 @@ struct OnClosePipelineRunnerTests {
     #expect(summarize[1].detail == "exit 4")
   }
 
-  @Test("a failing transcribe publishes nothing — it reports its own non-zero exit")
-  func failingTranscribePublishesNothing() async throws {
-    let runner = ScriptedRunner([SpawnOutcome(exitCode: 4)])
-    let jobs = JobCollector()
-    let pipeline = OnClosePipelineRunner(
-      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
-    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
-    #expect(jobs.snapshot.isEmpty)
+  @Test("a failing transcribe is published under the job id handed to the child")
+  func failingTranscribePublishesFailed() async throws {
+    // The child that matters here is the one that died before it could
+    // publish anything itself — `transcribe` off PATH exits 127, a
+    // `Process.run()` throw reports -1 — where staying quiet left no pipeline
+    // row, no notification, and an idle icon: a silent failure that reads
+    // exactly like a run that never happened.
+    for code: Int32 in [127, -1, 4] {
+      let runner = ScriptedRunner([SpawnOutcome(exitCode: code)])
+      let jobs = JobCollector()
+      let pipeline = OnClosePipelineRunner(
+        runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+      let transcribed = await pipeline.runOnEndChain(
+        sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+      #expect(!transcribed)
+      let published = jobs.snapshot
+      #expect(published.map(\.kind) == ["transcribe"])
+      #expect(published.map(\.state) == [.failed])
+      #expect(published[0].detail == "exit \(code)")
+      #expect(published[0].session == "s1")
+      // Same id the child was told to report under, so the child's own
+      // `started`/`failed` and this one are one row, never two.
+      #expect(published[0].job == Self.jobID(passedTo: runner.calls[0].arguments))
+      #expect(runner.calls.count == 1)
+    }
+  }
+
+  /// The `--job-id <id>` value in a spawned stage's argv.
+  private static func jobID(passedTo arguments: [String]) -> String? {
+    guard let index = arguments.firstIndex(of: "--job-id"), index + 1 < arguments.count else {
+      return nil
+    }
+    return arguments[index + 1]
+  }
+
+  @Test("the transcribe spawn hands the child the job id the daemon will report under")
+  func transcribeSpawnCarriesJobID() async throws {
+    let dir = try Self.makeTempDirectory("onend-jobid")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let transcript = try Self.makeFile("t.transcript.md", in: dir)
+    let runner = ScriptedRunner([Self.transcribeOutcome(transcript)])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { _ in })
+
+    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: [.transcribe], context: "test")
+
+    let argv = runner.calls[0].arguments
+    #expect(argv == ["--session", "s1", "--job-id", Self.jobID(passedTo: argv) ?? "", "--json"])
+    #expect(Self.jobID(passedTo: argv)?.hasPrefix("transcribe-") == true)
   }
 
   @Test("a transcribe that exits 0 with a broken envelope publishes the failure itself")
@@ -521,7 +568,12 @@ struct OnClosePipelineRunnerTests {
     #expect(transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
     // Every stage is spawned in JSON mode…
-    #expect(runner.calls[0].arguments == ["--session", "b7acc61f", "--json"])
+    #expect(
+      runner.calls[0].arguments
+        == [
+          "--session", "b7acc61f", "--job-id",
+          Self.jobID(passedTo: runner.calls[0].arguments) ?? "", "--json",
+        ])
     // …and each envelope's `output` (not its raw stdout) feeds the next stage.
     #expect(runner.calls[1].arguments == [transcript, "--json"])
     #expect(runner.calls[2].arguments == [clean, "--all-presets", "--json"])
