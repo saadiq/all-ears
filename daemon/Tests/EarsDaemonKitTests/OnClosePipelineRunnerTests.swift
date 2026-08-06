@@ -417,7 +417,7 @@ struct OnClosePipelineRunnerTests {
     #expect(summarize[1].detail == "exit 4")
   }
 
-  @Test("a failing transcribe publishes nothing")
+  @Test("a failing transcribe publishes nothing — it reports its own non-zero exit")
   func failingTranscribePublishesNothing() async throws {
     let runner = ScriptedRunner([SpawnOutcome(exitCode: 4)])
     let jobs = JobCollector()
@@ -425,6 +425,28 @@ struct OnClosePipelineRunnerTests {
       runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
     _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
     #expect(jobs.snapshot.isEmpty)
+  }
+
+  @Test("a transcribe that exits 0 with a broken envelope publishes the failure itself")
+  func transcribeContractViolationPublishesFailed() async throws {
+    // `transcribe` publishes `done` for any exit 0, so a violated envelope
+    // would otherwise reach every subscriber as a completed transcription
+    // followed by silence: no cleanup, no summary, no failure anywhere.
+    let runner = ScriptedRunner([SpawnOutcome(exitCode: 0, stdout: "not an envelope")])
+    let jobs = JobCollector()
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+    #expect(!transcribed)
+    let published = jobs.snapshot
+    #expect(published.map(\.kind) == ["transcribe"])
+    #expect(published.map(\.state) == [.failed])
+    #expect(published[0].session == "s1")
+    #expect(published[0].job.hasPrefix("transcribe-"))
+    #expect(runner.calls.count == 1)
   }
 
   // MARK: - on_end_stages config resolution

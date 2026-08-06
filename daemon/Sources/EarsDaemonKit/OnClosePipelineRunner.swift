@@ -152,11 +152,27 @@ public struct OnClosePipelineRunner: Sendable {
     // so a mis-wired caller degrades to a no-op, not a cleanup of nothing.
     guard stages.contains(.transcribe) else { return false }
 
-    guard
-      let transcriptPath = await runPathStage(
-        .transcribe, arguments: ["--session", sessionID, "--json"], sessionID: sessionID,
-        context: context)
-    else { return false }
+    let transcriptPath: String
+    switch await runPathStage(
+      .transcribe, arguments: ["--session", sessionID, "--json"], sessionID: sessionID,
+      context: context)
+    {
+    case .success(let path):
+      transcriptPath = path
+    case .exitFailure:
+      // A non-zero exit is already on the socket: `transcribe` publishes its
+      // own job events and reports `.failed` for it.
+      return false
+    case .contractViolation:
+      // Exit 0 means `transcribe` published `.done` — so without this, a
+      // broken envelope reads to every subscriber as a completed transcription
+      // followed by silence: no cleanup, no summary, no failure anywhere.
+      await publishJob(
+        JobPublishParams(
+          job: Self.jobID(for: .transcribe), kind: OnEndStage.transcribe.rawValue,
+          session: sessionID, state: .failed, detail: "invalid result envelope"))
+      return false
+    }
 
     var nextInput = transcriptPath
     if stages.contains(.cleanup) {
@@ -165,7 +181,8 @@ public struct OnClosePipelineRunner: Sendable {
         JobPublishParams(
           job: jobID, kind: OnEndStage.cleanup.rawValue, session: sessionID, state: .started))
       let cleanPath = await runPathStage(
-        .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context)
+        .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context
+      ).path
       await publishJob(
         JobPublishParams(
           job: jobID, kind: OnEndStage.cleanup.rawValue, session: sessionID,
@@ -202,8 +219,23 @@ public struct OnClosePipelineRunner: Sendable {
     return true
   }
 
+  /// How a path-producing stage ended. The two failure cases are distinct on
+  /// the wire: a non-zero exit is a failure the stage itself reports, while a
+  /// contract violation happened *under* an exit 0 the stage has already
+  /// published as success — so only the caller can say it failed.
+  enum PathStageOutcome: Sendable, Equatable {
+    case success(String)
+    case exitFailure
+    case contractViolation
+
+    var path: String? {
+      guard case .success(let path) = self else { return nil }
+      return path
+    }
+  }
+
   /// Spawns a path-producing stage in `--json` mode and returns its
-  /// envelope's `output` path, or `nil` on failure. Exit 0 with anything but
+  /// envelope's `output` path, or a failure case. Exit 0 with anything but
   /// one decodable v1 envelope carrying an `output` is a failure too — a
   /// silent or polluted success the chain can't build on, a breaking-major
   /// envelope, or an `ok: false` under exit 0 is treated exactly like a
@@ -212,9 +244,9 @@ public struct OnClosePipelineRunner: Sendable {
   /// corrupt a later stage.
   private func runPathStage(
     _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
-  ) async -> String? {
+  ) async -> PathStageOutcome {
     let outcome = await spawn(stage, arguments: arguments, sessionID: sessionID, context: context)
-    guard outcome.exitCode == 0 else { return nil }
+    guard outcome.exitCode == 0 else { return .exitFailure }
     let envelope: StageResultEnvelope
     switch StageResultEnvelope.decodeSuccessDocument(stdout: outcome.stdout, tool: stage.rawValue)
     {
@@ -224,22 +256,22 @@ public struct OnClosePipelineRunner: Sendable {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': \(violation.message)")
-      return nil
+      return .contractViolation
     }
     guard let path = envelope.output else {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': result envelope carries no output path; "
           + Self.stdoutNote(outcome.stdout))
-      return nil
+      return .contractViolation
     }
     guard FileManager.default.fileExists(atPath: path) else {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': envelope output path '\(path)' does not exist")
-      return nil
+      return .contractViolation
     }
-    return path
+    return .success(path)
   }
 
   /// Logs summarize's per-preset results from its success envelope's
