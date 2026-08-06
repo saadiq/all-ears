@@ -26,16 +26,29 @@ import os
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
   private let announcements = SessionNotifications()
-  private let sources: [SourceID]
-  private let onEndStages: [String]
+  /// What a manually started session declares. Re-read from disk on every
+  /// menu open rather than frozen at launch: this app is a login item, so
+  /// "frozen at launch" means "frozen until reboot", and a user who edits
+  /// `[[earsd.source]]` and uses this app's own Restart Daemon would keep
+  /// starting sessions against the old list — recording nothing but mic while
+  /// the menu reports "● Recording" — with no way to tell.
+  private var sources: [SourceID]
+  private var onEndStages: [String]
+  /// Re-resolves the config layers. Injected so the reload path is a seam
+  /// rather than a hard call into the filesystem.
+  private let reloadConfig: @Sendable () -> ClientConfig?
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "app")
 
-  init(config: ClientConfig) {
+  init(
+    config: ClientConfig,
+    reloadConfig: @escaping @Sendable () -> ClientConfig? = { try? ClientConfig.resolve().get() }
+  ) {
     configError = nil
     dataRoot = config.dataRoot
     outputRoot = config.outputRoot
     sources = config.sources
     onEndStages = config.onEndStages
+    self.reloadConfig = reloadConfig
     connection = DaemonConnection(socketPath: config.socketPath)
     recentsProvider = RecentSessionsProvider(
       dataRoot: config.dataRoot, outputRoot: config.outputRoot)
@@ -47,6 +60,7 @@ import os
     outputRoot = ""
     sources = []
     onEndStages = []
+    reloadConfig = { nil }
     connection = nil
     recentsProvider = RecentSessionsProvider(dataRoot: "", outputRoot: "")
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
@@ -153,6 +167,9 @@ import os
 
   func startRecording() {
     guard let connection else { return }
+    // Against the config as it is *now*, not as it was at launch: the click
+    // that follows a config edit must declare what the user just wrote.
+    reloadDeclarations()
     // The daemon records exactly the sources a manual session names, skipping
     // any it doesn't know — so an empty list here is a session that captures
     // nothing while the menu happily reports "● Recording".
@@ -160,14 +177,11 @@ import os
       report("No capture sources are configured — see [[earsd.source]] in your config.")
       return
     }
-    let title = DefaultSessionTitle.forManualStart(
-      at: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
+    let title = DefaultSessionTitle.forManualStart(at: Self.now())
     // Declared, never inferred: the daemon runs no chain for a manual session
     // that doesn't ask, so "Stop → summary" is this app's promise to make.
-    send(
-      .sessionStart(
-        SessionStartParams(title: title, sources: sources, onEndStages: onEndStages)),
-      connection)
+    let params = SessionStartParams(title: title, sources: sources, onEndStages: onEndStages)
+    send(.sessionStart(params), connection)
   }
 
   func dismiss(jobID: String) {
@@ -185,6 +199,18 @@ import os
     // other than the daemon's own chain, and is allowed to land late.
     rerender()
     refreshRecents()
+    reloadDeclarations()
+  }
+
+  /// Re-reads `sources`/`onEndStages` from the config layers. The rest of
+  /// ``ClientConfig`` is deliberately not adopted: `socketPath` and the two
+  /// roots are wired into a live `DaemonConnection` and a
+  /// `RecentSessionsProvider` at init, and swapping those under a running app
+  /// is a relaunch, not a refresh.
+  private func reloadDeclarations() {
+    guard let config = reloadConfig() else { return }
+    sources = config.sources
+    onEndStages = config.onEndStages
   }
 
   /// SwiftUI's menu-style `MenuBarExtra` gives the content view no per-open
