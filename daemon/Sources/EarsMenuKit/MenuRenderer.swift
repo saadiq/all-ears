@@ -62,7 +62,14 @@ public enum MenuRenderer {
         ?? job.session.map { String($0.prefix(8)) } ?? "session"
       switch job.state {
       case .started, .running:
-        return PipelineLine(id: job.job, text: "\(progressLabel(job.kind)) ‘\(title)’…")
+        // Dismissible even though an in-flight row normally clears itself:
+        // job telemetry rides bounded queues that drop the oldest frame
+        // without disconnecting, so a lost `done`/`failed` frame strands the
+        // row — with no rev gap, and so no resubscribe to prune it — and
+        // holds the icon on `.busy` forever. Dismiss is the only recovery
+        // short of quitting the app.
+        return PipelineLine(
+          id: job.job, text: "\(progressLabel(job.kind)) ‘\(title)’…", dismissible: true)
       case .failed:
         return PipelineLine(
           id: job.job, text: "⚠ \(stageLabel(job.kind)) failed — \(title)", dismissible: true)

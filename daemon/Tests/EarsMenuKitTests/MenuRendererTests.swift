@@ -73,7 +73,25 @@ struct MenuRendererTests {
     let content = MenuRenderer.render(
       state(sessions: [makeSession(state: .ended)], jobs: jobs), now: instant(0))
     #expect(content.icon == .busy)
-    #expect(content.pipeline == [PipelineLine(id: "t-1", text: "Transcribing ‘Weekly sync’…")])
+    #expect(
+      content.pipeline == [
+        PipelineLine(id: "t-1", text: "Transcribing ‘Weekly sync’…", dismissible: true)
+      ])
+  }
+
+  @Test("an in-flight row is dismissible, so a lost terminal event is recoverable")
+  func inFlightRowsAreDismissible() {
+    // Job telemetry is fire-and-forget over bounded queues that drop the
+    // oldest frame without disconnecting, so a `done`/`failed` frame can be
+    // lost with no rev gap and no reconnect to prune the row. Nothing else
+    // clears it, and it holds the icon on `.busy` — without a Dismiss the
+    // user's only recovery is quitting the app.
+    for state in [JobState.started, .running] {
+      let jobs = [JobPublishParams(job: "c-1", kind: "cleanup", session: "s1", state: state)]
+      let content = MenuRenderer.render(
+        self.state(sessions: [makeSession(state: .ended)], jobs: jobs), now: instant(0))
+      #expect(content.pipeline.map(\.dismissible) == [true])
+    }
   }
 
   @Test("concurrent jobs with identical text stay distinct rows")

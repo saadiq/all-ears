@@ -18,8 +18,10 @@ public enum Verb: Sendable, Hashable {
 public struct PipelineLine: Sendable, Hashable, Identifiable {
   public var id: String
   public var text: String
-  /// Failed rows persist until the user dismisses them, so they carry a
-  /// dismiss action; in-flight and done rows clear themselves.
+  /// Whether the row carries a Dismiss action. True for every row the daemon
+  /// might never clear on its own: failed rows persist by design until the
+  /// user dismisses them, and an in-flight row is stranded if its terminal
+  /// job event is dropped by a bounded queue.
   public var dismissible: Bool
 
   public init(id: String, text: String, dismissible: Bool = false) {
