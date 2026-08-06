@@ -73,10 +73,14 @@ public struct EarsDaemonConfiguration: Sendable {
   /// ``OnEndStage``'s canonical order, for an ended session whose starter
   /// declared none of its own. Only browser-extension sessions fall back to
   /// it — see ``OnEndChainPolicy`` for why, and for the per-session override
-  /// that any client can send instead. Default is the full `transcribe` →
-  /// `cleanup` → `summarize` chain; `[]` disables the fallback entirely —
-  /// tests inject `[]` so a session end never spawns a real subprocess.
-  /// Resolved and validated by `OnEndStage.resolveList`.
+  /// that any client can send instead.
+  ///
+  /// `[]` is the default *here* so that spawning a real subprocess is
+  /// something a caller opts into: `earsd` always passes the resolved config
+  /// list (whose own default is the full `transcribe` → `cleanup` →
+  /// `summarize` chain), while a test that never mentions stages stays
+  /// hermetic instead of shelling out to whatever is on PATH. Resolved and
+  /// validated by `OnEndStage.resolveList`.
   public var onEndStages: [OnEndStage]
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; retained on the
@@ -99,7 +103,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     sessionIngestCloseGraceSeconds: Double = 120,
     browserSessionLocalSources: [SourceID] = ["mic"],
-    onEndStages: [OnEndStage] = OnEndStage.allCases,
+    onEndStages: [OnEndStage] = [],
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
     self.sources = sources
