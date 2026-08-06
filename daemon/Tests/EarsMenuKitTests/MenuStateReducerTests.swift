@@ -54,6 +54,22 @@ struct ConnectionReductionTests {
     #expect(state.jobs.map(\.job) == ["b"])
   }
 
+  @Test(
+    "every (re)connect drops in-flight job telemetry, even without a boot change, keeping failures"
+  )
+  func everyConnectPrunesJobsRegardlessOfBootChange() {
+    var state = MenuState()
+    state.jobs = [
+      JobPublishParams(job: "a", kind: "transcribe", session: "s1", state: .started),
+      JobPublishParams(job: "b", kind: "transcribe", session: "s1", state: .running),
+      JobPublishParams(job: "c", kind: "summarize", session: "s1", state: .done),
+      JobPublishParams(job: "d", kind: "summarize", session: "s0", state: .failed),
+    ]
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0", bootChanged: false, snapshot: makeSnapshot())
+    #expect(state.jobs.map(\.job) == ["d"])
+  }
+
   @Test("disconnected() flips the phase and keeps last-known state for display")
   func disconnectedKeepsState() {
     var state = MenuState()

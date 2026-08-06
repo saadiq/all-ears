@@ -7,6 +7,13 @@ public enum ReduceOutcome: Sendable, Hashable {
 }
 
 public enum MenuStateReducer {
+  /// Job telemetry is transient and not part of the snapshot, so it can never be
+  /// replayed: any `done` event missed during a disconnect/reconnect bounce would
+  /// otherwise leave a stale "in progress" line (and the busy icon) forever. Every
+  /// (re)subscribe therefore drops all non-failed job lines, boot change or not;
+  /// failed lines persist until the user dismisses them. `bootChanged` is kept as a
+  /// parameter for callers and `lastBootID` bookkeeping upstream, but no longer
+  /// gates this pruning.
   public static func connected(
     _ state: inout MenuState, daemon: String, bootChanged: Bool, snapshot: SnapshotData
   ) {
@@ -15,9 +22,7 @@ public enum MenuStateReducer {
     state.sessions = snapshot.sessions
     state.sources = snapshot.sources
     state.lastRev = snapshot.rev
-    if bootChanged {
-      state.jobs.removeAll { $0.state != .failed }
-    }
+    state.jobs.removeAll { $0.state != .failed }
   }
 
   public static func disconnected(_ state: inout MenuState) {
