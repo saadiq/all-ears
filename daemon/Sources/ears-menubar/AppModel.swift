@@ -127,9 +127,8 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   func startRecording() {
     guard let connection else { return }
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyy-MM-dd HH:mm"
-    let title = "Recording \(formatter.string(from: Date()))"
+    let title = DefaultSessionTitle.forManualStart(
+      at: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
     Task {
       _ = await connection.perform(
         .sessionStart(SessionStartParams(title: title, sources: [SourceID("mic")])))
