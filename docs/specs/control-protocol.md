@@ -152,10 +152,18 @@ Semantics:
 - **Attendees are a roster with join/leave times**, upserted by whoever knows them (the
   extension's DOM layer today). `source` links an attendee to their per-participant audio
   source, which downstream feeds the transcript's speaker labels.
+- **Post-processing is declared at `session.start`, not inferred.** The optional `on_end_stages`
+  names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
+  `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at
+  the call site, instead of editing daemon config. Omit the field and the daemon applies its
+  default for the trigger: browser-extension sessions inherit `[earsd.sessions] on_end_stages`,
+  every other trigger runs nothing. Unknown stage names are dropped and logged, never a
+  `session.start` failure. The declaration is persisted in `session.toml`, so it survives a
+  daemon restart between start and end.
 - **On `session.end`,** the daemon closes the open interval, finalizes the session record
   (`session.toml` holds the intervals and roster that transcription reads directly), and stops
-  capture. For browser-triggered sessions the daemon then runs the on-end pipeline
-  (`transcribe --session <id>`, then `cleanup` and `summarize` over its output — see
+  capture. It then runs whatever chain the session resolved to (`transcribe --session <id>`,
+  then `cleanup` and `summarize` over its output — see
   [capture-daemon](capture-daemon.md#session-end-pipeline)); when the transcribe stage exits 0
   the daemon stamps `transcript_completed`, which starts the retention clock
   ([capture-daemon](capture-daemon.md#storage-maintenance-and-retention)).
@@ -184,7 +192,7 @@ Grouped by capability. All carried in the v2 envelope.
 | — | `hello` | see [Handshake](#handshake) |
 | `observe` | `status` | → `{uptime_s, sources, sessions}` — daemon + per-source state, active sessions |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
-| `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session |
+| `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing" |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
 | `sessions` | `session.pause` | `{session}` → session. Closes open interval; no-op success if already paused |
 | `sessions` | `session.resume` | `{session}` → session. Opens a new interval; no-op success if active |

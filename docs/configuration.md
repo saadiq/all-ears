@@ -103,12 +103,18 @@ ingest_close_grace_s = 120
 # is transcribed alongside the extension's per-participant streams. Each id is
 # included only if the daemon is actually capturing it. Set to [] to disable.
 local_sources = ["mic"]
-# Pipeline stages auto-run when a browser session ends, in chain order:
-# transcribe writes the transcript, cleanup corrects it with the [llm] backend,
-# summarize renders every [[summarize.preset]]. cleanup/summarize require
-# transcribe (they consume its output); an invalid entry is dropped with a
-# logged warning. Set to ["transcribe"] to skip the LLM stages, [] to disable
-# the chain entirely.
+# The DEFAULT pipeline chain for a session that declares none of its own, in
+# chain order: transcribe writes the transcript, cleanup corrects it with the
+# [llm] backend, summarize renders every [[summarize.preset]]. cleanup/summarize
+# require transcribe (they consume its output); an invalid entry is dropped
+# with a logged warning. Set to ["transcribe"] to skip the LLM stages, [] to
+# disable the chain entirely.
+#
+# Only browser-extension sessions fall back to this. A manual session — from
+# `ears session start` or the menu bar app — runs nothing unless it asks, via
+# `session.start`'s own on_end_stages (`ears session start --on-end-stage
+# transcribe`), so a scripted capture never spawns a model load you didn't
+# ask for. Per session, `--no-on-end` opts out whatever this says.
 on_end_stages = ["transcribe", "cleanup", "summarize"]
 
 # Audio ingestion from the browser extension (binary PCM). Off by default.

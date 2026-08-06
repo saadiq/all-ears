@@ -122,10 +122,20 @@ already carries `kind` as a string; the method table in
 `shared/protocol-fixtures/` are updated to match. This is additive, useful to any
 subscriber, and lands as its own PR ahead of the app.
 
-A second daemon-side change landed during implementation: the on-end pipeline chain
-now runs for every session-end trigger, not only browser-triggered ones, so a manual
-recording started from the menu bar app also feeds `transcribe`/`cleanup`/`summarize`
-on end (escape hatch: set `on_end_stages = []` to disable the chain entirely).
+A second daemon-side change landed during implementation: `session.start` gained an
+optional `on_end_stages`, so the chain a session runs is **declared by whoever starts
+it** rather than inferred from its trigger. The menu bar app declares the operator's
+configured chain (it promises "Stop → summary", so it asks for it); `ears session
+start` declares nothing and stays inert unless given `--on-end-stage`, and any client
+can pass `[]` to run its own post-processing without the daemon racing it.
+
+This deliberately replaces an earlier, blunter version of the same feature that
+removed the browser-only guard outright. That version changed what `ears session end`
+did for every existing CLI user — a Parakeet load and one LLM call per summarize
+preset, against a metered backend, where previously nothing ran. The declared-chain
+form gives the menu bar app exactly what it needs while leaving upstream behavior
+byte-identical for anyone who doesn't opt in, which is the difference between a PR
+that has to be weighed and one that can just be taken.
 
 ## Packaging
 

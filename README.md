@@ -142,7 +142,7 @@ Transcription currently has one model: Parakeet, running locally on the Neural E
 
 ## How it works
 
-A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends — every session, whatever started it (`on_end_stages = []` turns that off). Five small tools operate on that store and its output:
+A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends, for whichever sessions asked for it (the menu bar app and the browser extension do; `ears session start` stays inert unless you pass `--on-end-stage`). Five small tools operate on that store and its output:
 
 | Tool | Job |
 |------|-----|
