@@ -223,17 +223,15 @@ import os
 
   /// SwiftUI's menu-style `MenuBarExtra` gives the content view no per-open
   /// hook: `.onAppear` fires when the menu is first built and never again, so
-  /// anything refreshed there is frozen at launch — a daemon that has been up
-  /// for hours kept reporting the handful of seconds it had been up when the
-  /// app started. AppKit still posts `didBeginTracking` for the status item's
-  /// menu, which is the open event SwiftUI is missing. This app is
-  /// `LSUIElement` with exactly one menu, so an unfiltered observation is
-  /// precise in practice.
+  /// anything refreshed there is frozen at launch. AppKit still posts
+  /// `didBeginTracking` for the status item's menu, which is the open event
+  /// SwiftUI is missing. This app is `LSUIElement` with exactly one menu, so
+  /// an unfiltered observation is precise in practice.
   private func observeMenuTracking() {
     Task { [weak self] in
-      for await _ in NotificationCenter.default.notifications(
+      let opens = NotificationCenter.default.notifications(
         named: NSMenu.didBeginTrackingNotification)
-      {
+      for await _ in opens {
         guard let self else { return }
         self.menuWillOpen()
       }
