@@ -1,16 +1,18 @@
 # Plan: menu bar app (`ears-menubar`)
 
-Status: **design approved, not yet implemented.**
+Status: **stage 1 implemented** (dropdown menu + notifications; the stage-2 dashboard
+window remains future work).
 
 Builds the menu-bar frontend that [`docs/specs/control-protocol.md`](../specs/control-protocol.md)
-has anticipated since v2 ("the `ears` CLI, the browser extension, a future menu-bar app").
+has anticipated since v2 ("the `ears` CLI, the browser extension, the menu-bar app
+(`ears-menubar`)").
 One glanceable surface for visibility into and control of the daemon, so day-to-day use
 never needs a terminal.
 
 ## One job
 
 A macOS menu bar app that (a) shows daemon and session state at a glance from the icon
-alone, (b) offers the session verbs one click away — including starting a manual mic
+alone, (b) offers the session verbs one click away — including starting a manual
 session — and (c) proactively notifies when a summary is ready or a pipeline stage fails.
 Full control surface, but with hierarchy: the common path stays small; depth is opt-in.
 
@@ -50,8 +52,15 @@ Two targets, mirroring the repo's "logic in a library, executables are shims" ru
   live icon.
 - A connection actor wrapping `EarsIPC`'s socket client: **Unix socket** (full
   capability tier) → `hello` (`client: "menubar/<version>"`) → `subscribe(events:
-  ["job"])` → frames feed the reducer. Reconnects with backoff; on reconnect compares
-  `boot_id` and resubscribes per the spec.
+  ["job"])` → frames feed the reducer. Reconnects with backoff; every reconnect
+  resubscribes and rebuilds from the fresh snapshot, discarding in-flight job
+  telemetry — which subsumes the spec's `boot_id` comparison, so the client never
+  tracks the boot id itself. A rev gap drops the state back to `connecting` before
+  bouncing the socket: the mirror is stale and the socket is gone, so the menu must
+  stop offering verbs it can no longer deliver.
+- Every control call's error is surfaced — in the menu, where the user who clicked is
+  looking, and in unified logging. A verb that silently does nothing is the worst
+  outcome available: the user believes the recording stopped.
 - `UNUserNotificationCenter` adapter executing the policy's decisions (requires the
   `.app` bundle; a bare binary cannot post notifications).
 - **Read-only** disk reader (`EarsDataStore.SessionStore`) for ended-session history and
@@ -65,13 +74,21 @@ back as protocol calls. `@MainActor` is permitted in the shell (it is UI); never
 
 ## UX
 
-**Icon** (template SF Symbol, four variants): idle · recording (paused shows a
-distinguishing mark) · pipeline-busy · attention (stage failed, or daemon unreachable).
+**Icon** (template SF Symbol, one glyph per variant — a menu bar template renders
+monochrome against arbitrary wallpaper, so paused is its own symbol, not a dimmed
+recording one): idle · recording · paused · pipeline-busy · attention (stage failed,
+a source of a live session died, or the daemon is unreachable).
 
 **Menu**, top to bottom, content varying by state:
 
-- Header: `● Recording · Weekly sync · 12:43` / `Idle` / `⚠ Daemon not running`.
-- Verbs: `Start Recording` (manual mic session via `session.start`; shown **only when no
+- Header: `● Recording · Weekly sync · 12:43` / `Idle` / `⚠ Daemon not running`, plus
+  `· ⚠ system stopped` when a source the live session named is in `error` — the daemon
+  isolates a source failure so the rest keeps recording, which is what makes half a
+  meeting go missing unremarked.
+- Verbs: `Start Recording` (a manual `session.start` naming the enabled
+  `[[earsd.source]]` ids, resolved from the same config layers `earsd` reads — the
+  daemon records exactly what a manual session names, and at idle it has no live
+  sources to ask about; shown **only when no
   session is live** — superseding a live session from a menu click is a footgun), or
   `Pause`/`Resume`, `Rename Session…` (small text dialog), `End Session` when one is
   active. Extension-started sessions appear automatically and get the same verbs.
@@ -88,8 +105,16 @@ distinguishing mark) · pipeline-busy · attention (stage failed, or daemon unre
 - Any stage reaches `failed`: *“Transcription failed — Weekly sync”*; click reveals the
   session folder.
 - Unexpected daemon disconnect **while a session is active** notifies (a recording is at
-  risk); daemon-down while idle is icon-only.
+  risk); daemon-down while idle is icon-only. Once per at-risk session, not once per
+  drop — a crash-looping daemon reconnects between crashes, and each reconnect would
+  otherwise re-arm the warning about the same recording.
 - Explicitly quiet: session start/end/pause/resume — the user did those themselves.
+- A **denied grant** drops all of the above silently: macOS accepts the post,
+  `UNUserNotificationCenter.add` reports success, and `usernoted` discards the record as
+  `ineligible for pipeline … authorizationStatus: Denied`. The prompt is one-shot, so the
+  app cannot re-ask; instead it records the outcome (unified logging) and carries a menu
+  warning with a shortcut to the Notifications settings pane. Not warning until the grant
+  resolves keeps a launch from flashing it.
 
 ## Daemon-side change: job events for every on-end stage
 
@@ -103,6 +128,21 @@ already carries `kind` as a string; the method table in
 `shared/protocol-fixtures/` are updated to match. This is additive, useful to any
 subscriber, and lands as its own PR ahead of the app.
 
+A second daemon-side change landed during implementation: `session.start` gained an
+optional `on_end_stages`, so the chain a session runs is **declared by whoever starts
+it** rather than inferred from its trigger. The menu bar app declares the operator's
+configured chain (it promises "Stop → summary", so it asks for it); `ears session
+start` declares nothing and stays inert unless given `--on-end-stage`, and any client
+can pass `[]` to run its own post-processing without the daemon racing it.
+
+This deliberately replaces an earlier, blunter version of the same feature that
+removed the browser-only guard outright. That version changed what `ears session end`
+did for every existing CLI user — a Parakeet load and one LLM call per summarize
+preset, against a metered backend, where previously nothing ran. The declared-chain
+form gives the menu bar app exactly what it needs while leaving upstream behavior
+byte-identical for anyone who doesn't opt in, which is the difference between a PR
+that has to be weighed and one that can just be taken.
+
 ## Packaging
 
 `make menubar`: `swift build -c release --product ears-menubar`, assemble
@@ -115,7 +155,7 @@ suite-wide non-goal for now (see “Not built yet”).
 ## Testing
 
 - **Tier 0** (`EarsMenuKitTests`, swift-testing): reducer over snapshot/event sequences,
-  including rev-gap → resubscribe and `boot_id` change; menu model per state;
+  including rev-gap → resubscribe and the reconnect state reset; menu model per state;
   notification policy transitions with the quiet cases asserted too. Frames decode via
   the same `EarsCore` codec the golden fixtures round-trip.
 - **Tier 1**: extend the on-end chain smoke test (`CLISmokeTests`) to assert

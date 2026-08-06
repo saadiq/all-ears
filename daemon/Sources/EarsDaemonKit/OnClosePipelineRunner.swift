@@ -111,15 +111,31 @@ public struct OnClosePipelineRunner: Sendable {
   /// `EarsLLMKit.CommandLLMBackend`); tests inject a scripted fake.
   public typealias ProcessRunner = @Sendable (String, [String]) async -> SpawnOutcome
 
+  /// How the runner reports per-stage job lifecycle to subscribers. Wired to
+  /// the daemon's EventBus in production; a no-op by default so existing
+  /// callers and tests are unaffected. `transcribe` reports its own progress
+  /// over the socket (`JobEventPublisher`) under the job id this runner hands
+  /// it, so the two streams share one row; the runner publishes for it only
+  /// on the failures the child cannot report itself.
+  public typealias JobPublisher = @Sendable (JobPublishParams) async -> Void
+
   private let runProcess: ProcessRunner
   private let log: @Sendable (String) -> Void
+  private let publishJob: JobPublisher
 
   public init(
     runProcess: @escaping ProcessRunner = OnClosePipelineRunner.realProcessRunner,
-    log: @escaping @Sendable (String) -> Void = { _ in }
+    log: @escaping @Sendable (String) -> Void = { _ in },
+    publishJob: @escaping JobPublisher = { _ in }
   ) {
     self.runProcess = runProcess
     self.log = log
+    self.publishJob = publishJob
+  }
+
+  /// A fresh job id for one stage's run, e.g. `cleanup-3f9a2b1c`.
+  static func jobID(for stage: OnEndStage) -> String {
+    "\(stage.rawValue)-\(UUID().uuidString.lowercased().prefix(8))"
   }
 
   /// Runs the configured stage chain against an ended session.
@@ -138,39 +154,104 @@ public struct OnClosePipelineRunner: Sendable {
     // so a mis-wired caller degrades to a no-op, not a cleanup of nothing.
     guard stages.contains(.transcribe) else { return false }
 
-    guard
-      let transcriptPath = await runPathStage(
-        .transcribe, arguments: ["--session", sessionID, "--json"], sessionID: sessionID,
-        context: context)
-    else { return false }
+    // The spawner owns the transcribe job's identity and hands it to the
+    // child (`--job-id`), so the child's own events and the daemon's are one
+    // row rather than two: `upsertJob` keys on this id. That is what lets the
+    // daemon report a failure the child could not — one that killed it before
+    // it ever published anything (`transcribe` off PATH → exit 127, a
+    // `Process.run()` throw, a pre-pipeline config bail) — without
+    // double-reporting the ordinary failures the child does publish.
+    let transcribeJobID = Self.jobID(for: .transcribe)
+    let transcriptPath: String
+    switch await runPathStage(
+      .transcribe, arguments: ["--session", sessionID, "--job-id", transcribeJobID, "--json"],
+      sessionID: sessionID, context: context)
+    {
+    case .success(let path):
+      transcriptPath = path
+    case .exitFailure(let code):
+      // Usually a re-statement of what the child already published; the case
+      // that matters is the child that never got far enough to publish, where
+      // silence here left the menu with no row, no notification, and an idle
+      // icon — indistinguishable from a run that never happened.
+      await publishJob(
+        JobPublishParams(
+          job: transcribeJobID, kind: OnEndStage.transcribe.rawValue, session: sessionID,
+          state: .failed, detail: "exit \(code)"))
+      return false
+    case .contractViolation:
+      // Exit 0 means `transcribe` published `.done` — so without this, a
+      // broken envelope reads to every subscriber as a completed transcription
+      // followed by silence: no cleanup, no summary, no failure anywhere.
+      await publishJob(
+        JobPublishParams(
+          job: transcribeJobID, kind: OnEndStage.transcribe.rawValue,
+          session: sessionID, state: .failed, detail: "invalid result envelope"))
+      return false
+    }
 
     var nextInput = transcriptPath
     if stages.contains(.cleanup) {
-      guard
-        let cleanPath = await runPathStage(
-          .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context)
-      else { return true }  // transcribe already succeeded; chain stops here
+      let jobID = Self.jobID(for: .cleanup)
+      await publishJob(
+        JobPublishParams(
+          job: jobID, kind: OnEndStage.cleanup.rawValue, session: sessionID, state: .started))
+      let cleanPath = await runPathStage(
+        .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context
+      ).path
+      await publishJob(
+        JobPublishParams(
+          job: jobID, kind: OnEndStage.cleanup.rawValue, session: sessionID,
+          state: cleanPath == nil ? .failed : .done))
+      guard let cleanPath else { return true }  // transcribe already succeeded; chain stops here
       nextInput = cleanPath
     }
 
     if stages.contains(.summarize) {
+      let jobID = Self.jobID(for: .summarize)
+      await publishJob(
+        JobPublishParams(
+          job: jobID, kind: OnEndStage.summarize.rawValue, session: sessionID, state: .started))
       // Summarize writes one file per preset, so it has no single output path
       // to thread — exit 0 is the success signal, exactly as before the
       // envelope. The envelope's per-preset `outputs` feed the log: what was
       // written on success here, and — via `spawn`'s error-envelope decode —
       // partial success ("wrote 2/3 presets") on failure.
-      if let outcome = await spawn(
+      let outcome = await spawn(
         .summarize, arguments: [nextInput, "--all-presets", "--json"], sessionID: sessionID,
         context: context)
-      {
+      if outcome.exitCode == 0 {
         logSummarizeResults(stdout: outcome.stdout, sessionID: sessionID, context: context)
+        await publishJob(
+          JobPublishParams(
+            job: jobID, kind: OnEndStage.summarize.rawValue, session: sessionID, state: .done))
+      } else {
+        await publishJob(
+          JobPublishParams(
+            job: jobID, kind: OnEndStage.summarize.rawValue, session: sessionID, state: .failed,
+            detail: "exit \(outcome.exitCode)"))
       }
     }
     return true
   }
 
+  /// How a path-producing stage ended. The two failure cases stay distinct
+  /// because they need different job `detail` text: a non-zero exit carries
+  /// the code, while a contract violation happened *under* an exit 0 the
+  /// stage has already published as success.
+  enum PathStageOutcome: Sendable, Equatable {
+    case success(String)
+    case exitFailure(Int32)
+    case contractViolation
+
+    var path: String? {
+      guard case .success(let path) = self else { return nil }
+      return path
+    }
+  }
+
   /// Spawns a path-producing stage in `--json` mode and returns its
-  /// envelope's `output` path, or `nil` on failure. Exit 0 with anything but
+  /// envelope's `output` path, or a failure case. Exit 0 with anything but
   /// one decodable v1 envelope carrying an `output` is a failure too — a
   /// silent or polluted success the chain can't build on, a breaking-major
   /// envelope, or an `ok: false` under exit 0 is treated exactly like a
@@ -179,11 +260,9 @@ public struct OnClosePipelineRunner: Sendable {
   /// corrupt a later stage.
   private func runPathStage(
     _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
-  ) async -> String? {
-    guard
-      let outcome = await spawn(
-        stage, arguments: arguments, sessionID: sessionID, context: context)
-    else { return nil }
+  ) async -> PathStageOutcome {
+    let outcome = await spawn(stage, arguments: arguments, sessionID: sessionID, context: context)
+    guard outcome.exitCode == 0 else { return .exitFailure(outcome.exitCode) }
     let envelope: StageResultEnvelope
     switch StageResultEnvelope.decodeSuccessDocument(stdout: outcome.stdout, tool: stage.rawValue)
     {
@@ -193,22 +272,22 @@ public struct OnClosePipelineRunner: Sendable {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': \(violation.message)")
-      return nil
+      return .contractViolation
     }
     guard let path = envelope.output else {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': result envelope carries no output path; "
           + Self.stdoutNote(outcome.stdout))
-      return nil
+      return .contractViolation
     }
     guard FileManager.default.fileExists(atPath: path) else {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': envelope output path '\(path)' does not exist")
-      return nil
+      return .contractViolation
     }
-    return path
+    return .success(path)
   }
 
   /// Logs summarize's per-preset results from its success envelope's
@@ -242,10 +321,13 @@ public struct OnClosePipelineRunner: Sendable {
   /// Spawns one stage with the issue-#21 logging contract: the full argv is
   /// logged *before* the run (so the log shows what was spawned even for a
   /// child that dies instantly), and a non-zero exit logs the exit code plus
-  /// bounded stderr. Returns `nil` on non-zero exit.
+  /// bounded stderr. Always returns the outcome — including on a non-zero
+  /// exit, so a caller that needs the real exit code (e.g. a job-publish
+  /// `detail`) doesn't have to re-run anything; callers that only care about
+  /// success check `exitCode == 0`.
   private func spawn(
     _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
-  ) async -> SpawnOutcome? {
+  ) async -> SpawnOutcome {
     log(
       "\(context) on_end: spawning \(stage.rawValue) \(arguments.joined(separator: " ")) "
         + "for session '\(sessionID)'")
@@ -277,7 +359,7 @@ public struct OnClosePipelineRunner: Sendable {
       if stage == .summarize, let presets = envelope?.presetOutputs, !presets.isEmpty {
         log("\(context) on_end: \(Self.presetSummary(presets)) for session '\(sessionID)'")
       }
-      return nil
+      return outcome
     }
     log("\(context) on_end: \(stage.rawValue) succeeded for session '\(sessionID)'")
     return outcome

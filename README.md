@@ -28,17 +28,20 @@ cd all-ears
 make install
 ```
 
-`make install` builds the release binaries, signs them, installs the five tools
-(`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`) to `~/.local/bin`, and
-registers `earsd` as a per-user launchd **LaunchAgent** — started at login, kept
-alive, and restarted on crash. Check it's running:
+`make install` builds the release binaries, signs them, installs the five CLI/daemon
+tools (`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`) to `~/.local/bin`,
+assembles and installs the **All Ears.app** menu bar app (`ears-menubar`) to
+`~/Applications`, and registers `earsd` as a per-user launchd **LaunchAgent** —
+started at login, kept alive, and restarted on crash. The menu bar app is also
+buildable on its own with `make menubar`. Check it's running:
 
 ```sh
 ears status
 ```
 
 - **Where things go.** Binaries → `$PREFIX/bin` (default `~/.local`; if that
-  isn't on your `PATH`, `make install` prints the line to add). LaunchAgent →
+  isn't on your `PATH`, `make install` prints the line to add). Menu bar app →
+  `~/Applications/All Ears.app`. LaunchAgent →
   `~/Library/LaunchAgents/net.tomelliot.ears.earsd.plist`. Pre-logger crash
   output → `~/Library/Logs/ears/`. Your config, recordings, and transcripts live
   under `~/.config/ears`, `~/Library/Application Support/ears`, and
@@ -54,8 +57,8 @@ ears status
   an upgrade.
 - **Upgrade.** Re-run `make install` (or `make reinstall`) after `git pull`; it
   rebuilds, re-signs, and reloads the agent onto the new binary.
-- **Uninstall.** `make uninstall` stops and removes the agent and the binaries.
-  Your recordings, config, and transcripts are left untouched.
+- **Uninstall.** `make uninstall` stops and removes the agent, the binaries, and
+  the menu bar app. Your recordings, config, and transcripts are left untouched.
 
 ### Build without installing
 
@@ -139,7 +142,7 @@ Transcription currently has one model: Parakeet, running locally on the Neural E
 
 ## How it works
 
-A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and nothing is transcribed until asked — except a browser call's session, which transcribes itself on end. Four small tools operate on that store and its output:
+A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends, for whichever sessions asked for it (the menu bar app and the browser extension do; `ears session start` stays inert unless you pass `--on-end-stage`). Five small tools operate on that store and its output:
 
 | Tool | Job |
 |------|-----|
@@ -148,6 +151,7 @@ A single always-on daemon (`earsd`) owns the recording session lifecycle: it boo
 | `transcribe` | Turns a session's captured audio into a transcript, batch or live. |
 | `cleanup` | Corrects a transcript with an LLM, guided by your vocabulary. |
 | `summarize` | Produces summaries from a transcript using configurable prompts. |
+| `ears-menubar` | Menu bar app: session control, pipeline visibility, and notifications from the same control socket. |
 
 Each is a separate binary sharing only the on-disk formats and the control socket. No tool depends on another running. See [`docs/overview.md`](docs/overview.md) for the full architecture, data formats, and configuration reference.
 
@@ -157,6 +161,6 @@ Active development. Capture and live transcription (mic, system audio, per-app, 
 
 ## Project layout
 
-- [`daemon/`](daemon/): the Swift package holding `earsd`, `ears`, `transcribe`, `cleanup`, and `summarize`.
+- [`daemon/`](daemon/): the Swift package holding `earsd`, `ears`, `transcribe`, `cleanup`, `summarize`, and the menu bar app (`ears-menubar`).
 - [`browser/`](browser/): the Chrome/Firefox extension that routes meeting-tab audio to the daemon.
 - [`docs/`](docs/): architecture, specs, configuration, and product docs.

@@ -76,6 +76,94 @@ struct SessionRegistryTests {
     #expect(timeline.map(\.event) == ["started", "interval_opened"])
   }
 
+  @Test("a declared on-end chain is persisted; undeclared and opted-out stay distinct")
+  func startPersistsDeclaredOnEndStages() async throws {
+    let dataRoot = try makeDataRoot()
+    let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
+
+    let declared = try await registry.start(
+      SessionStartParams(sources: ["mic"], onEndStages: ["transcribe"]))
+    #expect(declared.onEndStages == ["transcribe"])
+    #expect(
+      try SessionStore.read(sessionID: declared.id, dataRoot: dataRoot).onEndStages
+        == ["transcribe"])
+
+    // `[]` is a declaration ("run nothing"), not the absent sentinel — the
+    // difference is what makes a per-session opt-out possible at all.
+    let optedOut = try await registry.start(SessionStartParams(sources: ["mic"], onEndStages: []))
+    #expect(try SessionStore.read(sessionID: optedOut.id, dataRoot: dataRoot).onEndStages == [])
+
+    let undeclared = try await registry.start(SessionStartParams(sources: ["mic"]))
+    #expect(try SessionStore.read(sessionID: undeclared.id, dataRoot: dataRoot).onEndStages == nil)
+  }
+
+  @Test("an on-end chain declared on a re-declare replaces the original")
+  func redeclareUpdatesOnEndStages() async throws {
+    let dataRoot = try makeDataRoot()
+    let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
+
+    let first = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "abc", sources: ["mic"],
+        onEndStages: ["transcribe", "cleanup", "summarize"]))
+
+    // The caller changed its mind: it will run the stages itself, with its own
+    // flags. Dropping this on the idempotent path meant the daemon spawned the
+    // original chain anyway at session end — a model load and a per-preset LLM
+    // bill the caller explicitly opted out of — and returned the stale
+    // declaration, so nothing signalled that the opt-out was ignored.
+    let optedOut = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc", onEndStages: []))
+    #expect(optedOut.id == first.id)
+    #expect(optedOut.onEndStages == [])
+    #expect(try SessionStore.read(sessionID: first.id, dataRoot: dataRoot).onEndStages == [])
+
+    // …and the mirror case, declaring a chain onto a session that opted out.
+    let optedIn = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc", onEndStages: ["transcribe"]))
+    #expect(optedIn.onEndStages == ["transcribe"])
+    #expect(
+      try SessionStore.read(sessionID: first.id, dataRoot: dataRoot).onEndStages == ["transcribe"])
+  }
+
+  @Test("a re-declare that names no chain leaves the original declaration alone")
+  func redeclareWithoutStagesKeepsDeclaration() async throws {
+    let dataRoot = try makeDataRoot()
+    let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
+
+    let first = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc", onEndStages: ["transcribe"]))
+    // `nil` is "undeclared", not "run nothing" — a reconnecting extension that
+    // never mentions stages must not silently cancel the chain.
+    let again = try await registry.start(
+      SessionStartParams(platform: "meet", externalID: "abc"))
+
+    #expect(again.id == first.id)
+    #expect(again.onEndStages == ["transcribe"])
+  }
+
+  @Test("a declared on-end chain the daemon cannot run is rejected at start, not at end")
+  func startRejectsUnrunnableOnEndChain() async throws {
+    let dataRoot = try makeDataRoot()
+    let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
+
+    // A typo, and an LLM-only chain: both resolve to no stages at session end,
+    // so accepting them meant a session that was never transcribed while
+    // `session start` exited 0 echoing back exactly what was asked for.
+    for bad in [["transcript"], ["summarize"], ["transcribe", "nope"]] {
+      await #expect(throws: SessionRegistryError.self) {
+        try await registry.start(SessionStartParams(sources: ["mic"], onEndStages: bad))
+      }
+    }
+    // Nothing was created for any of them.
+    #expect(await registry.list().isEmpty)
+
+    // The valid shapes still pass, including the explicit opt-out.
+    _ = try await registry.start(SessionStartParams(sources: ["mic"], onEndStages: []))
+    _ = try await registry.start(
+      SessionStartParams(sources: ["mic"], onEndStages: ["summarize", "transcribe"]))
+  }
+
   @Test("a browser session folds in the configured local sources it can capture")
   func startInjectsLocalBrowserSources() async throws {
     let dataRoot = try makeDataRoot()

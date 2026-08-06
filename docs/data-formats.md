@@ -110,7 +110,7 @@ A reader reconstructs available audio for any range from `chunk` events, uses `v
 
 ## Sessions (`sessions/<uuid>/`)
 
-The daemon-owned [Session](./specs/control-protocol.md#session) entity — the one lifecycle record. `session.toml` (**schema 3**) carries the fields of the wire's session object — identity, title, state, transcription intervals, roster, sources, trigger, transcript-completion marker — written atomically on every mutation and reloaded at daemon start. Optional scalar fields use an empty string for "absent"; `rev` is deliberately not persisted (revisions are scoped to a daemon boot).
+The daemon-owned [Session](./specs/control-protocol.md#session) entity — the one lifecycle record. `session.toml` (**schema 3**) carries the fields of the wire's session object — identity, title, state, transcription intervals, roster, sources, trigger, declared on-end chain, transcript-completion marker — written atomically on every mutation and reloaded at daemon start. Optional scalar fields use an empty string for "absent"; `on_end_stages` is the exception, where an absent key and an empty array mean different things (see below); `rev` is deliberately not persisted (revisions are scoped to a daemon boot).
 
 ```toml
 schema = 3
@@ -125,6 +125,11 @@ transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succe
                                         #   the marker retention keys off
 trigger = "browser-extension"           # manual | browser-extension
 sources = ["mic", "browser:meet:jane-a1b2"]
+on_end_stages = ["transcribe"]          # the chain this session's starter declared.
+                                        #   Absent key = declared nothing (the daemon
+                                        #   applies its per-trigger default); [] = an
+                                        #   explicit "run no stages". The one field
+                                        #   where absent and empty differ.
 
 [[interval]]                            # transcription marks over the recording;
 start = "2026-07-19T10:00:00Z"          #   pause closes one, resume opens the next

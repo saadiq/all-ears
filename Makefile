@@ -33,14 +33,32 @@ PLIST_DEST    := $(LAUNCH_AGENTS)/$(LABEL).plist
 ENTITLEMENTS  := packaging/earsd.entitlements
 LOGDIR        := $(HOME)/Library/Logs/ears
 
+MENUBAR_BIN   := ears-menubar
+APP_NAME      := All Ears
+APP_BUNDLE_ID := net.tomelliot.ears.menubar
+APP_STAGE     := $(RELEASE)/$(APP_NAME).app
+APP_DEST      := $(HOME)/Applications/$(APP_NAME).app
+MENUBAR_PLIST := packaging/ears-menubar.Info.plist
+ICON_SRC      := docs/brand/exports/icon-tile-light-1024.png
+
 # Stable code-signing identity. Leave empty to auto-detect a "Developer ID
 # Application" identity, falling back to ad-hoc (`--sign -`) with a warning.
 SIGN_IDENTITY ?=
 
+# Resolve the codesign identity: explicit SIGN_IDENTITY, else the first
+# "Developer ID Application" in the keychain, else ad-hoc ("-").
+define RESOLVE_IDENTITY
+IDENTITY="$(SIGN_IDENTITY)"; \
+if [ -z "$$IDENTITY" ]; then \
+  IDENTITY="$$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/Developer ID Application/ {print $$2; exit}')"; \
+fi; \
+if [ -z "$$IDENTITY" ]; then IDENTITY="-"; fi
+endef
+
 # Installs are a strict ordered sequence; never parallelize them.
 .NOTPARALLEL:
 
-.PHONY: help build sign install install-bin install-agent \
+.PHONY: help build sign install install-bin install-agent menubar uninstall-menubar \
         uninstall uninstall-bin uninstall-agent reinstall status guard-user
 
 # --- Top-level targets ----------------------------------------------------
@@ -53,6 +71,7 @@ help:
 	@echo "  make uninstall    Stop/remove the LaunchAgent and the installed binaries"
 	@echo "  make reinstall    Reinstall over an existing install (upgrade in place)"
 	@echo "  make status       Show the LaunchAgent state and \`ears status\`"
+	@echo "  make menubar      Build, sign, and install the All Ears menu bar app"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PREFIX=$(PREFIX)"
@@ -69,11 +88,8 @@ build:
 # identity but need no entitlements.
 sign: build
 	@echo "==> Signing binaries"
-	@IDENTITY="$(SIGN_IDENTITY)"; \
-	if [ -z "$$IDENTITY" ]; then \
-	  IDENTITY="$$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/Developer ID Application/ {print $$2; exit}')"; \
-	fi; \
-	if [ -z "$$IDENTITY" ]; then \
+	@$(RESOLVE_IDENTITY); \
+	if [ "$$IDENTITY" = "-" ]; then \
 	  echo "  WARNING: no 'Developer ID Application' signing identity found."; \
 	  echo "           Falling back to ad-hoc signing (--sign -)."; \
 	  echo "           macOS ties the microphone / system-audio grant to the code-"; \
@@ -81,7 +97,6 @@ sign: build
 	  echo "           rebuild, so macOS may re-prompt (or silently drop the grant)"; \
 	  echo "           after a reinstall. For a grant that survives upgrades, pass"; \
 	  echo "           SIGN_IDENTITY=\"Developer ID Application: You (TEAMID)\"."; \
-	  IDENTITY="-"; \
 	else \
 	  echo "  signing identity: $$IDENTITY"; \
 	fi; \
@@ -92,7 +107,7 @@ sign: build
 	  codesign --force --options runtime --sign "$$IDENTITY" "$(RELEASE)/$$b"; \
 	done
 
-install: guard-user build sign install-bin install-agent
+install: guard-user build sign install-bin install-agent menubar
 	@echo ""
 	@echo "==> Installed. earsd is running as a LaunchAgent ($(LABEL))."
 	@echo "    Binaries:    $(BINDIR)"
@@ -109,7 +124,7 @@ install: guard-user build sign install-bin install-agent
 
 reinstall: install
 
-uninstall: guard-user uninstall-agent uninstall-bin
+uninstall: guard-user uninstall-agent uninstall-bin uninstall-menubar
 	@echo ""
 	@echo "==> Uninstalled the LaunchAgent and binaries."
 	@echo "    Your data was left in place:"
@@ -181,3 +196,39 @@ uninstall-bin:
 	    $$SUDO rm -f "$(BINDIR)/$$b"; \
 	  fi; \
 	done
+
+# Assemble, sign, and install the All Ears.app menu bar wrapper: a plain
+# LSUIElement bundle around the ears-menubar binary. Staged under $(RELEASE)
+# so a failed assemble/sign never touches the previously-installed app.
+menubar: build
+	@echo "==> Assembling $(APP_NAME).app"
+	@rm -rf "$(APP_STAGE)"
+	@mkdir -p "$(APP_STAGE)/Contents/MacOS" "$(APP_STAGE)/Contents/Resources"
+	@cp "$(MENUBAR_PLIST)" "$(APP_STAGE)/Contents/Info.plist"
+	@cp "$(RELEASE)/$(MENUBAR_BIN)" "$(APP_STAGE)/Contents/MacOS/$(MENUBAR_BIN)"
+	@echo "  render AppIcon.icns from $(ICON_SRC)"
+	@rm -rf "$(RELEASE)/AppIcon.iconset"
+	@mkdir -p "$(RELEASE)/AppIcon.iconset"
+	@for s in 16 32 128 256 512; do \
+	  sips -z $$s $$s "$(ICON_SRC)" --out "$(RELEASE)/AppIcon.iconset/icon_$${s}x$${s}.png" >/dev/null; \
+	  d=$$((s*2)); \
+	  sips -z $$d $$d "$(ICON_SRC)" --out "$(RELEASE)/AppIcon.iconset/icon_$${s}x$${s}@2x.png" >/dev/null; \
+	done
+	@iconutil -c icns "$(RELEASE)/AppIcon.iconset" -o "$(APP_STAGE)/Contents/Resources/AppIcon.icns"
+	@$(RESOLVE_IDENTITY); \
+	echo "  codesign $(APP_NAME).app (identity: $$IDENTITY)"; \
+	codesign --force --options runtime --sign "$$IDENTITY" "$(APP_STAGE)"
+	@echo "==> Installing to $(APP_DEST)"
+	@mkdir -p "$(HOME)/Applications"
+	@rm -rf "$(APP_DEST)"
+	@cp -R "$(APP_STAGE)" "$(APP_DEST)"
+	@pkill -x $(MENUBAR_BIN) 2>/dev/null || true
+	@# Relaunch, but never fail the target on it: `install` depends on this
+	@# recipe, and `open` exits non-zero with no GUI session (a provisioning
+	@# run over SSH) — which would abort the install after it had succeeded.
+	@open "$(APP_DEST)" 2>/dev/null || echo "  (could not launch $(APP_NAME).app; open it yourself)"
+
+uninstall-menubar:
+	@echo "==> Removing $(APP_DEST)"
+	@pkill -x $(MENUBAR_BIN) 2>/dev/null || true
+	@rm -rf "$(APP_DEST)"

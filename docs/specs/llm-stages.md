@@ -60,7 +60,7 @@ transcribe --session "$SESSION_ID" \
   && summarize "$OUT/…standup.clean.md" --preset brief --preset actions
 ```
 
-The daemon runs this chain itself when a browser session ends (`[earsd.sessions] on_end_stages`, default all three stages — see [capture-daemon](capture-daemon.md)). Any stage can still be run alone against an existing file.
+The daemon runs this chain itself when a session that asked for it ends — declared per session at `session.start`, or, for a session that declared nothing, the per-trigger default (`[earsd.sessions] on_end_stages`, which browser sessions inherit — see [capture-daemon](capture-daemon.md)). Any stage can still be run alone against an existing file, and a client that intends to do exactly that declares `on_end_stages: []` so the daemon stays out of its way.
 
 ### Output-path contract (stdout)
 

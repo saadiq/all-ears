@@ -13,6 +13,7 @@ The design follows the Unix philosophy: each tool does one job, tools compose th
 | `transcribe` | Turn captured audio for a session (or a raw time range) into a transcript, batch or live. |
 | `cleanup` | Correct a transcript with an LLM, guided by your vocabulary list. |
 | `summarize` | Produce summaries from transcripts using configurable prompt presets. |
+| `ears-menubar` | Menu bar app: dropdown session control, pipeline visibility, and notifications, driven by the control socket. |
 
 Each is a separate binary. They share nothing but the [data formats](./data-formats.md) on disk and the control socket.
 
@@ -42,10 +43,11 @@ A **session** is the one lifecycle entity: a daemon-owned record (UUID, title, s
 Built and in use:
 
 - Capture: mic, system audio, per-app audio (Core Audio process taps), and browser-pushed per-participant audio; dual-rate storage; transcript-driven retention; sleep/wake and restart gap recording.
-- The daemon-owned session lifecycle ([control protocol v2](./specs/control-protocol.md)): idempotent start, pause/resume marks, attendee roster, orphan grace, and the session-end pipeline (transcribe → cleanup → summarize) for browser calls.
+- The daemon-owned session lifecycle ([control protocol v2](./specs/control-protocol.md)): idempotent start, pause/resume marks, attendee roster, orphan grace, and the session-end pipeline (transcribe → cleanup → summarize), which each session declares for itself at `session.start`.
 - Transcription: batch and live (`--follow`) via Parakeet/FluidAudio on the Apple Neural Engine, with VAD silence-skipping and natural-pause segmentation.
 - LLM cleanup (with validation guardrails) and preset-based summaries via a subprocess backend (the `llm` CLI by default).
 - Browser extension: per-participant capture and real-name identity on Google Meet, Zoom web; `Speaker N` attribution on Teams.
+- Menu bar app (`ears-menubar`, [plan](./plans/menubar-app.md)): dropdown session control, pipeline visibility, and notifications from the daemon's control socket — stage 1 only; a richer dashboard window is future work.
 
 Not built yet:
 

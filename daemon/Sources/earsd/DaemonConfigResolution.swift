@@ -171,62 +171,31 @@ enum DaemonConfigResolution {
     var bitrate: Int
   }
 
+  /// Which entries become capture sources is ``CaptureSourceEntry``'s call, in
+  /// `EarsCore` — shared with the menu bar app, which has to name exactly the
+  /// ids this daemon will capture. What is left here is the part only `earsd`
+  /// needs: turning a capturable entry into a full ``SourceDescriptor``.
   private static func resolveSource(
     _ entry: ConfigValue, defaults: SourceCaptureDefaults, now: Instant
   ) -> SourceResolution {
-    guard case .table(let fields) = entry else {
-      return .skipped(
-        SkippedSource(id: "?", reason: "[[earsd.source]] entry is not a table; skipping"))
-    }
-    guard case .string(let rawID)? = fields["id"], !rawID.isEmpty else {
-      return .skipped(
-        SkippedSource(id: "?", reason: "[[earsd.source]] entry has no 'id'; skipping"))
-    }
-    guard case .string(let rawClass)? = fields["class"] else {
-      return .skipped(SkippedSource(id: rawID, reason: "source '\(rawID)' has no 'class'"))
-    }
-    guard let sourceClass = SourceClass(rawValue: rawClass) else {
-      return .skipped(
-        SkippedSource(id: rawID, reason: "source '\(rawID)' has unrecognised class '\(rawClass)'")
-      )
-    }
-    if case .bool(false)? = fields["enabled"] {
-      return .skipped(SkippedSource(id: rawID, reason: "source '\(rawID)' is disabled in config"))
-    }
-    switch sourceClass {
-    case .mic:
-      break
-    case .system:
-      guard rawID == "system" else {
-        return .skipped(
-          SkippedSource(
-            id: rawID,
-            reason: "source '\(rawID)' has class 'system' but id must be exactly 'system'")
-        )
-      }
-    case .app:
-      guard let detail = SourceID(rawID).detail, !detail.isEmpty else {
-        return .skipped(
-          SkippedSource(
-            id: rawID,
-            reason: "source '\(rawID)' has class 'app' but id must be 'app:<bundle-id>'")
-        )
-      }
-    case .browser, .device:
-      return .skipped(
-        SkippedSource(
-          id: rawID,
-          reason: "source '\(rawID)' has class '\(rawClass)', which is not yet supported"
-        ))
+    let id: SourceID
+    let sourceClass: SourceClass
+    switch CaptureSourceEntry.resolve(entry) {
+    case .capturable(let resolvedID, let resolvedClass):
+      id = resolvedID
+      sourceClass = resolvedClass
+    case .skipped(let skippedID, let reason):
+      return .skipped(SkippedSource(id: skippedID, reason: reason))
     }
 
+    let fields = asTable(entry)
     let label = string(fields, "label", default: "")
     let deviceUID = string(fields, "device_uid", default: "")
 
     return .included(
       SourceDescriptor(
         schema: metaSchemaVersion,
-        id: SourceID(rawID),
+        id: id,
         sourceClass: sourceClass,
         label: label,
         deviceUID: deviceUID,

@@ -69,6 +69,32 @@ struct ControlRequestFrameTests {
     #expect(expected.identity == SessionIdentity(platform: "meet", externalID: "abc"))
   }
 
+  @Test("session.start carries the declared on-end chain, keeping [] distinct from absent")
+  func decodesSessionStartOnEndStages() throws {
+    let declared = try decode(
+      "{\"id\":9,\"method\":\"session.start\",\"params\":{\"on_end_stages\":[\"transcribe\"]}}")
+    guard case .call(_, .sessionStart(let params)) = declared else {
+      Issue.record("expected sessionStart")
+      return
+    }
+    #expect(params.onEndStages == ["transcribe"])
+
+    let optedOut = try decode(
+      "{\"id\":9,\"method\":\"session.start\",\"params\":{\"on_end_stages\":[]}}")
+    guard case .call(_, .sessionStart(let empty)) = optedOut else {
+      Issue.record("expected sessionStart")
+      return
+    }
+    #expect(empty.onEndStages == [])
+
+    let absent = try decode("{\"id\":9,\"method\":\"session.start\",\"params\":{}}")
+    guard case .call(_, .sessionStart(let undeclared)) = absent else {
+      Issue.record("expected sessionStart")
+      return
+    }
+    #expect(undeclared.onEndStages == nil)
+  }
+
   @Test("session.start with no identity params is a manual session")
   func manualSessionStart() throws {
     let frame = try decode("{\"id\":4,\"method\":\"session.start\"}")

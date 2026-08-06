@@ -14,10 +14,10 @@ import Testing
 /// (inherited by the spawned `transcribe`), and a scripted `[llm] command`
 /// for the LLM stages. The stage binaries are resolved from the build
 /// products directory via the daemon's `PATH` — the same `/usr/bin/env`
-/// resolution production uses. The browser-extension trigger (the only kind
-/// that fires the hook) is driven over the real control socket with
-/// `EarsIPC.ControlSocketClient`, since `ears` deliberately has no flag for
-/// it.
+/// resolution production uses. The browser-extension trigger — one of the
+/// hook's now-multiple trigger kinds — is driven over the real control
+/// socket with `EarsIPC.ControlSocketClient`, since `ears` deliberately has
+/// no flag for it.
 @Suite("CLI Smoke: on-end --json chain")
 struct OnEndChainSmokeTests {
   private final class BundleMarker {}
@@ -38,10 +38,13 @@ struct OnEndChainSmokeTests {
 
   private enum SetupError: Error, CustomStringConvertible {
     case binaryNotFound(String)
+    case socketNeverAppeared(String)
     var description: String {
       switch self {
       case .binaryNotFound(let path):
         return "expected a built binary at \(path) -- run `swift build` before `swift test`"
+      case .socketNeverAppeared(let path):
+        return "earsd's control socket never appeared at \(path)"
       }
     }
   }
@@ -88,10 +91,40 @@ struct OnEndChainSmokeTests {
       .map { root + "/" + $0 }
   }
 
-  @Test(
-    "ending a browser-triggered session runs the real transcribe → cleanup → summarize chain over --json envelopes",
-    .timeLimit(.minutes(2)))
-  func onEndChainRunsRealStagesWithJSONEnvelopes() async throws {
+  /// A running `earsd`, wired for hermetic on-end runs, and the paths a test
+  /// needs to drive/inspect it. `daemon`/`tempDir` are exposed so callers can
+  /// terminate the process and let the temp dir's `deinit` clean up.
+  private struct OnEndDaemonHarness {
+    var socketPath: String
+    var outputRoot: URL
+    var daemonLogPath: String
+    var daemon: Process
+    var tempDir: URL
+    /// Retains the `TempDirectory` for the harness's lifetime. Its `deinit`
+    /// removes the directory on disk, so this must outlive the daemon
+    /// process: the on-end chain re-reads `EARS_CONFIG` (the config file
+    /// under `tempDir`) when it spawns transcribe/cleanup/summarize, well
+    /// after `bootOnEndDaemon` has returned.
+    private let keepAliveTempDirectory: TempDirectory
+
+    init(
+      socketPath: String, outputRoot: URL, daemonLogPath: String, daemon: Process, tempDir: URL,
+      keepAliveTempDirectory: TempDirectory
+    ) {
+      self.socketPath = socketPath
+      self.outputRoot = outputRoot
+      self.daemonLogPath = daemonLogPath
+      self.daemon = daemon
+      self.tempDir = tempDir
+      self.keepAliveTempDirectory = keepAliveTempDirectory
+    }
+  }
+
+  /// Boots a real earsd wired for hermetic on-end runs (null ASR, scripted
+  /// LLM, no sources): temp config + fake-llm script, spawns `earsd` with the
+  /// products directory first on `PATH` so it resolves the real built stage
+  /// binaries, and polls until the control socket appears.
+  private static func bootOnEndDaemon(label: String) throws -> OnEndDaemonHarness {
     let temp = TempDirectory()
     let dataRoot = temp.url.appendingPathComponent("data").path
     let outputRoot = temp.url.appendingPathComponent("out").path
@@ -99,8 +132,7 @@ struct OnEndChainSmokeTests {
     let stageLogPath = temp.url.appendingPathComponent("stages.jsonl").path
     // `sun_path` caps at 104 bytes, so /tmp — not the temp dir — per the
     // package-wide precedent.
-    let socketPath = "/tmp/ears-onend-\(UUID().uuidString.prefix(8)).sock"
-    defer { try? FileManager.default.removeItem(atPath: socketPath) }
+    let socketPath = "/tmp/ears-\(label)-\(UUID().uuidString.prefix(8)).sock"
     let scriptPath = try Self.writeFakeLLMScript(in: temp)
     let configPath = temp.write(
       """
@@ -146,10 +178,6 @@ struct OnEndChainSmokeTests {
     let stderrPipe = Pipe()
     daemon.standardError = stderrPipe
     try daemon.run()
-    defer {
-      daemon.terminate()
-      daemon.waitUntilExit()
-    }
 
     // Wait for the control socket — proof `EarsDaemon.start()` finished.
     var socketReady = false
@@ -158,12 +186,36 @@ struct OnEndChainSmokeTests {
         socketReady = true
         break
       }
-      try await Task.sleep(for: .milliseconds(20))
+      Thread.sleep(forTimeInterval: 0.02)
     }
-    try #require(socketReady, "earsd's control socket never appeared at \(socketPath)")
+    guard socketReady else {
+      daemon.terminate()
+      daemon.waitUntilExit()
+      throw SetupError.socketNeverAppeared(socketPath)
+    }
 
-    // Drive a browser-triggered session — the only trigger that fires the
-    // on-end hook — over the real control socket.
+    return OnEndDaemonHarness(
+      socketPath: socketPath, outputRoot: URL(fileURLWithPath: outputRoot),
+      daemonLogPath: daemonLogPath, daemon: daemon, tempDir: temp.url,
+      keepAliveTempDirectory: temp)
+  }
+
+  @Test(
+    "ending a browser-triggered session runs the real transcribe → cleanup → summarize chain over --json envelopes",
+    .timeLimit(.minutes(2)))
+  func onEndChainRunsRealStagesWithJSONEnvelopes() async throws {
+    let harness = try Self.bootOnEndDaemon(label: "onend-e2e")
+    defer {
+      harness.daemon.terminate()
+      harness.daemon.waitUntilExit()
+      try? FileManager.default.removeItem(atPath: harness.socketPath)
+    }
+    let socketPath = harness.socketPath
+    let outputRoot = harness.outputRoot.path
+    let daemonLogPath = harness.daemonLogPath
+
+    // Drive the browser-triggered variant of the on-end hook over the real
+    // control socket.
     let client = try await ControlSocketClient.connect(toPath: socketPath)
     try await client.hello(client: "on-end-chain-smoke")
     let session = try await client.send(
@@ -193,8 +245,13 @@ struct OnEndChainSmokeTests {
     // Every stage was spawned in --json mode and succeeded — the envelopes
     // really were parsed (a parse failure would log "exited 0 but failed"
     // and stop the chain before summarize).
+    // `--job-id` carries the daemon's own job identity into the child, so the
+    // two event streams are one row (see OnClosePipelineRunner).
     #expect(
-      daemonLog.contains("spawning transcribe --session \(session.id) --json"),
+      daemonLog.contains("spawning transcribe --session \(session.id) --job-id transcribe-"),
+      "expected the transcribe spawn line with --job-id; daemon log:\n\(daemonLog)")
+    #expect(
+      daemonLog.contains("--json for session '\(session.id)'"),
       "expected the transcribe spawn line with --json; daemon log:\n\(daemonLog)")
     for stage in ["transcribe", "cleanup", "summarize"] {
       #expect(
@@ -218,5 +275,84 @@ struct OnEndChainSmokeTests {
     #expect(
       !Self.files(withSuffix: ".summary.md", under: outputRoot).isEmpty,
       "expected a .summary.md under \(outputRoot)")
+  }
+
+  @Test(
+    "an undeclared manual session spawns nothing, even with a full on_end_stages config",
+    .timeLimit(.minutes(2)))
+  func undeclaredManualSessionSpawnsNothing() async throws {
+    let harness = try Self.bootOnEndDaemon(label: "onend-inert")
+    defer {
+      harness.daemon.terminate()
+      harness.daemon.waitUntilExit()
+    }
+
+    let client = try await ControlSocketClient.connect(toPath: harness.socketPath)
+    try await client.hello(client: "onend-inert")
+    let session = try await client.send(
+      .sessionStart(SessionStartParams(title: "inert smoke", sources: ["mic"])),
+      expecting: Session.self)
+    #expect(session.onEndStages == nil)
+    try await Task.sleep(for: .milliseconds(1_500))  // session persistence is 1 s resolution
+    _ = try await client.send(.sessionEnd(session: session.id), expecting: Session.self)
+    await client.close()
+
+    // The chain would spawn within milliseconds of session.end returning; give
+    // it far longer than that before concluding it never did.
+    try await Task.sleep(for: .milliseconds(2_000))
+    let daemonLog = (try? String(contentsOfFile: harness.daemonLogPath, encoding: .utf8)) ?? ""
+    #expect(
+      !daemonLog.contains("spawning transcribe --session \(session.id)"),
+      "a manual session that declared no chain must not spawn one; daemon log:\n\(daemonLog)")
+  }
+
+  @Test(
+    "a manual session that declares a chain runs it and publishes job events for every stage",
+    .timeLimit(.minutes(2)))
+  func declaredManualSessionEndPublishesJobEvents() async throws {
+    let harness = try Self.bootOnEndDaemon(label: "onend-manual")
+    defer {
+      harness.daemon.terminate()
+      harness.daemon.waitUntilExit()
+    }
+
+    let watcher = try await ControlSocketClient.connect(toPath: harness.socketPath)
+    try await watcher.hello(client: "onend-manual-watch")
+    let (_, events) = try await watcher.subscribe(SubscribeParams(events: [.job]))
+    let collector = Task { () -> [JobPublishParams] in
+      var jobs: [JobPublishParams] = []
+      for await frame in events {
+        guard case .job(let params) = frame.event else { continue }
+        jobs.append(params)
+        let doneKinds = Set(jobs.filter { $0.state == .done }.map(\.kind))
+        if doneKinds.isSuperset(of: ["transcribe", "cleanup", "summarize"]) { break }
+      }
+      return jobs
+    }
+
+    let client = try await ControlSocketClient.connect(toPath: harness.socketPath)
+    try await client.hello(client: "onend-manual")
+    // A manual session gets no chain by default — it has to ask, which is the
+    // contract this test exists to pin (the menu bar app asks the same way).
+    let session = try await client.send(
+      .sessionStart(
+        SessionStartParams(
+          title: "manual smoke", sources: ["mic"],
+          onEndStages: ["transcribe", "cleanup", "summarize"])),
+      expecting: Session.self)
+    #expect(session.trigger == .manual)
+    #expect(session.onEndStages == ["transcribe", "cleanup", "summarize"])
+    try await Task.sleep(for: .milliseconds(1_500))  // session persistence is 1 s resolution
+    let ended = try await client.send(.sessionEnd(session: session.id), expecting: Session.self)
+    #expect(ended.state == .ended)
+
+    let jobs = await collector.value
+    for kind in ["transcribe", "cleanup", "summarize"] {
+      #expect(jobs.contains { $0.kind == kind && $0.state == .started }, "missing \(kind) started")
+      #expect(jobs.contains { $0.kind == kind && $0.state == .done }, "missing \(kind) done")
+    }
+    #expect(jobs.allSatisfy { $0.session == session.id })
+    await watcher.close()
+    await client.close()
   }
 }

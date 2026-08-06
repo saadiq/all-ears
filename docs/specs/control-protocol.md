@@ -16,7 +16,7 @@ maintainability, never for transition safety.
 ## One job
 
 One transport-agnostic contract that lets any frontend — the `ears` CLI, the browser extension,
-a future menu-bar app, the extension popup, several of them at once — drive and observe the
+the menu-bar app (`ears-menubar`), the extension popup, several of them at once — drive and observe the
 daemon: sources, capture, **sessions** (start/end, pause/resume-as-marks, attendees, title),
 and the live feed. Identical frames over the Unix socket and the loopback control
 WebSocket; privilege differs by transport, not by dialect.
@@ -152,10 +152,23 @@ Semantics:
 - **Attendees are a roster with join/leave times**, upserted by whoever knows them (the
   extension's DOM layer today). `source` links an attendee to their per-participant audio
   source, which downstream feeds the transcript's speaker labels.
+- **Post-processing is declared at `session.start`, not inferred.** The optional `on_end_stages`
+  names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
+  `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at
+  the call site, instead of editing daemon config. Omit the field and the daemon applies its
+  default for the trigger: browser-extension sessions inherit `[earsd.sessions] on_end_stages`,
+  every other trigger runs nothing. A declared chain is honoured exactly or refused: a name
+  the daemon cannot run — an unknown stage, or `cleanup`/`summarize` with no `transcribe` to
+  feed them — fails the `session.start` call with `invalid_request` rather than resolving to a
+  smaller chain (or to nothing) at session end, hours after the caller could have been told.
+  Config entries stay lenient by contrast: nobody is waiting on a boot warning. The
+  declaration is persisted in `session.toml`, so it survives a daemon restart between start
+  and end, and a re-declare that names a chain replaces the stored one — `[]` on a re-declare
+  is how a client cancels a chain it asked for earlier.
 - **On `session.end`,** the daemon closes the open interval, finalizes the session record
   (`session.toml` holds the intervals and roster that transcription reads directly), and stops
-  capture. For browser-triggered sessions the daemon then runs the on-end pipeline
-  (`transcribe --session <id>`, then `cleanup` and `summarize` over its output — see
+  capture. It then runs whatever chain the session resolved to (`transcribe --session <id>`,
+  then `cleanup` and `summarize` over its output — see
   [capture-daemon](capture-daemon.md#session-end-pipeline)); when the transcribe stage exits 0
   the daemon stamps `transcript_completed`, which starts the retention clock
   ([capture-daemon](capture-daemon.md#storage-maintenance-and-retention)).
@@ -184,7 +197,7 @@ Grouped by capability. All carried in the v2 envelope.
 | — | `hello` | see [Handshake](#handshake) |
 | `observe` | `status` | → `{uptime_s, sources, sessions}` — daemon + per-source state, active sessions |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
-| `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session |
+| `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing"; a chain naming a stage the daemon cannot run → `invalid_request`. A re-declare that names a chain replaces the stored one |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
 | `sessions` | `session.pause` | `{session}` → session. Closes open interval; no-op success if already paused |
 | `sessions` | `session.resume` | `{session}` → session. Opens a new interval; no-op success if active |
@@ -193,7 +206,7 @@ Grouped by capability. All carried in the v2 envelope.
 | `sessions` | `session.list` | `{}` → live + recent sessions (ended history is read from disk, not the socket) |
 | `sessions` | `session.get` | `{session}` → session |
 | `publish` | `segment.publish` | `{session, speaker, start, end, text}` → `{}`. Notification-only republish from `transcribe --follow` |
-| `publish` | `job.publish` | `{job, kind: "transcribe", session?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing |
+| `publish` | `job.publish` | `{job, kind: "transcribe"\|"cleanup"\|"summarize", session?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing. `transcribe` reports itself; the daemon's on-end chain reports `cleanup` and `summarize`. |
 | `sources` | `sources.list` / `sources.enable` / `sources.disable` | source listing and enable/disable |
 | `admin` | `sources.add` / `sources.remove` / `capture.pause` / `capture.resume` / `flush` | runtime source mutation and capture control |
 

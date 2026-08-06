@@ -34,6 +34,17 @@ public struct Session: Sendable, Hashable {
   public var sources: [SourceID]
   /// Provenance: what started this session.
   public var trigger: TriggerKind
+  /// The post-processing chain this session's *starter* asked for, by stage
+  /// name (`transcribe`, `cleanup`, `summarize`) — policy declared at the call
+  /// site rather than inferred by the daemon from ``trigger``.
+  ///
+  /// Tri-state, and the distinction is load-bearing: `nil` means "not
+  /// declared, apply the daemon's default for this trigger", while `[]` means
+  /// "explicitly no chain" — the per-session opt-out for a client that intends
+  /// to run the stages itself with its own flags. Stage names are validated
+  /// when the chain is resolved, not here, so an unknown name is reported and
+  /// dropped like a bad config entry rather than failing `session.start`.
+  public var onEndStages: [String]?
   /// When this session's transcript last completed **successfully** — the
   /// durable marker retention keys off (`docs/specs/capture-daemon.md`'s
   /// "Retention"). `nil` until a transcript run succeeds; once set, the
@@ -56,6 +67,7 @@ public struct Session: Sendable, Hashable {
     attendees: [SessionAttendee] = [],
     sources: [SourceID] = [],
     trigger: TriggerKind = .manual,
+    onEndStages: [String]? = nil,
     transcriptCompleted: Instant? = nil,
     rev: Int = 0
   ) {
@@ -69,6 +81,7 @@ public struct Session: Sendable, Hashable {
     self.attendees = attendees
     self.sources = sources
     self.trigger = trigger
+    self.onEndStages = onEndStages
     self.transcriptCompleted = transcriptCompleted
     self.rev = rev
   }
@@ -152,6 +165,7 @@ extension Session: Codable {
   private enum CodingKeys: String, CodingKey {
     case id, identity, title, state, started, ended, intervals, attendees, sources, trigger, rev
     case transcriptCompleted = "transcript_completed"
+    case onEndStages = "on_end_stages"
   }
 
   public init(from decoder: any Decoder) throws {
@@ -166,6 +180,9 @@ extension Session: Codable {
     attendees = try container.decodeIfPresent([SessionAttendee].self, forKey: .attendees) ?? []
     sources = try container.decodeIfPresent([SourceID].self, forKey: .sources) ?? []
     trigger = try container.decode(TriggerKind.self, forKey: .trigger)
+    // `decodeIfPresent` keeps the tri-state: an absent key stays `nil`
+    // ("undeclared"), an explicit `[]` decodes as an empty list ("no chain").
+    onEndStages = try container.decodeIfPresent([String].self, forKey: .onEndStages)
     transcriptCompleted = try container.decodeISO8601InstantIfPresent(forKey: .transcriptCompleted)
     rev = try container.decodeIfPresent(Int.self, forKey: .rev) ?? 0
   }
@@ -182,6 +199,7 @@ extension Session: Codable {
     try container.encode(attendees, forKey: .attendees)
     try container.encode(sources, forKey: .sources)
     try container.encode(trigger, forKey: .trigger)
+    try container.encodeIfPresent(onEndStages, forKey: .onEndStages)
     try container.encodeISO8601InstantIfPresent(transcriptCompleted, forKey: .transcriptCompleted)
     try container.encode(rev, forKey: .rev)
   }
