@@ -76,6 +76,27 @@ struct SessionRegistryTests {
     #expect(timeline.map(\.event) == ["started", "interval_opened"])
   }
 
+  @Test("a declared on-end chain is persisted; undeclared and opted-out stay distinct")
+  func startPersistsDeclaredOnEndStages() async throws {
+    let dataRoot = try makeDataRoot()
+    let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
+
+    let declared = try await registry.start(
+      SessionStartParams(sources: ["mic"], onEndStages: ["transcribe"]))
+    #expect(declared.onEndStages == ["transcribe"])
+    #expect(
+      try SessionStore.read(sessionID: declared.id, dataRoot: dataRoot).onEndStages
+        == ["transcribe"])
+
+    // `[]` is a declaration ("run nothing"), not the absent sentinel — the
+    // difference is what makes a per-session opt-out possible at all.
+    let optedOut = try await registry.start(SessionStartParams(sources: ["mic"], onEndStages: []))
+    #expect(try SessionStore.read(sessionID: optedOut.id, dataRoot: dataRoot).onEndStages == [])
+
+    let undeclared = try await registry.start(SessionStartParams(sources: ["mic"]))
+    #expect(try SessionStore.read(sessionID: undeclared.id, dataRoot: dataRoot).onEndStages == nil)
+  }
+
   @Test("a browser session folds in the configured local sources it can capture")
   func startInjectsLocalBrowserSources() async throws {
     let dataRoot = try makeDataRoot()

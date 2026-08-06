@@ -312,7 +312,8 @@ public actor SessionRegistry {
       started: now,
       intervals: [SessionInterval(start: now)],
       sources: await initialSources(declared: declared, trigger: trigger),
-      trigger: trigger)
+      trigger: trigger,
+      onEndStages: params.onEndStages)
     try persist(session)
     appendEvent(session.id, event: "started", at: now)
     appendEvent(session.id, event: "interval_opened", at: now)

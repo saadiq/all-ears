@@ -69,12 +69,14 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --session`. Default `["mic"]`; `[]` disables.
   public var browserSessionLocalSources: [SourceID]
-  /// `[earsd.sessions].on_end_stages`: the pipeline stages a browser-triggered
-  /// session auto-runs (via the shared ``OnClosePipelineRunner``) when it
-  /// ends, in ``OnEndStage``'s canonical chain order. Default is the full
-  /// `transcribe` → `cleanup` → `summarize` chain; `[]` disables the chain
-  /// entirely — tests inject `[]` so a session end never spawns a real
-  /// subprocess. Resolved and validated by `OnEndStage.resolveList`.
+  /// `[earsd.sessions].on_end_stages`: the **default** chain, in
+  /// ``OnEndStage``'s canonical order, for an ended session whose starter
+  /// declared none of its own. Only browser-extension sessions fall back to
+  /// it — see ``OnEndChainPolicy`` for why, and for the per-session override
+  /// that any client can send instead. Default is the full `transcribe` →
+  /// `cleanup` → `summarize` chain; `[]` disables the fallback entirely —
+  /// tests inject `[]` so a session end never spawns a real subprocess.
+  /// Resolved and validated by `OnEndStage.resolveList`.
   public var onEndStages: [OnEndStage]
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; retained on the
@@ -422,29 +424,32 @@ public actor EarsDaemon {
     // verbs on both control transports. Session end fires the configured
     // on-end stage chain (`transcribe --session <id>`, then `cleanup` and
     // `summarize` over its output — see `OnClosePipelineRunner`).
-    let onSessionEnded: SessionRegistry.EndedHook?
-    if !configuration.onEndStages.isEmpty {
-      let pipeline = OnClosePipelineRunner(
-        log: log,
-        publishJob: { [eventBus] params in await eventBus.publish(.job(params)) })
-      let stages = configuration.onEndStages
-      onSessionEnded = { [weak self] session in
-        guard session.trigger == .browserExtension else { return }
-        // Spawned in its own task so `session.end` never blocks behind a full
-        // transcription-and-LLM run. On transcribe success — and only
-        // transcribe: the LLM stages are derived artifacts and never gate
-        // retention — stamp the transcript-completion marker, which starts
-        // this session's retention clock.
-        Task { [weak self] in
-          let transcribed = await pipeline.runOnEndChain(
-            sessionID: session.id, stages: stages, context: "session-end")
-          if transcribed {
-            await self?.markSessionTranscriptCompleted(session.id)
-          }
+    // Always installed: which stages run is now a per-session question
+    // (``OnEndChainPolicy``), so a session that declares its own chain must
+    // still be honored on a daemon whose configured default is empty.
+    let pipeline = OnClosePipelineRunner(
+      log: log,
+      publishJob: { [eventBus] params in await eventBus.publish(.job(params)) })
+    let configuredStages = configuration.onEndStages
+    let onSessionEnded: SessionRegistry.EndedHook? = { [weak self, log] session in
+      let resolved = OnEndChainPolicy.stages(
+        declared: session.onEndStages, trigger: session.trigger, configured: configuredStages)
+      for problem in resolved.problems {
+        log("session.end on_end_stages: session=\(session.id) \(problem)")
+      }
+      guard !resolved.stages.isEmpty else { return }
+      // Spawned in its own task so `session.end` never blocks behind a full
+      // transcription-and-LLM run. On transcribe success — and only
+      // transcribe: the LLM stages are derived artifacts and never gate
+      // retention — stamp the transcript-completion marker, which starts
+      // this session's retention clock.
+      Task { [weak self] in
+        let transcribed = await pipeline.runOnEndChain(
+          sessionID: session.id, stages: resolved.stages, context: "session-end")
+        if transcribed {
+          await self?.markSessionTranscriptCompleted(session.id)
         }
       }
-    } else {
-      onSessionEnded = nil
     }
     let sessions = SessionRegistry(
       dataRoot: configuration.dataRoot,
