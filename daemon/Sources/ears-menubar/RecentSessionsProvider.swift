@@ -3,6 +3,15 @@ import EarsDataStore
 import EarsMenuKit
 import Foundation
 
+/// One ended session plus its located output files.
+struct RecentSessionItem: Identifiable, Hashable, Sendable {
+  var session: Session
+  var transcript: URL?
+  var clean: URL?
+  var summaries: [URL]
+  var id: String { session.id }
+}
+
 /// Read-only bridge from the on-disk stores to menu items. Never writes —
 /// earsd stays the only writer.
 struct RecentSessionsProvider: Sendable {

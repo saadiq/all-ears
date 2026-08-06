@@ -6,16 +6,6 @@ import Foundation
 import Observation
 import os
 
-/// One ended session plus its located output files (Task 11 fills these in;
-/// until then every AppModel leaves `recents` empty).
-struct RecentSessionItem: Identifiable, Hashable, Sendable {
-  var session: Session
-  var transcript: URL?
-  var clean: URL?
-  var summaries: [URL]
-  var id: String { session.id }
-}
-
 @MainActor @Observable final class AppModel {
   private(set) var state = MenuState()
   private(set) var content = MenuContent(
@@ -35,12 +25,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
-  private let notifier = Notifier()
+  private let announcements = SessionNotifications()
   private let sources: [SourceID]
   private let onEndStages: [String]
-  /// Sessions already warned about via "Recording at risk", so a crash-looping
-  /// daemon warns once per session instead of once per crash.
-  private var warnedAtRiskSessions: Set<String> = []
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "app")
 
   init(config: ClientConfig) {
@@ -67,22 +54,8 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   func start() {
     guard let connection else { return }
-    let dataRoot = self.dataRoot
-    let provider = recentsProvider
-    // `@Sendable` and `async`, so resolving a click never runs the provider's
-    // whole-store scan on the main actor — the click arrives on it, and a store
-    // with thousands of sessions would beachball the menu bar.
-    notifier.bootstrap { action in
-      switch action {
-      case .openSummary(let session):
-        return provider.load(limit: 50).first { $0.session.id == session }?.summaries.first
-      case .revealSession(let session):
-        return DataStoreLayout.sessionDirectory(
-          dataRoot: URL(fileURLWithPath: dataRoot), sessionID: session)
-      case .none:
-        return nil
-      }
-    } report: { [weak self] availability in
+    announcements.bootstrap(dataRoot: dataRoot, provider: recentsProvider) {
+      [weak self] availability in
       self?.notifications = availability
     }
     observeMenuTracking()
@@ -115,7 +88,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
           break
         }
       case .down:
-        warnAtRiskIfNeeded()
+        // Before reducing: the warning is edge-triggered off the state it is
+        // dropping *from*.
+        announcements.warnAtRisk(state: state)
         MenuStateReducer.disconnected(&state)
       }
       rerender()
@@ -123,25 +98,10 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   }
 
   private func handleApplied(_ frame: EventFrame) {
-    if let request = NotificationPolicy.onEvent(frame, state: state) {
-      post(request)
-    }
+    announcements.announce(frame, state: state)
     if RecentsRefreshPolicy.shouldRefresh(for: frame) {
       refreshRecents()
     }
-  }
-
-  private func warnAtRiskIfNeeded() {
-    guard let session = state.activeSession,
-      let request = NotificationPolicy.onDisconnect(
-        state: state, warnedSessions: warnedAtRiskSessions)
-    else { return }
-    warnedAtRiskSessions.insert(session.id)
-    post(request)
-  }
-
-  private func post(_ request: NotificationRequest) {
-    notifier.post(request)
   }
 
   /// Surfaces a failed control call: into the menu, where the user who clicked
@@ -262,18 +222,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   }
 
   private func promptRename(session: String, currentTitle: String) {
-    // NSAlert with an accessory NSTextField; LSUIElement apps must activate first.
-    NSApp.activate(ignoringOtherApps: true)
-    let alert = NSAlert()
-    alert.messageText = "Rename Session"
-    let field = NSTextField(string: currentTitle)
-    field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-    alert.accessoryView = field
-    alert.addButton(withTitle: "Rename")
-    alert.addButton(withTitle: "Cancel")
-    guard alert.runModal() == .alertFirstButtonReturn, let connection else { return }
-    let title = field.stringValue
-    guard !title.isEmpty else { return }
+    guard let title = RenamePrompt.run(currentTitle: currentTitle), let connection else { return }
     send(.sessionRename(SessionRenameParams(session: session, title: title)), connection)
   }
 
