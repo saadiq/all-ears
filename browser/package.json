@@ -2,7 +2,7 @@
   "name": "ears-capture",
   "description": "Streams per-participant meeting audio to the local earsd daemon",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.8",
   "type": "module",
   "scripts": {
     "dev": "wxt",

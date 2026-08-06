@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "scenario": "s1-solo",
+  "shape": "1 local participant (host only)",
+  "corpus_fingerprint": "4f44ff93ada4d11ad5257049325ddbfab1ddd89009e02ce3a3e0a86f897dbf52",
+  "grid": {
+    "sample_rate": 48000,
+    "slot_seconds": 12.0,
+    "tone_seconds": 0.5,
+    "tone_gap_seconds": 0.3,
+    "tone_amplitude": 0.25,
+    "passage_peak_dbfs": -3.0,
+    "preroll_seconds": 30.0,
+    "rounds": 3,
+    "slots": 3,
+    "grid_end_seconds": 36.0,
+    "guard_seconds": 4.791
+  },
+  "tts": {
+    "model": "eleven_multilingual_v2",
+    "output_format": "mp3_44100_128",
+    "seed": 20260806,
+    "voice_settings": {
+      "stability": 0.5,
+      "use_speaker_boost": true,
+      "similarity_boost": 0.75,
+      "style": 0.0
+    }
+  },
+  "overlap": {
+    "pair": null,
+    "slots": []
+  },
+  "participants": [
+    {
+      "label": "host",
+      "display_name": "GT-Host",
+      "role": "local",
+      "wav": "build/s1-solo/host.wav",
+      "wav_sha256": "9082a020e94521504224ffd9be6b95d2a371d657143ac27c3836ca46c9a6ebae",
+      "wav_duration_seconds": 189.0,
+      "scored_end_seconds": 69.0,
+      "head_tone_hz": 383,
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "mic",
+      "turns": [
+        {
+          "slot": 0,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 0.0,
+          "grid_end_seconds": 12.0,
+          "audio_start_seconds": 30.0,
+          "audio_end_seconds": 42.0,
+          "text": "The clay under the back border stays wet all winter, so I forked in leaf mould and coarse grit last autumn.",
+          "raw_sha256": "eda381be27e14007c5d25134bb51b52edffef08694113e1965ded8bb6a292e1f"
+        },
+        {
+          "slot": 1,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 12.0,
+          "grid_end_seconds": 24.0,
+          "audio_start_seconds": 42.0,
+          "audio_end_seconds": 54.0,
+          "text": "Slugs shredded the young hostas again, but the copper ring around the raised bed seems to be holding them off.",
+          "raw_sha256": "18ca0e4f904dc52d4c82328cbd245622eeed76aa81854fd16245c65021137572"
+        },
+        {
+          "slot": 2,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 24.0,
+          "grid_end_seconds": 36.0,
+          "audio_start_seconds": 54.0,
+          "audio_end_seconds": 66.0,
+          "text": "I moved the compost heap nearer the shed and turned it twice, and the middle is already warm enough to steam.",
+          "raw_sha256": "ca029f6fdf2e3ac97ea189cd624e21b0558ccf37422822fca444d704b86c02c4"
+        }
+      ]
+    }
+  ],
+  "run": null
+}

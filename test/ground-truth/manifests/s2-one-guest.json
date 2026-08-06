@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "scenario": "s2-one-guest",
+  "shape": "1 local participant + 1 guest",
+  "corpus_fingerprint": "4f44ff93ada4d11ad5257049325ddbfab1ddd89009e02ce3a3e0a86f897dbf52",
+  "grid": {
+    "sample_rate": 48000,
+    "slot_seconds": 12.0,
+    "tone_seconds": 0.5,
+    "tone_gap_seconds": 0.3,
+    "tone_amplitude": 0.25,
+    "passage_peak_dbfs": -3.0,
+    "preroll_seconds": 30.0,
+    "rounds": 3,
+    "slots": 7,
+    "grid_end_seconds": 84.0,
+    "guard_seconds": 3.677
+  },
+  "tts": {
+    "model": "eleven_multilingual_v2",
+    "output_format": "mp3_44100_128",
+    "seed": 20260806,
+    "voice_settings": {
+      "stability": 0.5,
+      "use_speaker_boost": true,
+      "similarity_boost": 0.75,
+      "style": 0.0
+    }
+  },
+  "overlap": {
+    "pair": [
+      "host",
+      "alpha"
+    ],
+    "slots": [
+      6
+    ]
+  },
+  "participants": [
+    {
+      "label": "host",
+      "display_name": "GT-Host",
+      "role": "local",
+      "wav": "build/s2-one-guest/host.wav",
+      "wav_sha256": "ba2683dcb7442e623ed7458ed459ccfe2c617f3c8b55c1f4e39d82205fb50627",
+      "wav_duration_seconds": 237.0,
+      "scored_end_seconds": 117.0,
+      "head_tone_hz": 383,
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "mic",
+      "turns": [
+        {
+          "slot": 0,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 0.0,
+          "grid_end_seconds": 12.0,
+          "audio_start_seconds": 30.0,
+          "audio_end_seconds": 42.0,
+          "text": "The clay under the back border stays wet all winter, so I forked in leaf mould and coarse grit last autumn.",
+          "raw_sha256": "eda381be27e14007c5d25134bb51b52edffef08694113e1965ded8bb6a292e1f"
+        },
+        {
+          "slot": 2,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 24.0,
+          "grid_end_seconds": 36.0,
+          "audio_start_seconds": 54.0,
+          "audio_end_seconds": 66.0,
+          "text": "Slugs shredded the young hostas again, but the copper ring around the raised bed seems to be holding them off.",
+          "raw_sha256": "18ca0e4f904dc52d4c82328cbd245622eeed76aa81854fd16245c65021137572"
+        },
+        {
+          "slot": 4,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 48.0,
+          "grid_end_seconds": 60.0,
+          "audio_start_seconds": 78.0,
+          "audio_end_seconds": 90.0,
+          "text": "I moved the compost heap nearer the shed and turned it twice, and the middle is already warm enough to steam.",
+          "raw_sha256": "ca029f6fdf2e3ac97ea189cd624e21b0558ccf37422822fca444d704b86c02c4"
+        },
+        {
+          "slot": 6,
+          "passage": "ov",
+          "overlap": true,
+          "grid_start_seconds": 72.0,
+          "grid_end_seconds": 84.0,
+          "audio_start_seconds": 102.0,
+          "audio_end_seconds": 114.0,
+          "text": "The greenhouse vents jam whenever the humidity climbs, so I prop them open with a length of bamboo cane.",
+          "raw_sha256": "0103c98aa1a67d7a0c0f63c399c09fa1b690ea1cb1ede3dba236dde635bf761b"
+        }
+      ]
+    },
+    {
+      "label": "alpha",
+      "display_name": "GT-Alpha",
+      "role": "guest",
+      "wav": "build/s2-one-guest/alpha.wav",
+      "wav_sha256": "2d2106ebc9858355c549a84d15453a16899b4af974a336d8684694d046c58c27",
+      "wav_duration_seconds": 237.0,
+      "scored_end_seconds": 117.0,
+      "head_tone_hz": 521,
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "browser:meet:<resolved-at-run-time>",
+      "turns": [
+        {
+          "slot": 1,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 12.0,
+          "grid_end_seconds": 24.0,
+          "audio_start_seconds": 42.0,
+          "audio_end_seconds": 54.0,
+          "text": "We reefed early because the forecast promised gusts through the afternoon, and the swell was already stacking up outside the harbour.",
+          "raw_sha256": "28d0bec9f9b74d812feaab19e864b4810d7c2dc9a741b4f210e6b07d9315b520"
+        },
+        {
+          "slot": 3,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 36.0,
+          "grid_end_seconds": 48.0,
+          "audio_start_seconds": 66.0,
+          "audio_end_seconds": 78.0,
+          "text": "The tide turned against us near the headland, so we ferry glided across and let the current do the work.",
+          "raw_sha256": "a478add77d7fdb0c2d2ab009617df59192fb9b4b42061552de505413328fb6b3"
+        },
+        {
+          "slot": 5,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 60.0,
+          "grid_end_seconds": 72.0,
+          "audio_start_seconds": 90.0,
+          "audio_end_seconds": 102.0,
+          "text": "Halyards slap all night in the marina, which is why I lash them away from the mast before turning in.",
+          "raw_sha256": "0c516decb72f3f1ba41fcb40cc95c04da2fdc25aeef9782130a73732fab8c76d"
+        },
+        {
+          "slot": 6,
+          "passage": "ov",
+          "overlap": true,
+          "grid_start_seconds": 72.0,
+          "grid_end_seconds": 84.0,
+          "audio_start_seconds": 102.0,
+          "audio_end_seconds": 114.0,
+          "text": "Our chartplotter lost its fix twice on the crossing, so we fell back on the compass and a paper chart.",
+          "raw_sha256": "ccafbf54f113f26582ceb560b88b5fdf1201777d624e51ef88a986983f863a4b"
+        }
+      ]
+    }
+  ],
+  "run": null
+}

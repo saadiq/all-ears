@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "wav": "probe/tone-probe.wav",
+  "wav_sha256": "b734849b52802b4d36b6809ab3a02d98884e6cc05c154293df96009c003084d6",
+  "sample_rate": 48000,
+  "duration_seconds": 100.983,
+  "preroll_seconds": 30.0,
+  "display_name": "GT-Probe",
+  "tone_amplitude": 0.25,
+  "passage_peak_dbfs": -3.0,
+  "windows": [
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 383,
+        "speaker": "host",
+        "pass": 0
+      },
+      "start_seconds": 30.0,
+      "end_seconds": 33.0
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 521,
+        "speaker": "alpha",
+        "pass": 0
+      },
+      "start_seconds": 34.5,
+      "end_seconds": 37.5
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 673,
+        "speaker": "bravo",
+        "pass": 0
+      },
+      "start_seconds": 39.0,
+      "end_seconds": 42.0
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 947,
+        "speaker": "charlie",
+        "pass": 0
+      },
+      "start_seconds": 43.5,
+      "end_seconds": 46.5
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 383,
+        "speaker": "host",
+        "pass": 1
+      },
+      "start_seconds": 51.0,
+      "end_seconds": 54.0
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 521,
+        "speaker": "alpha",
+        "pass": 1
+      },
+      "start_seconds": 55.5,
+      "end_seconds": 58.5
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 673,
+        "speaker": "bravo",
+        "pass": 1
+      },
+      "start_seconds": 60.0,
+      "end_seconds": 63.0
+    },
+    {
+      "kind": "tone",
+      "detail": {
+        "hz": 947,
+        "speaker": "charlie",
+        "pass": 1
+      },
+      "start_seconds": 64.5,
+      "end_seconds": 67.5
+    },
+    {
+      "kind": "speech",
+      "detail": {
+        "passage": "alpha-p1",
+        "text": "We reefed early because the forecast promised gusts through the afternoon, and the swell was already stacking up outside the harbour."
+      },
+      "start_seconds": 75.0,
+      "end_seconds": 82.523
+    },
+    {
+      "kind": "speech",
+      "detail": {
+        "passage": "alpha-p2",
+        "text": "The tide turned against us near the headland, so we ferry glided across and let the current do the work."
+      },
+      "start_seconds": 84.023,
+      "end_seconds": 89.457
+    },
+    {
+      "kind": "speech",
+      "detail": {
+        "passage": "alpha-p3",
+        "text": "Halyards slap all night in the marina, which is why I lash them away from the mast before turning in."
+      },
+      "start_seconds": 90.957,
+      "end_seconds": 96.483
+    }
+  ],
+  "checks": [
+    "audio-reaches-host: a captured browser: source carries energy in the window",
+    "speaking-ring: Meet's per-participant speaking ring lights in the window",
+    "daemon-vad: earsd emits a speech span overlapping the window"
+  ]
+}
