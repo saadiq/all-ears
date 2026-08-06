@@ -7,9 +7,11 @@ import UserNotifications
 @MainActor
 final class Notifier: NSObject {
   private var available = false
-  private var resolve: (@Sendable (NotificationRequest.Action) -> URL?)?
+  /// `async` and `@Sendable`, so it does not inherit this actor: resolving a
+  /// click reads the session store, which must not run on the main actor.
+  private var resolve: (@Sendable (NotificationRequest.Action) async -> URL?)?
 
-  func bootstrap(resolve: @escaping @Sendable (NotificationRequest.Action) -> URL?) {
+  func bootstrap(resolve: @escaping @Sendable (NotificationRequest.Action) async -> URL?) {
     guard Bundle.main.bundleIdentifier != nil else { return }
     available = true
     self.resolve = resolve
@@ -55,7 +57,7 @@ extension Notifier: UNUserNotificationCenterDelegate {
     let userInfo = response.notification.request.content.userInfo
     let action = Notifier.decode(userInfo)
     Task { @MainActor [weak self] in
-      guard let url = self?.resolve?(action) else { return }
+      guard let resolve = self?.resolve, let url = await resolve(action) else { return }
       switch action {
       case .revealSession: NSWorkspace.shared.activateFileViewerSelecting([url])
       default: NSWorkspace.shared.open(url)

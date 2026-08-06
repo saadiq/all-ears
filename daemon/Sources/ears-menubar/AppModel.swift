@@ -63,6 +63,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     guard let connection else { return }
     let dataRoot = self.dataRoot
     let provider = recentsProvider
+    // `@Sendable` and `async`, so resolving a click never runs the provider's
+    // whole-store scan on the main actor — the click arrives on it, and a store
+    // with thousands of sessions would beachball the menu bar.
     notifier.bootstrap { action in
       switch action {
       case .openSummary(let session):
