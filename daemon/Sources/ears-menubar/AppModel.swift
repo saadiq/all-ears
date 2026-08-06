@@ -125,8 +125,13 @@ import os
   }
 
   func rerender() {
-    content = MenuRenderer.render(
-      state, now: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
+    // The config-error model has no connection and no state worth rendering:
+    // its content *is* the error, installed once at init. Rendering the empty
+    // `MenuState` over it would replace an actionable message with
+    // "Connecting to earsd…" — a wait that never ends, because nothing is
+    // dialling — the first time SwiftUI builds the menu.
+    guard configError == nil else { return }
+    content = MenuRenderer.render(state, now: Self.now())
   }
 
   func perform(_ verb: Verb) {
