@@ -1,5 +1,6 @@
 import AppKit
 import EarsMenuKit
+import ServiceManagement
 import SwiftUI
 
 struct MenuContentView: View {
@@ -39,7 +40,14 @@ struct MenuContentView: View {
       }
     }
     Divider()
-    // Daemon submenu lands in Task 13.
+    Menu("Daemon") {
+      Text(model.daemonLine)
+      Button("Restart Daemon") { model.restartDaemon() }
+      Button("Open Logs") { SystemActions.openLogs() }
+      Button("Open Data Folder") { SystemActions.openFolder(model.dataRoot) }
+    }
+    Divider()
+    LaunchAtLoginToggle()
     Button("Quit All Ears") { NSApp.terminate(nil) }
       .keyboardShortcut("q")
   }
@@ -82,6 +90,33 @@ extension IconVariant {
     case .paused: return "ear.and.waveform"
     case .busy: return "ear.badge.checkmark"
     case .attention: return "ear.trianglebadge.exclamationmark"
+    }
+  }
+}
+
+struct LaunchAtLoginToggle: View {
+  @State private var enabled = SMAppService.mainApp.status == .enabled
+
+  var body: some View {
+    if Bundle.main.bundleIdentifier != nil {
+      Toggle(
+        "Launch at Login",
+        isOn: Binding(
+          get: { enabled },
+          set: { wanted in
+            do {
+              if wanted {
+                try SMAppService.mainApp.register()
+              } else {
+                try SMAppService.mainApp.unregister()
+              }
+            } catch {
+              // status re-read below reflects reality
+            }
+            enabled = SMAppService.mainApp.status == .enabled
+          }
+        )
+      )
     }
   }
 }

@@ -178,4 +178,16 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
         .sessionRename(SessionRenameParams(session: session, title: title)))
     }
   }
+
+  var daemonLine: String {
+    guard let daemon = state.daemon else { return "Not connected" }
+    guard let uptime = uptimeSeconds else { return daemon }
+    return "\(daemon) · up \(EarsMenuKit.ElapsedFormatter.compactDuration(Double(uptime)))"
+  }
+
+  func restartDaemon() {
+    SystemActions.restartDaemon()
+    guard let connection else { return }
+    Task { await connection.bounce() }
+  }
 }
