@@ -25,12 +25,15 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   let outputRoot: String
 
   private let connection: DaemonConnection?
+  private let recentsProvider: RecentSessionsProvider
 
   init(config: ClientConfig) {
     configError = nil
     dataRoot = config.dataRoot
     outputRoot = config.outputRoot
     connection = DaemonConnection(socketPath: config.socketPath)
+    recentsProvider = RecentSessionsProvider(
+      dataRoot: config.dataRoot, outputRoot: config.outputRoot)
   }
 
   init(configError message: String) {
@@ -38,6 +41,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     dataRoot = ""
     outputRoot = ""
     connection = nil
+    recentsProvider = RecentSessionsProvider(dataRoot: "", outputRoot: "")
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }
 
@@ -76,6 +80,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private func handleApplied(_ frame: EventFrame) {
     if let request = NotificationPolicy.onEvent(frame, state: state) {
       post(request)
+    }
+    if case .job(let job) = frame.event, job.state == .done || job.state == .failed {
+      refreshRecents()
     }
   }
 
@@ -123,9 +130,18 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   func menuWillOpen() {
     rerender()
+    refreshRecents()
     guard let connection else { return }
     Task {
       uptimeSeconds = await connection.status()?.uptimeSeconds
+    }
+  }
+
+  private func refreshRecents() {
+    let provider = recentsProvider
+    Task.detached { [weak self] in
+      let items = provider.load()
+      await MainActor.run { self?.recents = items }
     }
   }
 

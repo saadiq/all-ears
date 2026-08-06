@@ -1,3 +1,4 @@
+import AppKit
 import EarsMenuKit
 import SwiftUI
 
@@ -22,9 +23,35 @@ struct MenuContentView: View {
       }
     }
     Divider()
-    // Recent Sessions + Daemon submenus land in Tasks 11/13.
+    Menu("Recent Sessions") {
+      if model.recents.isEmpty {
+        Text("No ended sessions")
+      }
+      ForEach(model.recents) { item in
+        Menu(item.session.title) {
+          Button("Open Summary") { open(item.summaries.first) }
+            .disabled(item.summaries.isEmpty)
+          Button("Open Transcript") { open(item.clean ?? item.transcript) }
+            .disabled(item.clean == nil && item.transcript == nil)
+          Button("Show in Finder") { reveal(item.transcript ?? item.summaries.first ?? item.clean) }
+            .disabled(item.transcript == nil && item.summaries.isEmpty && item.clean == nil)
+        }
+      }
+    }
+    Divider()
+    // Daemon submenu lands in Task 13.
     Button("Quit All Ears") { NSApp.terminate(nil) }
       .keyboardShortcut("q")
+  }
+
+  private func open(_ url: URL?) {
+    guard let url else { return }
+    NSWorkspace.shared.open(url)
+  }
+
+  private func reveal(_ url: URL?) {
+    guard let url else { return }
+    NSWorkspace.shared.activateFileViewerSelecting([url])
   }
 
   private func label(for verb: Verb) -> String {
