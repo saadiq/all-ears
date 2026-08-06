@@ -231,16 +231,25 @@ struct PlainModeContractSmokeTests {
     return markdownURL.path
   }
 
-  /// Writes the scripted `[llm] command`: a shell script that drains its
-  /// stdin (the prompt) and prints the fixture utterance — a deterministic,
-  /// network-free stand-in for a real LLM. Absolute tool paths inside, since
-  /// the spawned stage runs with an empty environment (no `PATH`).
+  /// Writes the scripted `[llm] command`: a deterministic, network-free
+  /// stand-in for a real LLM. Absolute tool paths inside, since the spawned
+  /// stage runs with an empty environment (no `PATH`).
+  ///
+  /// Two shapes, because two stages send two prompts. A `cleanup` prompt ends
+  /// in `CleanupPromptBuilder`'s marked turn lines, and the script echoes
+  /// those back unchanged — a perfect no-op cleaner, which is what exercises
+  /// the marker round-trip end to end through the real binary. Anything else
+  /// (a `summarize` prompt) gets the fixture utterance as before.
   private static func writeFakeLLMScript(in temp: TempDirectory) throws -> String {
     let scriptURL = temp.url.appendingPathComponent("fake-llm.sh")
     let script = """
       #!/bin/sh
-      /bin/cat >/dev/null
-      printf '%s' '\(fixtureUtterance)'
+      marked=$(/bin/cat | /usr/bin/grep '^\\[\\[')
+      if [ -n "$marked" ]; then
+        printf '%s' "$marked"
+      else
+        printf '%s' '\(fixtureUtterance)'
+      fi
       """
     try script.write(to: scriptURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes(

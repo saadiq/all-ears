@@ -102,11 +102,12 @@ struct CleanupPipelineTests {
       ])
 
     // Punctuation/casing only -- no word changes -- so CleanupValidator's
-    // novel-word-ratio check has nothing to flag.
+    // novel-word-ratio check has nothing to flag. Marked with the turn marker
+    // `CleanupPromptBuilder` asks for and parses back.
     let stdoutLines = Mutex<[String]>([])
     let (deps, backend) = Self.dependencies(
       llmResults: [
-        .success(LLMCompletionResult(text: "Hello there, how are you?"))
+        .success(LLMCompletionResult(text: "[[1|You]] Hello there, how are you?"))
       ],
       writeStdout: { line in stdoutLines.withLock { $0.append(line) } })
 
@@ -157,7 +158,7 @@ struct CleanupPipelineTests {
     let stdoutLines = Mutex<[String]>([])
     let (deps, _) = Self.dependencies(
       llmResults: [
-        .success(LLMCompletionResult(text: "Hello there, how are you?"))
+        .success(LLMCompletionResult(text: "[[1|You]] Hello there, how are you?"))
       ],
       writeStdout: { line in stdoutLines.withLock { $0.append(line) } })
 
@@ -183,10 +184,12 @@ struct CleanupPipelineTests {
     let directory = Self.makeTempDirectory("fallback")
     defer { try? FileManager.default.removeItem(at: directory) }
 
-    // Two segments: the first gets an accepted correction, the second a
-    // rejected one — so the run is a partial success (exit 0, per issue #61's
-    // taxonomy only an *all*-rejected run is a stage failure) and the
-    // fallback keeps the rejected segment's original text.
+    // Two segments in one chunk: turn 1 comes back with an accepted
+    // correction, turn 2 with a rejected one — so the run is a partial success
+    // (exit 0, per issue #61's taxonomy only an *all*-rejected run is a stage
+    // failure) and the fallback keeps turn 2's original text. Validation is
+    // per turn even though the call was batched, which is what stops one bad
+    // turn in a response from poisoning the rest.
     let markdownURL = try Self.writeFixtureTranscript(
       at: directory,
       segments: [
@@ -197,14 +200,14 @@ struct CleanupPipelineTests {
           source: "mic", speaker: "You", segment: Segment(start: 4, end: 6, text: "Hello there.")),
       ])
 
-    let (deps, _) = Self.dependencies(llmResults: [
-      .success(LLMCompletionResult(text: "Hello there, how are you?")),
-      // Wildly different length + invented content -> CleanupValidator rejects it.
+    let (deps, backend) = Self.dependencies(llmResults: [
+      // Wildly different length + invented content on turn 2 -> rejected.
       .success(
         LLMCompletionResult(
-          text:
-            "This is a completely different sentence about something the original never mentioned at all."
-        )),
+          text: """
+            [[1|You]] Hello there, how are you?
+            [[2|You]] This is a completely different sentence about something the original never mentioned at all.
+            """))
     ])
 
     let exitCode = await CleanupPipeline.run(
@@ -215,6 +218,8 @@ struct CleanupPipelineTests {
       dependencies: deps)
 
     #expect(exitCode == 0)
+    // Both turns rode one call, not one each.
+    #expect(await backend.receivedPrompts.count == 1)
     let cleanedMarkdown = try String(
       contentsOf: Self.publishedURL(under: directory), encoding: .utf8)
     #expect(cleanedMarkdown.contains("Hello there, how are you?"))
@@ -239,7 +244,7 @@ struct CleanupPipelineTests {
       .success(
         LLMCompletionResult(
           text:
-            "This is a completely different sentence about something the original never mentioned at all."
+            "[[1|You]] This is a completely different sentence about something the original never mentioned at all."
         ))
     ])
 
@@ -277,7 +282,7 @@ struct CleanupPipelineTests {
       ])
 
     let (deps, backend) = Self.dependencies(llmResults: [
-      .success(LLMCompletionResult(text: "Already clean."))
+      .success(LLMCompletionResult(text: "[[1|You]] Already clean."))
     ])
 
     let exitCode = await CleanupPipeline.run(
@@ -297,11 +302,13 @@ struct CleanupPipelineTests {
     let directory = Self.makeTempDirectory("llm-error")
     defer { try? FileManager.default.removeItem(at: directory) }
 
-    // Two segments: the first LLM call crashes (a per-segment degrade, kept
-    // as a fallback), the second is accepted — so the run still succeeds.
-    // A *timeout* is different: it aborts the whole run as retryable
-    // upstream (see `llmTimeoutExitsRetryableUpstream`), and an all-fallback
-    // run is a stage failure (see `everySegmentRejectedIsStageFailure`).
+    // Two segments, one per chunk (`chunkSeconds: 2` is below either turn's
+    // 3s, so neither can share a chunk): the first chunk's LLM call crashes (a
+    // per-chunk degrade, kept as a fallback), the second is accepted — so the
+    // run still succeeds. A *timeout* is different: it aborts the whole run as
+    // retryable upstream (see `llmTimeoutExitsRetryableUpstream`), and an
+    // all-fallback run is a stage failure (see
+    // `everySegmentRejectedIsStageFailure`).
     let markdownURL = try Self.writeFixtureTranscript(
       at: directory,
       segments: [
@@ -314,7 +321,81 @@ struct CleanupPipelineTests {
 
     let (deps, _) = Self.dependencies(llmResults: [
       .failure(LLMBackendError.nonZeroExit(code: 1, stderr: "model crashed")),
-      .success(LLMCompletionResult(text: "Hello there, how are you?")),
+      .success(LLMCompletionResult(text: "[[1|You]] Hello there, how are you?")),
+    ])
+
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: [], chunkSeconds: 2),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let cleanedMarkdown = try String(
+      contentsOf: Self.publishedURL(under: directory), encoding: .utf8)
+    #expect(cleanedMarkdown.contains("Original text."))
+    #expect(cleanedMarkdown.contains("Hello there, how are you?"))
+  }
+
+  @Test("many turns ride a handful of batched calls, not one call each")
+  func turnsAreBatchedIntoChunkedCalls() async throws {
+    let directory = Self.makeTempDirectory("chunking")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // 60 turns × 10s = 600s of talking: two 300s chunks, so two LLM calls
+    // where the per-turn shape would have made sixty.
+    let segments = (0..<60).map { index in
+      TranscriptSegment(
+        source: "mic", speaker: "You",
+        segment: Segment(
+          start: Double(index) * 10, end: Double(index) * 10 + 10,
+          text: "hello there how are you"))
+    }
+    let markdownURL = try Self.writeFixtureTranscript(at: directory, segments: segments)
+
+    // No scripted results: FakeLLMBackend echoes the dynamic suffix, which is
+    // the rendered chunk — already in the marker format, so every turn round
+    // trips and is accepted unchanged.
+    let (deps, backend) = Self.dependencies(llmResults: [])
+
+    let exitCode = await CleanupPipeline.run(
+      inputs: CleanupPipeline.Inputs(
+        transcriptPath: markdownURL.path, out: nil,
+        outputTemplate: Self.outputTemplate, outputRoot: directory.path, weekNumbering: .us,
+        systemPrompt: nil, vocabulary: [], chunkSeconds: 300),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let recorded = await backend.receivedPrompts
+    #expect(
+      recorded.count == 2, "expected 2 chunked calls for 600s of talking, got \(recorded.count)")
+    // Every turn reached the model exactly once across the two calls.
+    let markedLines = recorded.map { $0.dynamicSuffix.split(separator: "\n").count }
+    #expect(markedLines == [30, 30])
+  }
+
+  @Test("a chunk response that drops turns falls back only for the turns it dropped")
+  func droppedTurnsFallBackIndividually() async throws {
+    let directory = Self.makeTempDirectory("dropped-turns")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let markdownURL = try Self.writeFixtureTranscript(
+      at: directory,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 0, end: 3, text: "hello there how are you")),
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 4, end: 7, text: "the deploy went out last night")),
+      ])
+
+    // The model answers turn 1 and silently drops turn 2 — the failure mode
+    // batching introduces. Turn 2 must keep its original text, not inherit
+    // turn 1's or shift into its place.
+    let (deps, _) = Self.dependencies(llmResults: [
+      .success(LLMCompletionResult(text: "[[1|You]] Hello there, how are you?"))
     ])
 
     let exitCode = await CleanupPipeline.run(
@@ -327,8 +408,8 @@ struct CleanupPipelineTests {
     #expect(exitCode == 0)
     let cleanedMarkdown = try String(
       contentsOf: Self.publishedURL(under: directory), encoding: .utf8)
-    #expect(cleanedMarkdown.contains("Original text."))
     #expect(cleanedMarkdown.contains("Hello there, how are you?"))
+    #expect(cleanedMarkdown.contains("the deploy went out last night"))
   }
 
   @Test("--out overrides the output path")

@@ -101,6 +101,9 @@ enum CleanupPipeline {
     /// Already-read, merged vocabulary terms (global + `--vocab`), or empty
     /// when vocab is disabled (`--no-vocab` / `[cleanup].use_vocab = false`).
     var vocabulary: [String]
+    /// `[cleanup] chunk_seconds` — how much *spoken* time one LLM call
+    /// covers. See ``CleanupChunker`` for why turns are batched at all.
+    var chunkSeconds: Double = 300
   }
 
   static func run(inputs: Inputs, dependencies: Dependencies) async -> Int32 {
@@ -134,50 +137,88 @@ enum CleanupPipeline {
     var skipped = 0
     var accepted = 0
     var fellBack = 0
-    var cleanedSegments: [TranscriptSegment] = []
-    cleanedSegments.reserveCapacity(document.segments.count)
+    // Start from the originals and overwrite only what the LLM returns *and*
+    // the validator accepts: order, count, timings, and speakers are then
+    // structurally impossible for a batched response to disturb — the worst a
+    // bad response can do is leave a turn as it came in.
+    var cleanedSegments = document.segments
 
-    for turn in document.segments {
+    // Skipped turns are passed through without reaching the model, and are
+    // left out of the chunks entirely rather than sent as unlabelled context:
+    // the model only ever sees turns it is being asked to correct.
+    var attempts: [(offset: Int, turn: TranscriptSegment)] = []
+    for (offset, turn) in document.segments.enumerated() {
       if dependencies.skipPolicy.shouldSkip(turn.segment) {
         skipped += 1
-        cleanedSegments.append(turn)
-        continue
+      } else {
+        attempts.append((offset, turn))
+      }
+    }
+
+    let chunker = CleanupChunker(maxSpokenSeconds: inputs.chunkSeconds)
+    let chunkRanges = chunker.chunks(of: attempts.map(\.turn))
+
+    for range in chunkRanges {
+      let batch = Array(attempts[range])
+      // Markers are 1-based *within the chunk*, so they stay short and a
+      // parse can't be confused by a number from a neighbouring chunk.
+      let payload = batch.enumerated().map { position, entry in
+        CleanupChunkTurn(
+          index: position + 1, speaker: entry.turn.speaker, text: entry.turn.segment.text)
       }
 
-      let prompt = promptBuilder.build(transcript: turn.segment.text)
       let candidateText: String
       do {
-        candidateText = try await dependencies.llmBackend.complete(prompt).text
+        candidateText = try await dependencies.llmBackend.complete(
+          promptBuilder.build(chunk: payload)
+        ).text
       } catch {
-        // A timeout is an upstream outage, not a per-segment degrade: every
-        // remaining segment would stall against the same wall (each waiting
+        // A timeout is an upstream outage, not a per-chunk degrade: every
+        // remaining chunk would stall against the same wall (each waiting
         // the full timeout), so the run aborts with the retryable class a
         // future retry policy keys on (issue #61). Every *other* LLM failure
-        // keeps the per-segment fallback — one crashed completion shouldn't
-        // discard the rest of a mostly-successful pass.
+        // keeps the fallback — one crashed completion shouldn't discard the
+        // rest of a mostly-successful pass.
         if ExitClass.classifying(llmError: error) == .retryableUpstream {
           dependencies.writeStderr(
             "error: LLM call timed out; aborting cleanup as retryable: \(error)")
           return ExitClass.retryableUpstream.code
         }
         dependencies.log(
-          "LLM call failed for a segment, keeping the original text: \(error)")
-        fellBack += 1
-        cleanedSegments.append(turn)
+          "LLM call failed for a chunk of \(batch.count) turn(s), keeping the original text: \(error)"
+        )
+        fellBack += batch.count
         continue
       }
 
-      switch dependencies.validator.validate(original: turn.segment.text, candidate: candidateText)
-      {
-      case .accept(let cleaned):
-        accepted += 1
-        var cleanedTurn = turn
-        cleanedTurn.segment.text = cleaned
-        cleanedSegments.append(cleanedTurn)
-      case .fallback(let reason):
-        fellBack += 1
-        dependencies.log("rejected a cleanup candidate (\(reason)), keeping the original text")
-        cleanedSegments.append(turn)
+      let parsed = CleanupPromptBuilder.parseChunkResponse(candidateText)
+      if parsed.count != payload.count {
+        // Worth saying once per chunk: the per-turn outcomes below still hold
+        // the line, but a systematic marker mismatch is a prompt/model problem
+        // the counts alone would not name.
+        dependencies.log(
+          "chunk response returned \(parsed.count) marked turn(s) for \(payload.count) sent; "
+            + "unmatched turns keep their original text")
+      }
+
+      for (position, entry) in batch.enumerated() {
+        guard let candidate = parsed[position + 1] else {
+          fellBack += 1
+          continue
+        }
+        // Every turn is still validated against its *own* original, so a
+        // merged or shifted response degrades to a fallback rather than
+        // putting one turn's words on another.
+        switch dependencies.validator.validate(
+          original: entry.turn.segment.text, candidate: candidate)
+        {
+        case .accept(let cleaned):
+          accepted += 1
+          cleanedSegments[entry.offset].segment.text = cleaned
+        case .fallback(let reason):
+          fellBack += 1
+          dependencies.log("rejected a cleanup candidate (\(reason)), keeping the original text")
+        }
       }
     }
 
@@ -232,13 +273,17 @@ enum CleanupPipeline {
 
     dependencies.log(
       "run.summary: segments=\(document.segments.count) accepted=\(accepted) "
-        + "fallback=\(fellBack) skipped=\(skipped) output=\(outputURL.path)"
+        + "fallback=\(fellBack) skipped=\(skipped) chunks=\(chunkRanges.count) "
+        + "output=\(outputURL.path)"
     )
     dependencies.onSummary?([
       LogField("segments", .int(document.segments.count)),
       LogField("accepted", .int(accepted)),
       LogField("fallback", .int(fellBack)),
       LogField("skipped", .int(skipped)),
+      // How many LLM calls the run actually made — the number that tells a
+      // slow run's story, and the one that changes when chunk_seconds does.
+      LogField("chunks", .int(chunkRanges.count)),
       LogField("output", .string(outputURL.path)),
     ])
     // The stdout path contract (see Dependencies.writeStdout): emitted only

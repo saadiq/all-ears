@@ -25,6 +25,10 @@ struct LLMStagesConfigSchemaTests {
       ]),
       "cleanup": .table([
         "prompt_file": .string(""),
+        // Overrides [llm] model for this stage — cleanup is bulk mechanical
+        // work, so it defaults to the cheap model rather than the shared one.
+        "model": .string("claude-haiku-4-5"),
+        "chunk_seconds": .int(300),
         "use_vocab": .bool(true),
         "output": .string("{output_root}/{year}/{month}/{day}/{date} - {title}.md"),
       ]),

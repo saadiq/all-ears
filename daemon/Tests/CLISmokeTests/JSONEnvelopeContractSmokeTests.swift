@@ -202,12 +202,19 @@ struct JSONEnvelopeContractSmokeTests {
     return markdownURL.path
   }
 
+  /// Echoes a `cleanup` prompt's marked turn lines back unchanged (a no-op
+  /// cleaner), and answers anything else with the fixture utterance — see
+  /// `PlainModeContractSmokeTests.writeFakeLLMScript`.
   private static func writeFakeLLMScript(in temp: TempDirectory) throws -> String {
     let scriptURL = temp.url.appendingPathComponent("fake-llm.sh")
     let script = """
       #!/bin/sh
-      /bin/cat >/dev/null
-      printf '%s' '\(fixtureUtterance)'
+      marked=$(/bin/cat | /usr/bin/grep '^\\[\\[')
+      if [ -n "$marked" ]; then
+        printf '%s' "$marked"
+      else
+        printf '%s' '\(fixtureUtterance)'
+      fi
       """
     try script.write(to: scriptURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes(

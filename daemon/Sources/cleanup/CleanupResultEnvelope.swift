@@ -41,6 +41,9 @@ struct CleanupResultEnvelope: Codable, Sendable, Equatable {
     var accepted: Int
     var fallback: Int
     var skipped: Int
+    /// LLM calls the run made — turns are batched by `[cleanup] chunk_seconds`,
+    /// so this is what a slow run's duration divides by, not `segments`.
+    var chunks: Int
   }
 
   enum CodingKeys: String, CodingKey {

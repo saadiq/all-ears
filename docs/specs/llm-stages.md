@@ -17,18 +17,23 @@ Turn a raw transcript into a clean, readable one, correcting mis-transcriptions 
 
 ### Behaviour
 1. Read a `.transcript.md` — a path, or `--session <id>` to resolve the session's stored transcript from the data store.
-2. Build the prompt: the built-in cleanup prompt (or `[cleanup].prompt_file`), plus the merged vocabulary (global + session) as an explicit correction list.
-3. Correct homophones/mis-hearings against the vocabulary and fix punctuation/casing, **without** altering meaning, timestamps, or speaker turns.
-4. Write the result atomically to wherever `[cleanup] output`'s path template resolves to — by default `{output_root}/{year}/{month}/{day}/{date} - {title}.md` — with frontmatter `kind: clean` and `derived_from` naming the source transcript. The JSON sidecar is an extension-swapped sibling of wherever the Markdown lands.
+2. Batch turns into chunks of `[cleanup] chunk_seconds` **spoken** seconds (300 by default), one LLM call each.
+3. Build the prompt: the built-in cleanup prompt (or `[cleanup].prompt_file`), plus the merged vocabulary (global + session) as an explicit correction list, plus the chunk's turns rendered one per line behind a `[[n|Speaker]]` marker.
+4. Correct homophones/mis-hearings against the vocabulary and fix punctuation/casing, **without** altering meaning, timestamps, or speaker turns.
+5. Write the result atomically to wherever `[cleanup] output`'s path template resolves to — by default `{output_root}/{year}/{month}/{day}/{date} - {title}.md` — with frontmatter `kind: clean` and `derived_from` naming the source transcript. The JSON sidecar is an extension-swapped sibling of wherever the Markdown lands.
 
 The template expands against the **input document's own frontmatter** (`title:`, `started:`, `session:`, `sources:`), not against flags, so a manual rerun files exactly where the daemon-spawned run did. See [configuration](../configuration.md#path-templates).
 
 ### Guardrails
 Cleanup must improve readability without hallucinating or over-editing:
 
-- **Accept/fallback validation:** if a cleaned segment diverges from the source beyond bounds (length ratio, structural drift), reject it and keep the original rather than shipping a hallucination.
+- **Accept/fallback validation:** if a cleaned segment diverges from the source beyond bounds (length ratio, structural drift), reject it and keep the original rather than shipping a hallucination. Validation is **per turn even though the call is batched**, so a response that merges, reorders, or invents turns degrades to per-turn fallbacks instead of shifting one speaker's words onto another.
+- **Turn-for-turn correspondence:** a chunk's response is matched back by marker number, and a turn the model dropped keeps its original text. Cleanup starts from the originals and overwrites only what both parses and validates, so turn count, order, timings, and speakers cannot be disturbed by a bad response.
 - **Minimal-change prompting:** the smallest edit that fixes errors; filler words are kept unless removal is configured.
 - Timestamps and segment/turn structure are preserved; cleanup never invents or drops turns. Frontmatter records model + settings for reproducibility.
+
+### Why batch
+Per-turn calls made the stage both slow and context-free: a 42-minute meeting is ~2,500 VAD-bounded turns, which at a few seconds per call runs for hours while the daemon's on-end chain (and so `summarize`) waits behind it — and each turn was corrected with no sight of the conversation around it, which is exactly what resolves a homophone or a name. Batching by *spoken* time keeps a chunk's context comparable across transcripts; turn count varies with VAD aggressiveness and character count tracks speaking rate. `[cleanup] model` defaults to a cheap model for the same reason: this is bulk mechanical correction over every turn of every recording, and it should not share `summarize`'s model choice.
 
 ### CLI
 ```
@@ -110,7 +115,7 @@ On `transcribe`, `--json` reuses the existing flag: under `--follow` it still me
 
 **`output` semantics:** present when exactly one primary artifact exists — `transcribe`: the raw transcript; `cleanup`: the published cleaned transcript; `summarize` single preset: that summary file. A multi-preset `summarize` run has no single primary artifact, so `output` is absent and `outputs[]` carries per-preset entries `{preset, path, ok}` — which also makes partial success ("2 of 3 presets") expressible: presets run independently, each outcome is reported, and the exit is 0 only when all presets succeeded (a failed run's stderr envelope still carries `outputs[]`, naming what was written).
 
-**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`; `summarize`: `presets`).
+**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`/`chunks`; `summarize`: `presets`).
 
 **Versioning.** The `schema` field, `allears.<tool>/v<major>`, carries only the major:
 

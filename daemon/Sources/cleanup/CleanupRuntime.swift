@@ -98,7 +98,14 @@ enum CleanupRuntime {
     }
 
     let backend = stringValue(root, ["llm", "backend"], default: "llm-cli")
-    let model = inputs.model ?? stringValue(root, ["llm", "model"])
+    // Model precedence: `--model` > `[cleanup] model` > `[llm] model` >
+    // whatever the backend itself defaults to. The stage-level key ships with
+    // a non-empty default (a cheap model, see
+    // `LLMStagesConfigSchema.defaultCleanupModel`), so `[llm] model` reaches
+    // cleanup only when the user blanks `[cleanup] model` explicitly.
+    let stageModel = stringValue(root, ["cleanup", "model"])
+    let model =
+      inputs.model ?? (stageModel.isEmpty ? stringValue(root, ["llm", "model"]) : stageModel)
     let configuredCommand = stringValue(root, ["llm", "command"])
     let command =
       backend == "command"
@@ -147,7 +154,11 @@ enum CleanupRuntime {
         outputRoot: stringValue(root, ["output_root"]),
         weekNumbering: WeekNumbering(configValue: stringValue(root, ["week_numbering"])),
         systemPrompt: systemPrompt,
-        vocabulary: vocabulary
+        vocabulary: vocabulary,
+        chunkSeconds: Double(
+          intValue(
+            root, ["cleanup", "chunk_seconds"],
+            default: LLMStagesConfigSchema.defaultCleanupChunkSeconds))
       ),
       dependencies: dependencies
     )
@@ -170,7 +181,8 @@ enum CleanupRuntime {
           segments: intField(outcome.fields, "segments") ?? 0,
           accepted: intField(outcome.fields, "accepted") ?? 0,
           fallback: intField(outcome.fields, "fallback") ?? 0,
-          skipped: intField(outcome.fields, "skipped") ?? 0))
+          skipped: intField(outcome.fields, "skipped") ?? 0,
+          chunks: intField(outcome.fields, "chunks") ?? 0))
       if let line = StageEnvelopeJSON.encodeLine(envelope) {
         resultChannel.emitResult(line)
       }
@@ -265,6 +277,13 @@ enum CleanupRuntime {
     -> Bool
   {
     guard case .bool(let value) = walk(config, path) else { return defaultValue }
+    return value
+  }
+
+  private static func intValue(_ config: ConfigValue, _ path: [String], default defaultValue: Int)
+    -> Int
+  {
+    guard case .int(let value) = walk(config, path) else { return defaultValue }
     return value
   }
 

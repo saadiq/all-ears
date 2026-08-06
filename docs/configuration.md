@@ -153,6 +153,8 @@ model   = "claude-sonnet-5"   #   llm-cli runs `llm -m <model>`; command runs th
 
 [cleanup]
 prompt_file = ""              # empty => built-in cleanup prompt
+model       = "claude-haiku-4-5"  # overrides [llm] model here; "" falls back to it
+chunk_seconds = 300           # spoken seconds of transcript per LLM call
 use_vocab   = true
 # Where the cleaned transcript is published (a path template, see below).
 output = "{output_root}/{year}/{month}/{day}/{date} - {title}.md"
