@@ -33,12 +33,14 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
   private let notifier = Notifier()
+  private let sources: [SourceID]
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "app")
 
   init(config: ClientConfig) {
     configError = nil
     dataRoot = config.dataRoot
     outputRoot = config.outputRoot
+    sources = config.sources
     connection = DaemonConnection(socketPath: config.socketPath)
     recentsProvider = RecentSessionsProvider(
       dataRoot: config.dataRoot, outputRoot: config.outputRoot)
@@ -48,6 +50,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     configError = message
     dataRoot = ""
     outputRoot = ""
+    sources = []
     connection = nil
     recentsProvider = RecentSessionsProvider(dataRoot: "", outputRoot: "")
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
@@ -154,9 +157,16 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   func startRecording() {
     guard let connection else { return }
+    // The daemon records exactly the sources a manual session names, skipping
+    // any it doesn't know — so an empty list here is a session that captures
+    // nothing while the menu happily reports "● Recording".
+    guard !sources.isEmpty else {
+      report("No capture sources are configured — see [[earsd.source]] in your config.")
+      return
+    }
     let title = DefaultSessionTitle.forManualStart(
       at: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
-    send(.sessionStart(SessionStartParams(title: title, sources: [SourceID("mic")])), connection)
+    send(.sessionStart(SessionStartParams(title: title, sources: sources)), connection)
   }
 
   func dismiss(jobID: String) {
