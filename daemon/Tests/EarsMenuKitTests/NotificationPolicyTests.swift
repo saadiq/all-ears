@@ -61,7 +61,34 @@ struct NotificationPolicyTests {
       NotificationPolicy.onDisconnect(state: recording)
         == NotificationRequest(
           title: "Recording at risk",
-          body: "earsd stopped while 'Weekly sync' was recording.", action: .none))
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
     #expect(NotificationPolicy.onDisconnect(state: stateWithEndedSession()) == nil)
+  }
+
+  @Test("failed job with unknown session id shows first 8 chars as title")
+  func failureWithUnknownSessionId() {
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(
+          job: "t-1", kind: "transcribe", session: "deadbeef-1234", state: .failed)))
+    let request = NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+    #expect(
+      request
+        == NotificationRequest(
+          title: "Transcription failed", body: "deadbeef",
+          action: .revealSession(session: "deadbeef-1234"))
+    )
+  }
+
+  @Test("failed job with nil session id shows generic body and action")
+  func failureWithNilSessionId() {
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "t-1", kind: "transcribe", session: nil, state: .failed)))
+    let request = NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+    #expect(
+      request
+        == NotificationRequest(
+          title: "Transcription failed", body: "session", action: .none)
+    )
   }
 }

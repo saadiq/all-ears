@@ -38,7 +38,7 @@ public enum NotificationPolicy {
     guard let session = state.activeSession else { return nil }
     return NotificationRequest(
       title: "Recording at risk",
-      body: "earsd stopped while '\(session.title)' was recording.", action: .none)
+      body: "earsd stopped while ‘\(session.title)’ was recording.", action: .none)
   }
 
   private static func sessionTitle(_ id: String?, in state: MenuState) -> String {
