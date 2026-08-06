@@ -34,7 +34,13 @@ public enum NotificationPolicy {
     }
   }
 
+  /// Edge-triggered: fires only on the transition into disconnection, not on every
+  /// redial failure while already unreachable. The pump calls this before reducing,
+  /// so a still-`.connected` state means this is the drop itself; once `disconnected()`
+  /// has flipped `state.connection`, subsequent redial failures stay quiet until the
+  /// next successful reconnect re-arms the warning.
   public static func onDisconnect(state: MenuState) -> NotificationRequest? {
+    guard state.connection == .connected else { return nil }
     guard let session = state.activeSession else { return nil }
     return NotificationRequest(
       title: "Recording at risk",

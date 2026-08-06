@@ -65,6 +65,36 @@ struct NotificationPolicyTests {
     #expect(NotificationPolicy.onDisconnect(state: stateWithEndedSession()) == nil)
   }
 
+  @Test("repeated disconnects on the same drop stay quiet; a reconnect re-arms the warning")
+  func disconnectIsEdgeTriggered() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+
+    // First drop while connected: warns.
+    #expect(
+      NotificationPolicy.onDisconnect(state: state)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+    MenuStateReducer.disconnected(&state)
+
+    // Subsequent redial failures while already unreachable: quiet.
+    #expect(NotificationPolicy.onDisconnect(state: state) == nil)
+    #expect(NotificationPolicy.onDisconnect(state: state) == nil)
+
+    // Reconnect, then drop again: warns again.
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+    #expect(
+      NotificationPolicy.onDisconnect(state: state)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+  }
+
   @Test("failed job with unknown session id shows first 8 chars as title")
   func failureWithUnknownSessionId() {
     let frame = EventFrame(
