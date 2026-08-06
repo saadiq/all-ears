@@ -114,7 +114,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     if let request = NotificationPolicy.onEvent(frame, state: state) {
       post(request)
     }
-    if case .job(let job) = frame.event, job.state == .done || job.state == .failed {
+    if RecentsRefreshPolicy.shouldRefresh(for: frame) {
       refreshRecents()
     }
   }
