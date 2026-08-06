@@ -73,7 +73,7 @@ struct MenuRendererTests {
     let content = MenuRenderer.render(
       state(sessions: [makeSession(state: .ended)], jobs: jobs), now: instant(0))
     #expect(content.icon == .busy)
-    #expect(content.pipeline == [PipelineLine(text: "Transcribing 'Weekly sync'…")])
+    #expect(content.pipeline == [PipelineLine(text: "Transcribing ‘Weekly sync’…")])
   }
 
   @Test("a failed job renders a dismissible attention line and wins the icon")

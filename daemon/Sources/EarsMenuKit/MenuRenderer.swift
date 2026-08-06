@@ -46,7 +46,7 @@ public enum MenuRenderer {
         ?? job.session.map { String($0.prefix(8)) } ?? "session"
       switch job.state {
       case .started, .running:
-        return PipelineLine(text: "\(progressLabel(job.kind)) '\(title)'…")
+        return PipelineLine(text: "\(progressLabel(job.kind)) ‘\(title)’…")
       case .failed:
         return PipelineLine(
           text: "⚠ \(stageLabel(job.kind)) failed — \(title)", dismissibleJobID: job.job)
