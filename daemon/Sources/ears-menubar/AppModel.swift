@@ -21,7 +21,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private(set) var content = MenuContent(
     icon: .idle, header: "Connecting to earsd…", verbs: [], pipeline: [])
   private(set) var recents: [RecentSessionItem] = []
-  private(set) var uptimeSeconds: Int?
+  private(set) var uptime: DaemonUptime?
   /// The last control call that failed, kept for the menu to show. A verb that
   /// silently does nothing is the worst outcome here: the user walks away
   /// believing a recording stopped when it did not.
@@ -80,6 +80,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
         return nil
       }
     }
+    observeMenuTracking()
     Task { await connection.run() }
     Task { await pump(connection) }
   }
@@ -90,6 +91,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
       case .ready(let daemon, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
         actionError = nil
+        // Re-anchored on every (re)connect, so a restarted daemon's uptime
+        // restarts with it instead of counting from the old process.
+        anchorUptime(connection)
       case .event(let frame):
         switch MenuStateReducer.apply(&state, frame) {
         case .gap:
@@ -201,13 +205,47 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     rerender()
   }
 
+  /// Called on every menu open, via `NSMenu.didBeginTracking` — see
+  /// ``observeMenuTracking()``.
   func menuWillOpen() {
+    // Re-renders before the menu draws because nothing here is asynchronous:
+    // the uptime line derives from the clock, and `recents` is already kept
+    // current by session/job events (``RecentsRefreshPolicy``). The disk scan
+    // below is the belt-and-braces path for artifacts written by something
+    // other than the daemon's own chain, and is allowed to land late.
     rerender()
     refreshRecents()
-    guard let connection else { return }
-    Task {
-      uptimeSeconds = await connection.status()?.uptimeSeconds
+  }
+
+  /// SwiftUI's menu-style `MenuBarExtra` gives the content view no per-open
+  /// hook: `.onAppear` fires when the menu is first built and never again, so
+  /// anything refreshed there is frozen at launch — a daemon that has been up
+  /// for hours kept reporting the handful of seconds it had been up when the
+  /// app started. AppKit still posts `didBeginTracking` for the status item's
+  /// menu, which is the open event SwiftUI is missing. This app is
+  /// `LSUIElement` with exactly one menu, so an unfiltered observation is
+  /// precise in practice.
+  private func observeMenuTracking() {
+    Task { [weak self] in
+      for await _ in NotificationCenter.default.notifications(
+        named: NSMenu.didBeginTrackingNotification)
+      {
+        guard let self else { return }
+        self.menuWillOpen()
+      }
     }
+  }
+
+  private func anchorUptime(_ connection: DaemonConnection) {
+    Task { [weak self] in
+      guard let seconds = await connection.status()?.uptimeSeconds else { return }
+      self?.uptime = DaemonUptime(reported: Double(seconds), anchor: Self.now())
+      self?.rerender()
+    }
+  }
+
+  private static func now() -> Instant {
+    Instant(secondsSinceEpoch: Date().timeIntervalSince1970)
   }
 
   private func refreshRecents() {
@@ -236,8 +274,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   var daemonLine: String {
     guard let daemon = state.daemon else { return "Not connected" }
-    guard let uptime = uptimeSeconds else { return daemon }
-    return "\(daemon) · up \(EarsMenuKit.ElapsedFormatter.compactDuration(Double(uptime)))"
+    guard let uptime else { return daemon }
+    let seconds = uptime.seconds(at: Self.now())
+    return "\(daemon) · up \(EarsMenuKit.ElapsedFormatter.compactDuration(seconds))"
   }
 
   func restartDaemon() {
