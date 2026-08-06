@@ -108,13 +108,16 @@ local_sources = ["mic"]
 # [llm] backend, summarize renders every [[summarize.preset]]. cleanup/summarize
 # require transcribe (they consume its output); an invalid entry is dropped
 # with a logged warning. Set to ["transcribe"] to skip the LLM stages, [] to
-# disable the chain entirely.
+# disable this default.
 #
-# Only browser-extension sessions fall back to this. A manual session — from
-# `ears session start` or the menu bar app — runs nothing unless it asks, via
-# `session.start`'s own on_end_stages (`ears session start --on-end-stage
-# transcribe`), so a scripted capture never spawns a model load you didn't
-# ask for. Per session, `--no-on-end` opts out whatever this says.
+# This is a default, not a ceiling: only browser-extension sessions fall back
+# to it, and a session that declares its own chain runs that chain whatever
+# this says. A manual session — from `ears session start` or the menu bar app
+# — runs nothing unless it asks, via `session.start`'s own on_end_stages
+# (`ears session start --on-end-stage transcribe`), so a scripted capture
+# never spawns a model load you didn't ask for. Per session, `--no-on-end`
+# opts out whatever this says. The menu bar app declares whatever it reads
+# here, so setting ["transcribe"] or [] does reach menu-started recordings.
 on_end_stages = ["transcribe", "cleanup", "summarize"]
 
 # Audio ingestion from the browser extension (binary PCM). Off by default.
