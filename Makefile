@@ -223,7 +223,10 @@ menubar: build
 	@rm -rf "$(APP_DEST)"
 	@cp -R "$(APP_STAGE)" "$(APP_DEST)"
 	@pkill -x $(MENUBAR_BIN) 2>/dev/null || true
-	@open "$(APP_DEST)"
+	@# Relaunch, but never fail the target on it: `install` depends on this
+	@# recipe, and `open` exits non-zero with no GUI session (a provisioning
+	@# run over SSH) — which would abort the install after it had succeeded.
+	@open "$(APP_DEST)" 2>/dev/null || echo "  (could not launch $(APP_NAME).app; open it yourself)"
 
 uninstall-menubar:
 	@echo "==> Removing $(APP_DEST)"
