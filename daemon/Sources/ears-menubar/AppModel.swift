@@ -4,6 +4,7 @@ import EarsDataStore
 import EarsMenuKit
 import Foundation
 import Observation
+import os
 
 /// One ended session plus its located output files (Task 11 fills these in;
 /// until then every AppModel leaves `recents` empty).
@@ -21,6 +22,10 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     icon: .idle, header: "Connecting to earsd…", verbs: [], pipeline: [])
   private(set) var recents: [RecentSessionItem] = []
   private(set) var uptimeSeconds: Int?
+  /// The last control call that failed, kept for the menu to show. A verb that
+  /// silently does nothing is the worst outcome here: the user walks away
+  /// believing a recording stopped when it did not.
+  private(set) var actionError: String?
   let configError: String?
   let dataRoot: String
   let outputRoot: String
@@ -28,6 +33,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
   private let notifier = Notifier()
+  private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "app")
 
   init(config: ClientConfig) {
     configError = nil
@@ -71,6 +77,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
       switch event {
       case .ready(let daemon, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
+        actionError = nil
       case .event(let frame):
         switch MenuStateReducer.apply(&state, frame) {
         case .gap:
@@ -103,6 +110,26 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     notifier.post(request)
   }
 
+  /// Surfaces a failed control call: into the menu, where the user who clicked
+  /// the verb is looking, and into unified logging for the after-the-fact
+  /// question of why a session never ended.
+  private func report(_ message: String) {
+    log.error("control call failed: \(message, privacy: .public)")
+    actionError = message
+    rerender()
+  }
+
+  /// Runs a control call, reporting a rejection instead of dropping it.
+  private func send(_ call: ControlCall, _ connection: DaemonConnection) {
+    Task {
+      if let error = await connection.perform(call) {
+        report(error.message)
+      } else {
+        actionError = nil
+      }
+    }
+  }
+
   func rerender() {
     content = MenuRenderer.render(
       state, now: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
@@ -122,17 +149,14 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
       promptRename(session: session, currentTitle: currentTitle)
       return
     }
-    Task { _ = await connection.perform(call) }
+    send(call, connection)
   }
 
   func startRecording() {
     guard let connection else { return }
     let title = DefaultSessionTitle.forManualStart(
       at: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
-    Task {
-      _ = await connection.perform(
-        .sessionStart(SessionStartParams(title: title, sources: [SourceID("mic")])))
-    }
+    send(.sessionStart(SessionStartParams(title: title, sources: [SourceID("mic")])), connection)
   }
 
   func dismiss(jobID: String) {
@@ -170,10 +194,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     guard alert.runModal() == .alertFirstButtonReturn, let connection else { return }
     let title = field.stringValue
     guard !title.isEmpty else { return }
-    Task {
-      _ = await connection.perform(
-        .sessionRename(SessionRenameParams(session: session, title: title)))
-    }
+    send(.sessionRename(SessionRenameParams(session: session, title: title)), connection)
   }
 
   var daemonLine: String {

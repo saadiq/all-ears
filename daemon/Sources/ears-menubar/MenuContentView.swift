@@ -8,6 +8,9 @@ struct MenuContentView: View {
 
   var body: some View {
     Text(model.content.header)
+    if let error = model.actionError {
+      Text("⚠ \(error)")
+    }
     ForEach(model.content.verbs, id: \.self) { verb in
       Button(label(for: verb)) { model.perform(verb) }
     }
