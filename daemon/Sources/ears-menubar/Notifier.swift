@@ -1,6 +1,7 @@
 import AppKit
 import EarsMenuKit
 import UserNotifications
+import os
 
 /// UNUserNotificationCenter requires a real bundle; a bare `swift run` binary
 /// has none, so the notifier degrades to a no-op there (bundle-gated).
@@ -10,14 +11,38 @@ final class Notifier: NSObject {
   /// `async` and `@Sendable`, so it does not inherit this actor: resolving a
   /// click reads the session store, which must not run on the main actor.
   private var resolve: (@Sendable (NotificationRequest.Action) async -> URL?)?
+  private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "notify")
 
-  func bootstrap(resolve: @escaping @Sendable (NotificationRequest.Action) async -> URL?) {
-    guard Bundle.main.bundleIdentifier != nil else { return }
+  /// - Parameter report: called once the grant resolves, so the menu can say
+  ///   that notifications are off. Every path reports, including the
+  ///   no-bundle one — a caller that never hears back cannot tell "authorized"
+  ///   from "the callback was dropped".
+  func bootstrap(
+    resolve: @escaping @Sendable (NotificationRequest.Action) async -> URL?,
+    report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
+  ) {
+    guard Bundle.main.bundleIdentifier != nil else {
+      report(.unsupported)
+      return
+    }
     available = true
     self.resolve = resolve
     let center = UNUserNotificationCenter.current()
     center.delegate = self
-    center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    let log = self.log
+    center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+      // Arrives off the main actor, and `report` mutates the model.
+      Task { @MainActor in
+        if let error {
+          log.error(
+            "notification authorization failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if !granted {
+          log.error("notification authorization denied: results will not be announced")
+        }
+        report(granted ? .authorized : .denied)
+      }
+    }
   }
 
   func post(_ request: NotificationRequest) {
@@ -26,8 +51,13 @@ final class Notifier: NSObject {
     content.title = request.title
     content.body = request.body
     content.userInfo = Self.encode(request.action)
+    let log = self.log
     UNUserNotificationCenter.current().add(
-      UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+      UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+    ) { error in
+      guard let error else { return }
+      log.error("notification post failed: \(error.localizedDescription, privacy: .public)")
+    }
   }
 
   nonisolated static func encode(_ action: NotificationRequest.Action) -> [String: String] {

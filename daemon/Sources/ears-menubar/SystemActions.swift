@@ -16,6 +16,19 @@ enum SystemActions {
     openFolder(NSHomeDirectory() + "/Library/Logs/ears")
   }
 
+  /// The Notifications pane, where a denied grant is the only thing that can
+  /// turn results back on — the prompt is one-shot, so the app cannot re-ask.
+  /// The identifier is the System Settings *extension* bundle id used since
+  /// Ventura, not the old `com.apple.preference.notifications` pane, which no
+  /// longer resolves on the macOS 15 floor this app targets.
+  static func openNotificationSettings() {
+    guard
+      let url = URL(
+        string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+    else { return }
+    NSWorkspace.shared.open(url)
+  }
+
   static func openFolder(_ path: String) {
     guard !path.isEmpty else { return }
     NSWorkspace.shared.open(URL(fileURLWithPath: path))

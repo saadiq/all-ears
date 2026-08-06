@@ -26,6 +26,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   /// silently does nothing is the worst outcome here: the user walks away
   /// believing a recording stopped when it did not.
   private(set) var actionError: String?
+  /// Whether posted notifications actually reach the user. Starts `.authorized`
+  /// so a launch does not flash a warning while the grant is still resolving.
+  private(set) var notifications: NotificationAvailability = .authorized
   let configError: String?
   let dataRoot: String
   let outputRoot: String
@@ -79,6 +82,8 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
       case .none:
         return nil
       }
+    } report: { [weak self] availability in
+      self?.notifications = availability
     }
     observeMenuTracking()
     Task { await connection.run() }

@@ -11,6 +11,11 @@ struct MenuContentView: View {
     if let error = model.actionError {
       Text("⚠ \(error)")
     }
+    if let warning = model.notifications.menuLine {
+      Menu(warning) {
+        Button("Open Notification Settings") { SystemActions.openNotificationSettings() }
+      }
+    }
     ForEach(model.content.verbs, id: \.self) { verb in
       Button(label(for: verb)) { model.perform(verb) }
     }
