@@ -5,11 +5,43 @@ enum SystemActions {
   static let daemonLabel = "net.tomelliot.ears.earsd"
 
   /// `launchctl kickstart -k` — same restart the Makefile documents.
-  static func restartDaemon() {
+  ///
+  /// - Returns: `nil` on success, else why the restart did not happen. The
+  ///   caller bounces the socket either way, so a discarded failure here
+  ///   showed the user the menu getting *worse* after a repair action — down
+  ///   to "⚠ Daemon not running" — with nothing saying the restart never ran.
+  ///   The common case is a LaunchAgent that was never loaded (a `swift build`
+  ///   install rather than `make install`), where kickstart exits non-zero
+  ///   with "Could not find service".
+  static func restartDaemon() async -> String? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
     process.arguments = ["kickstart", "-k", "gui/\(getuid())/\(daemonLabel)"]
-    try? process.run()
+    let errors = Pipe()
+    process.standardError = errors
+    process.standardOutput = Pipe()
+    return await withCheckedContinuation { continuation in
+      // Set the handler before `run()`, so a child that exits immediately
+      // cannot leave the continuation hanging.
+      process.terminationHandler = { finished in
+        guard finished.terminationStatus != 0 else {
+          continuation.resume(returning: nil)
+          return
+        }
+        let captured = (try? errors.fileHandleForReading.readToEnd()) ?? Data()
+        let detail = String(decoding: captured, as: UTF8.self)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        continuation.resume(
+          returning: "launchctl kickstart failed (exit \(finished.terminationStatus))"
+            + (detail.isEmpty ? "" : ": \(detail)"))
+      }
+      do {
+        try process.run()
+      } catch {
+        process.terminationHandler = nil
+        continuation.resume(returning: "could not run launchctl: \(error.localizedDescription)")
+      }
+    }
   }
 
   static func openLogs() {

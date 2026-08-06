@@ -76,6 +76,14 @@ actor DaemonConnection {
     }
   }
 
+  /// Drops the current socket so `run()` redials.
+  ///
+  /// Deliberately silent: bumping the generation suppresses the `.down` the
+  /// teardown would otherwise yield, because a bounce is *asked for* and the
+  /// caller already knows the connection is gone. The caller therefore owns
+  /// the state transition that goes with it — `MenuStateReducer.resubscribing`
+  /// — and a caller that skips it leaves the menu offering Pause/End over a
+  /// socket that no longer exists.
   func bounce() async {
     generation += 1
     // Clear `client` synchronously before the suspending `close()` below —

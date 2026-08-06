@@ -280,8 +280,22 @@ import os
   }
 
   func restartDaemon() {
-    SystemActions.restartDaemon()
     guard let connection else { return }
-    Task { await connection.bounce() }
+    // `bounce()` is deliberately silent — it yields no `.down` — so the state
+    // transition is this caller's to make. Without it the menu keeps
+    // advertising "● Recording" and offering Pause/End over a socket that no
+    // longer exists, and clicking one answers "⚠ not connected to earsd".
+    MenuStateReducer.resubscribing(&state)
+    uptime = nil
+    rerender()
+    Task { [weak self] in
+      // A failed kickstart is not a no-op from the user's side: the bounce
+      // below still drops the menu to "⚠ Daemon not running", so a discarded
+      // error reads as this button having broken something.
+      if let error = await SystemActions.restartDaemon() {
+        self?.report(error)
+      }
+      await connection.bounce()
+    }
   }
 }
