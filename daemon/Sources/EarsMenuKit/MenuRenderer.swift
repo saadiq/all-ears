@@ -10,6 +10,10 @@ public enum MenuRenderer {
   static func icon(for state: MenuState) -> IconVariant {
     if state.connection == .unreachable { return .attention }
     if let active = state.activeSession {
+      // A half-dead recording is the one failure the icon must not hide: the
+      // daemon isolates a source failure so the rest of the session keeps
+      // recording, which is exactly what makes it invisible otherwise.
+      if !failedSources(of: active, in: state).isEmpty { return .attention }
       return active.state == .paused ? .paused : .recording
     }
     if !state.failedJobs.isEmpty { return .attention }
@@ -26,7 +30,19 @@ public enum MenuRenderer {
     guard let session = state.activeSession else { return "Idle" }
     let elapsed = ElapsedFormatter.clock(now.interval(since: session.started))
     let mark = session.state == .paused ? "⏸ Paused" : "● Recording"
-    return "\(mark) · \(session.title) · \(elapsed)"
+    let line = "\(mark) · \(session.title) · \(elapsed)"
+    let failed = failedSources(of: session, in: state)
+    guard !failed.isEmpty else { return line }
+    return "\(line) · ⚠ \(failed.joined(separator: ", ")) stopped"
+  }
+
+  /// The ids this session named that the daemon now reports as `.error` — a
+  /// per-source capture failure (a revoked permission, a tap that died). Named
+  /// order, so the header is stable across renders.
+  static func failedSources(of session: Session, in state: MenuState) -> [String] {
+    session.sources
+      .filter { id in state.sources.contains { $0.id == id && $0.state == .error } }
+      .map(\.rawValue)
   }
 
   static func verbs(for state: MenuState) -> [Verb] {

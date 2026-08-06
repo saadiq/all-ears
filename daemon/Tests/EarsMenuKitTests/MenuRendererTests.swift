@@ -7,13 +7,13 @@ import Testing
 struct MenuRendererTests {
   func state(
     _ phase: ConnectionPhase = .connected, sessions: [Session] = [],
-    jobs: [JobPublishParams] = []
+    sources: [SourceStatus] = [], jobs: [JobPublishParams] = []
   ) -> MenuState {
     var state = MenuState()
     if phase != .connecting {
       MenuStateReducer.connected(
         &state, daemon: "earsd 0.1.0",
-        snapshot: makeSnapshot(rev: 41, sessions: sessions))
+        snapshot: makeSnapshot(rev: 41, sessions: sessions, sources: sources))
     }
     if phase == .unreachable { MenuStateReducer.disconnected(&state) }
     state.jobs = jobs
@@ -97,6 +97,34 @@ struct MenuRendererTests {
     ]
     let content = MenuRenderer.render(
       state(sessions: [makeSession()], jobs: jobs), now: instant(1_001))
+    #expect(content.icon == .recording)
+  }
+
+  @Test("a source that died mid-session is named in the header and takes the icon")
+  func failedSourceSurfaces() {
+    var session = makeSession(started: 1_000)
+    session.sources = [SourceID("mic"), SourceID("system")]
+    let content = MenuRenderer.render(
+      state(
+        sessions: [session],
+        sources: [
+          SourceStatus(id: SourceID("mic"), state: .capturing, codec: "aac"),
+          SourceStatus(id: SourceID("system"), state: .error, codec: "aac"),
+        ]), now: instant(1_723))
+    #expect(content.header == "● Recording · Weekly sync · 12:03 · ⚠ system stopped")
+    #expect(content.icon == .attention)
+  }
+
+  @Test("a healthy source set leaves the recording header and icon alone")
+  func healthySourcesAreQuiet() {
+    var session = makeSession(started: 1_000)
+    session.sources = [SourceID("mic")]
+    let content = MenuRenderer.render(
+      state(
+        sessions: [session],
+        sources: [SourceStatus(id: SourceID("mic"), state: .capturing, codec: "aac")]),
+      now: instant(1_723))
+    #expect(content.header == "● Recording · Weekly sync · 12:03")
     #expect(content.icon == .recording)
   }
 }
