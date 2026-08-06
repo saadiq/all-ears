@@ -28,8 +28,8 @@ Four cooperating parts:
 
 1. **`earsd`** — the always-running capture daemon. Boots idle and records only while a session is active: a session names its sources, capture starts, and everything recorded lands under that session's own directory. Owns the session lifecycle, the VAD index, retention, and the control plane. It is the only writer to the audio store and is never in the read path.
 2. **The audio store on disk** — the storage contract, one directory per session. Its documented layout *is* the read API. See [data formats](./data-formats.md).
-3. **The frontends** — the `ears` CLI and the browser extension, control clients that start and end sessions over the control plane. The daemon owns the state machine; frontends only signal.
-4. **The pipeline tools** — `transcribe`, `cleanup`, `summarize`. Independent binaries that read files (and, for streaming, tail the live index) and write Markdown outputs. The daemon spawns the configured chain of them itself when a browser-triggered session ends (`on_end_stages`, default all three).
+3. **The frontends** — the `ears` CLI, the browser extension, and the menu bar app (`ears-menubar`), control clients that start and end sessions over the control plane. The daemon owns the state machine; frontends only signal.
+4. **The pipeline tools** — `transcribe`, `cleanup`, `summarize`. Independent binaries that read files (and, for streaming, tail the live index) and write Markdown outputs. The daemon spawns a chain of them when a session ends — the chain that session's starter declared, or, for a session that declared none, the per-trigger default (`on_end_stages`, applied to browser sessions).
 
 ## The disk-as-API contract
 

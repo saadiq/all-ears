@@ -16,7 +16,7 @@ maintainability, never for transition safety.
 ## One job
 
 One transport-agnostic contract that lets any frontend — the `ears` CLI, the browser extension,
-a future menu-bar app, the extension popup, several of them at once — drive and observe the
+the menu-bar app (`ears-menubar`), the extension popup, several of them at once — drive and observe the
 daemon: sources, capture, **sessions** (start/end, pause/resume-as-marks, attendees, title),
 and the live feed. Identical frames over the Unix socket and the loopback control
 WebSocket; privilege differs by transport, not by dialect.

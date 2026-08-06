@@ -1,9 +1,11 @@
 # Plan: menu bar app (`ears-menubar`)
 
-Status: **design approved, not yet implemented.**
+Status: **stage 1 implemented** (dropdown menu + notifications; the stage-2 dashboard
+window remains future work).
 
 Builds the menu-bar frontend that [`docs/specs/control-protocol.md`](../specs/control-protocol.md)
-has anticipated since v2 ("the `ears` CLI, the browser extension, a future menu-bar app").
+has anticipated since v2 ("the `ears` CLI, the browser extension, the menu-bar app
+(`ears-menubar`)").
 One glanceable surface for visibility into and control of the daemon, so day-to-day use
 never needs a terminal.
 
@@ -102,6 +104,11 @@ already carries `kind` as a string; the method table in
 [`control-protocol.md`](../specs/control-protocol.md) and the golden fixtures in
 `shared/protocol-fixtures/` are updated to match. This is additive, useful to any
 subscriber, and lands as its own PR ahead of the app.
+
+A second daemon-side change landed during implementation: the on-end pipeline chain
+now runs for every session-end trigger, not only browser-triggered ones, so a manual
+recording started from the menu bar app also feeds `transcribe`/`cleanup`/`summarize`
+on end (escape hatch: set `on_end_stages = []` to disable the chain entirely).
 
 ## Packaging
 

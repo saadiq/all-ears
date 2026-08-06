@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 All Ears is a macOS suite that records each audio source of a session as its own
 stream and turns it into clean, summarised text. Two codebases live here:
 
-- `daemon/` — one Swift 6 package (macOS 15+, Apple Silicon) producing five
-  binaries: `earsd`, `ears`, `transcribe`, `cleanup`, `summarize`.
+- `daemon/` — one Swift 6 package (macOS 15+, Apple Silicon) producing six
+  binaries: `earsd`, `ears`, `transcribe`, `cleanup`, `summarize`, `ears-menubar`.
 - `browser/` — a WXT/TypeScript Chrome+Firefox extension that isolates each
   meeting participant's audio and pushes it to the daemon.
 
