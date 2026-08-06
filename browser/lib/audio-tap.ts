@@ -15,6 +15,7 @@ import {
   seamUsesReceiverTracks,
   seamOrderFor,
   seamTracksToAdopt,
+  seamTracksToRetire,
   type SeamId,
 } from "./capture-seams";
 import type { PlatformAdapter } from "./identity/adapter";
@@ -335,6 +336,15 @@ function adoptSeamTracks(): void {
     const record = trackProvenance(id);
     if (record) provenance.set(id, record);
   }
+  // Retire before adopting: a track named `local` since it was adopted is the
+  // user's own audio arriving over a second road, and the sweep is the first
+  // moment that verdict can be acted on. Freeing its lineage root first also
+  // lets a genuine sibling be adopted in the same pass.
+  for (const id of seamTracksToRetire(adopted, provenance)) {
+    retireSeamTrack(id, provenance.get(id));
+    adopted.delete(id);
+  }
+
   const wanted = new Set(seamTracksToAdopt(seam, available.map((t) => t.id), adopted, provenance));
   for (const source of available) {
     if (!wanted.has(source.id)) {
@@ -364,6 +374,34 @@ function adoptSeamTracks(): void {
     adoptedSeamTracks.set(source.id, clone);
     startPipeline(clone, { seam, sourceTrackId: source.id });
   }
+}
+
+/**
+ * Stop capturing a track that proved to be the user's own audio.
+ *
+ * Deliberately the same teardown a seam escalation performs — stop the
+ * pipeline, stop our clone, forget the adoption — so the daemon sees the
+ * ordinary `participant-left` shape it already handles, not a new one. The
+ * source keeps whatever it captured before the verdict landed: a few seconds
+ * of duplicate audio is the price of "unknown adopts", and far cheaper than
+ * the whole call.
+ */
+function retireSeamTrack(id: string, record?: TrackProvenanceRecord): void {
+  const clone = adoptedSeamTracks.get(id);
+  adoptedSeamTracks.delete(id);
+  console.debug(
+    `[ears][capture] retire webaudio track ${id}: ` +
+      `local via=${record?.via ?? "?"} root=${record?.rootId ?? id} ` +
+      "(the daemon's mic source already records this audio)",
+  );
+  // The track stays in the WebAudio registry, so this sweep will offer it
+  // again and the adopt policy will decline it. Mark the skip as already
+  // stated: the retire line above is the explanation, and a "skip" line
+  // immediately under it would say the same thing twice.
+  loggedSeamSkips.add(id);
+  if (!clone) return;
+  stopPipeline(clone);
+  clone.stop();
 }
 
 /**

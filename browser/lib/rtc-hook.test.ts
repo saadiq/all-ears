@@ -8,6 +8,7 @@ import {
   setCollectionsListener,
   setEncodedAudioListener,
   trackProvenance,
+  webAudioTracks,
   type EncodedAudioFrameLike,
 } from "./rtc-hook";
 import type { CollectionsMuteEvent } from "./identity/meet-collections";
@@ -69,6 +70,7 @@ function setUpGlobals(host: string, nativeCreateEncodedStreams?: (...a: unknown[
   delete g.__earsEncodedAudioListeners;
   delete g.__earsTrackProvenance;
   delete g.__earsTrackProvenanceSeq;
+  delete g.__earsWebAudioTracks;
   g.window = globalThis;
   g.location = { host };
 
@@ -386,10 +388,16 @@ describe("track provenance", () => {
     constructor(
       public id: string,
       public kind: "audio" | "video" = "audio",
+      /** What `getSettings()` reports — a capture device carries a deviceId,
+       * a decoded remote track carries neither key. */
+      public settings: { deviceId?: string; groupId?: string } = {},
     ) {}
     addEventListener(): void {}
+    getSettings(): { deviceId?: string; groupId?: string } {
+      return this.settings;
+    }
     clone(): FakeMediaStreamTrack {
-      return new FakeMediaStreamTrack(`${this.id}-c${++cloneCounter}`, this.kind);
+      return new FakeMediaStreamTrack(`${this.id}-c${++cloneCounter}`, this.kind, this.settings);
     }
   }
 
@@ -431,8 +439,25 @@ describe("track provenance", () => {
       return "native-transceiver";
     };
 
+    // The WebAudio surface the seam's registry hangs off: Meet routes both
+    // remote participant audio AND its own outgoing mic through here.
+    const nativeCreateMediaStreamSource = vi.fn(() => ({ node: true }));
+    class FakeAudioContext {}
+    (FakeAudioContext.prototype as unknown as Record<string, unknown>).createMediaStreamSource =
+      nativeCreateMediaStreamSource;
+    g.AudioContext = FakeAudioContext;
+
     installHook();
-    return { getUserMedia };
+    return { getUserMedia, FakeAudioContext, nativeCreateMediaStreamSource };
+  }
+
+  /** Route a stream into WebAudio exactly as Meet does. */
+  function intoWebAudio(
+    FakeAudioContext: new () => object,
+    ...tracks: FakeMediaStreamTrack[]
+  ): unknown {
+    const ctx = new FakeAudioContext() as { createMediaStreamSource(s: unknown): unknown };
+    return ctx.createMediaStreamSource(fakeStream(...tracks));
   }
 
   beforeEach(() => {
@@ -469,6 +494,80 @@ describe("track provenance", () => {
     const stranger = new FakeMediaStreamTrack("stranger");
     const c = stranger.clone();
     expect(trackProvenance(c.id)).toBeUndefined();
+  });
+
+  // ── Classification on sight (the webaudio seam's own choke point) ─────────
+  //
+  // The gUM and sender wraps only fire when the page makes those calls while
+  // the hook is installed. On the 2026-08-06 call the hook attached mid-join,
+  // so Meet's own mic track reached createMediaStreamSource unclassified,
+  // adopted as `unknown`, and the user was transcribed twice.
+
+  it("classifies a mic track local on sight, from its device settings alone", () => {
+    // No getUserMedia call is replayed here: this is the late-installing-hook
+    // case, where there is no lineage left to back-fill from.
+    const { FakeAudioContext } = setUpProvenance([]);
+    const mic = new FakeMediaStreamTrack("mic-late", "audio", { deviceId: "default", groupId: "g" });
+
+    intoWebAudio(FakeAudioContext, mic);
+
+    expect(trackProvenance("mic-late")).toMatchObject({
+      origin: "local",
+      via: "device-settings",
+      rootId: "mic-late",
+    });
+  });
+
+  it("leaves a decoded remote track unclassified rather than calling it local", () => {
+    // The real shape, read off a live Meet call: a decoded remote track DOES
+    // report a deviceId (Meet's echo its own track id). Calling that local
+    // would drop a participant's audio, so only groupId may decide.
+    const { FakeAudioContext } = setUpProvenance([]);
+    const remote = new FakeMediaStreamTrack("participant-1", "audio", { deviceId: "participant-1-dfb" });
+
+    intoWebAudio(FakeAudioContext, remote);
+
+    expect(trackProvenance("participant-1")).toBeUndefined();
+  });
+
+  it("never overrides an earlier verdict — first write still wins", () => {
+    const { FakeAudioContext } = setUpProvenance([]);
+    // A track that reports a capture device but which ontrack already called
+    // remote: provenance must not flip under it.
+    registerTrackProvenance("already-remote", "remote", "ontrack");
+    const odd = new FakeMediaStreamTrack("already-remote", "audio", { groupId: "g1" });
+
+    intoWebAudio(FakeAudioContext, odd);
+
+    expect(trackProvenance("already-remote")).toMatchObject({ origin: "remote", via: "ontrack" });
+  });
+
+  it("registers the track and returns the node untouched either way", () => {
+    // Classification is a bookkeeping side-effect: it must never change what
+    // the seam can see, nor what Meet gets back from its own call.
+    const { FakeAudioContext, nativeCreateMediaStreamSource } = setUpProvenance([]);
+    const mic = new FakeMediaStreamTrack("mic-1", "audio", { deviceId: "default", groupId: "g1" });
+    const remote = new FakeMediaStreamTrack("remote-1", "audio", { deviceId: "remote-1-uuid" });
+
+    const node = intoWebAudio(FakeAudioContext, mic, remote);
+
+    expect(node).toEqual({ node: true });
+    expect(nativeCreateMediaStreamSource).toHaveBeenCalledTimes(1);
+    // Both tracks are still offered to the seam — the adopt policy decides,
+    // not the registry (capture-seams.ts owns that call).
+    expect(webAudioTracks().map((t) => t.id)).toEqual(["mic-1", "remote-1"]);
+  });
+
+  it("survives a track that won't report settings", () => {
+    const { FakeAudioContext } = setUpProvenance([]);
+    const hostile = new FakeMediaStreamTrack("hostile");
+    hostile.getSettings = () => {
+      throw new Error("nope");
+    };
+
+    expect(() => intoWebAudio(FakeAudioContext, hostile)).not.toThrow();
+    expect(trackProvenance("hostile")).toBeUndefined();
+    expect(webAudioTracks().map((t) => t.id)).toEqual(["hostile"]);
   });
 
   it("marks addTrack/addTransceiver audio arguments local, passing results through", () => {

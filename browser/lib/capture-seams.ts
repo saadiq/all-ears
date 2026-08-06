@@ -130,6 +130,9 @@ export interface TrackProvenanceInfo {
  *   reconcile sweep runs;
  * - an id with no provenance entry always adopts (its own root): a wrongly
  *   dropped remote track is unrecoverable data loss, so unknown fails safe.
+ *
+ * Adopting on `unknown` is only safe because it is reversible: see
+ * ``seamTracksToRetire``, which the same sweep runs first.
  */
 export function seamTracksToAdopt(
   seam: SeamId,
@@ -152,6 +155,81 @@ export function seamTracksToAdopt(
   }
   const keep = new Set(keeperByRoot.values());
   return availableIds.filter((id) => keep.has(id) && !adoptedIds.has(id));
+}
+
+/**
+ * Adopted tracks that have since been classified `local` — the user's own
+ * audio, captured a second time behind the daemon's mic source.
+ *
+ * The counterpart to `seamTracksToAdopt`'s "unknown adopts" rule, and the
+ * reason that rule can stay as permissive as it is. Provenance only ever
+ * improves: a track can arrive unclassified (the hook installing after Meet's
+ * `getUserMedia`, or Meet handing over a processed track whose lineage was
+ * never recorded) and be named `local` later, when the page hands it to a
+ * sender. Reading provenance once, at adoption, threw that away — so a local
+ * track that lost its first race stayed adopted for the whole call (the
+ * 2026-08-06 call transcribed the user twice and left the identity correlator
+ * with two tracks carrying one voice, which it could not name consistently).
+ *
+ * Retiring fails safe in the same direction as adopting: a `local` verdict is
+ * *evidence*, never the absence of it, so this only ever acts on a positive
+ * classification. An unknown track is left alone exactly as it is at adoption.
+ */
+export function seamTracksToRetire(
+  adoptedIds: ReadonlySet<string>,
+  provenance?: ReadonlyMap<string, TrackProvenanceInfo>,
+): string[] {
+  return [...adoptedIds].filter((id) => provenance?.get(id)?.origin === "local");
+}
+
+/**
+ * The subset of `MediaStreamTrack.getSettings()` locality is decided on.
+ * Data in, so this module stays pure — the DOM read happens at the boundary.
+ *
+ * `deviceId` is named here to document that it is *not* consulted: it is
+ * present and truthy on decoded remote tracks too, so it discriminates
+ * nothing. See ``looksLikeCaptureDevice``.
+ */
+export interface TrackSettingsLike {
+  deviceId?: string;
+  groupId?: string;
+}
+
+/**
+ * Whether these settings describe a capture device — a microphone, not a
+ * decoded remote stream.
+ *
+ * The positive locality signal that does not depend on having witnessed the
+ * `getUserMedia` call: a track backed by a real input device reports the
+ * device group it belongs to, and nothing else does. Still classification from
+ * the page's own API contract rather than from signal analysis, the same rule
+ * the rest of provenance follows.
+ *
+ * **`groupId` only, and deliberately not `deviceId`.** Verified against a live
+ * Meet call on Chrome 151 (2026-08-06), reading `getSettings()` off every track
+ * in the webaudio registry plus a local `RTCPeerConnection` loopback:
+ *
+ * | track                          | `deviceId`          | `groupId` |
+ * | ------------------------------ | ------------------- | --------- |
+ * | `getUserMedia` mic             | `"default"`         | present   |
+ * | Meet's WebAudio-minted tracks  | echoes the track id | absent    |
+ * | WebRTC decoded remote (ontrack)| a UUID              | absent    |
+ * | `MediaStreamAudioDestinationNode` | `"WebAudio-…"`   | absent    |
+ *
+ * `deviceId` is truthy on *every* shape, so testing it would have called every
+ * remote participant local and dropped their audio — the one direction this
+ * classifier must never fail in. `groupId` separated the six local mic tracks
+ * from the three `ontrack` tracks with no false positives in either direction,
+ * and caught two local tracks provenance had as `unknown`.
+ *
+ * Known blind spot, by construction rather than by accident: a *processed*
+ * local mic (Meet's noise suppression re-mints the track through WebAudio)
+ * reports no `groupId` either, so it reads as unknown here and adopts.
+ * ``seamTracksToRetire`` is what covers that case, once the page hands the
+ * processed track to a sender.
+ */
+export function looksLikeCaptureDevice(settings: TrackSettingsLike | undefined): boolean {
+  return Boolean(settings?.groupId);
 }
 
 /**
