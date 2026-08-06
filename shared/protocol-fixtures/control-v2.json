@@ -34,6 +34,26 @@
       }
     },
     {
+      "name": "session.start-declared-chain",
+      "frame": {
+        "id": 4,
+        "method": "session.start",
+        "params": {
+          "title": "standup",
+          "sources": ["mic"],
+          "on_end_stages": ["transcribe", "cleanup", "summarize"]
+        }
+      }
+    },
+    {
+      "name": "session.start-no-chain",
+      "frame": {
+        "id": 4,
+        "method": "session.start",
+        "params": { "title": "standup", "sources": ["mic"], "on_end_stages": [] }
+      }
+    },
+    {
       "name": "session.pause",
       "frame": { "id": 5, "method": "session.pause", "params": { "session": "0d5e1111-aaaa-bbbb-cccc-222233334444" } }
     },
