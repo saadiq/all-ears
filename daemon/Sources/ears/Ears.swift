@@ -352,11 +352,25 @@ struct SessionStartCommand: AsyncParsableCommand {
     name: .customLong("external-id"),
     help: "The platform's own session id (idempotent with --platform).")
   var externalID: String?
+  @Option(
+    name: .customLong("on-end-stage"),
+    help: "Stage to run when this session ends: transcribe|cleanup|summarize; repeatable.")
+  var onEndStages: [String] = []
+  @Flag(
+    name: .customLong("no-on-end"),
+    help: "Run no stages when this session ends, whatever the daemon's default.")
+  var noOnEnd = false
 
   func run() async throws {
+    if noOnEnd && !onEndStages.isEmpty {
+      throw ValidationError("--no-on-end and --on-end-stage are mutually exclusive.")
+    }
+    // Absent flags leave this `nil` — "undeclared", so the daemon applies its
+    // own default for the trigger. Only an explicit flag declares a chain.
+    let declaredStages: [String]? = noOnEnd ? [] : (onEndStages.isEmpty ? nil : onEndStages)
     let params = SessionStartParams(
       platform: platform, externalID: externalID, title: title,
-      sources: sources.map { SourceID($0) })
+      sources: sources.map { SourceID($0) }, onEndStages: declaredStages)
     try await runSimpleCommand(
       .sessionStart(params), expecting: Session.self, options: options,
       humanSuccess: OutputFormatting.humanSession)
