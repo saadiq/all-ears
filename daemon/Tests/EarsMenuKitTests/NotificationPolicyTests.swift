@@ -95,6 +95,35 @@ struct NotificationPolicyTests {
           body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
   }
 
+  @Test("a crash-looping daemon warns once per session, not once per crash")
+  func atRiskWarningIsPerSession() {
+    var state = MenuState()
+    var warned: Set<String> = []
+    let session = makeSession()
+
+    // Each crash/reconnect cycle re-arms the edge, so the edge alone is not
+    // enough: without per-session dedup this banners every second forever.
+    for _ in 0..<3 {
+      MenuStateReducer.connected(
+        &state, daemon: "earsd 0.1.0", snapshot: makeSnapshot(rev: 41, sessions: [session]))
+      if NotificationPolicy.onDisconnect(state: state, warnedSessions: warned) != nil {
+        warned.insert(session.id)
+      }
+      MenuStateReducer.disconnected(&state)
+    }
+    #expect(warned == [session.id])
+
+    // A different session at risk is news again.
+    let next = makeSession(id: "s2", title: "Standup")
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0", snapshot: makeSnapshot(rev: 41, sessions: [next]))
+    #expect(
+      NotificationPolicy.onDisconnect(state: state, warnedSessions: warned)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Standup’ was recording.", action: .none))
+  }
+
   @Test("failed job with unknown session id shows first 8 chars as title")
   func failureWithUnknownSessionId() {
     let frame = EventFrame(

@@ -34,6 +34,9 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private let recentsProvider: RecentSessionsProvider
   private let notifier = Notifier()
   private let sources: [SourceID]
+  /// Sessions already warned about via "Recording at risk", so a crash-looping
+  /// daemon warns once per session instead of once per crash.
+  private var warnedAtRiskSessions: Set<String> = []
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "app")
 
   init(config: ClientConfig) {
@@ -97,9 +100,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
           break
         }
       case .down:
-        if let request = NotificationPolicy.onDisconnect(state: state) {
-          post(request)
-        }
+        warnAtRiskIfNeeded()
         MenuStateReducer.disconnected(&state)
       }
       rerender()
@@ -113,6 +114,15 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     if case .job(let job) = frame.event, job.state == .done || job.state == .failed {
       refreshRecents()
     }
+  }
+
+  private func warnAtRiskIfNeeded() {
+    guard let session = state.activeSession,
+      let request = NotificationPolicy.onDisconnect(
+        state: state, warnedSessions: warnedAtRiskSessions)
+    else { return }
+    warnedAtRiskSessions.insert(session.id)
+    post(request)
   }
 
   private func post(_ request: NotificationRequest) {

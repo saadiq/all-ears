@@ -39,9 +39,19 @@ public enum NotificationPolicy {
   /// so a still-`.connected` state means this is the drop itself; once `disconnected()`
   /// has flipped `state.connection`, subsequent redial failures stay quiet until the
   /// next successful reconnect re-arms the warning.
-  public static func onDisconnect(state: MenuState) -> NotificationRequest? {
+  ///
+  /// The edge alone is not enough: a crash-looping daemon reconnects between
+  /// crashes, re-arming the edge every second or so, and each post carries a
+  /// fresh identifier that macOS will not coalesce. `warnedSessions` therefore
+  /// carries the sessions already warned about, making the warning once per
+  /// at-risk session rather than once per crash.
+  public static func onDisconnect(
+    state: MenuState, warnedSessions: Set<String> = []
+  ) -> NotificationRequest? {
     guard state.connection == .connected else { return nil }
-    guard let session = state.activeSession else { return nil }
+    guard let session = state.activeSession, !warnedSessions.contains(session.id) else {
+      return nil
+    }
     return NotificationRequest(
       title: "Recording at risk",
       body: "earsd stopped while ‘\(session.title)’ was recording.", action: .none)
