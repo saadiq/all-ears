@@ -50,7 +50,13 @@ actor DaemonConnection {
         // fall through to the shared teardown below
       }
       if generation == mine {
+        // Close, don't just drop: the transport cancels its `NWConnection` in
+        // `close()` and nowhere else, so releasing the last reference on a
+        // peer-closed socket leaks its descriptor — one per daemon restart,
+        // and a crash-looping daemon eventually exhausts the app's limit.
+        let stale = client
         client = nil
+        await stale?.close()
         continuation.yield(.down)
       }
       attempt += 1
