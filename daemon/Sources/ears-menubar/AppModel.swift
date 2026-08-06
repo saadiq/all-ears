@@ -1,5 +1,6 @@
 import AppKit
 import EarsCore
+import EarsDataStore
 import EarsMenuKit
 import Foundation
 import Observation
@@ -26,6 +27,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
+  private let notifier = Notifier()
 
   init(config: ClientConfig) {
     configError = nil
@@ -47,6 +49,20 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 
   func start() {
     guard let connection else { return }
+    let dataRoot = self.dataRoot
+    let outputRoot = self.outputRoot
+    notifier.bootstrap { action in
+      switch action {
+      case .openSummary(let session):
+        let provider = RecentSessionsProvider(dataRoot: dataRoot, outputRoot: outputRoot)
+        return provider.load(limit: 50).first { $0.session.id == session }?.summaries.first
+      case .revealSession(let session):
+        return DataStoreLayout.sessionDirectory(
+          dataRoot: URL(fileURLWithPath: dataRoot), sessionID: session)
+      case .none:
+        return nil
+      }
+    }
     Task { await connection.run() }
     Task { await pump(connection) }
   }
@@ -76,7 +92,6 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     }
   }
 
-  /// Notifier lands in Task 12; until then applied frames only trigger rerenders.
   private func handleApplied(_ frame: EventFrame) {
     if let request = NotificationPolicy.onEvent(frame, state: state) {
       post(request)
@@ -87,7 +102,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   }
 
   private func post(_ request: NotificationRequest) {
-    // Replaced by the Notifier in Task 12.
+    notifier.post(request)
   }
 
   func rerender() {
