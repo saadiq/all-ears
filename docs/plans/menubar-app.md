@@ -12,7 +12,7 @@ never needs a terminal.
 ## One job
 
 A macOS menu bar app that (a) shows daemon and session state at a glance from the icon
-alone, (b) offers the session verbs one click away — including starting a manual mic
+alone, (b) offers the session verbs one click away — including starting a manual
 session — and (c) proactively notifies when a summary is ready or a pipeline stage fails.
 Full control surface, but with hierarchy: the common path stays small; depth is opt-in.
 
@@ -55,7 +55,12 @@ Two targets, mirroring the repo's "logic in a library, executables are shims" ru
   ["job"])` → frames feed the reducer. Reconnects with backoff; every reconnect
   resubscribes and rebuilds from the fresh snapshot, discarding in-flight job
   telemetry — which subsumes the spec's `boot_id` comparison, so the client never
-  tracks the boot id itself.
+  tracks the boot id itself. A rev gap drops the state back to `connecting` before
+  bouncing the socket: the mirror is stale and the socket is gone, so the menu must
+  stop offering verbs it can no longer deliver.
+- Every control call's error is surfaced — in the menu, where the user who clicked is
+  looking, and in unified logging. A verb that silently does nothing is the worst
+  outcome available: the user believes the recording stopped.
 - `UNUserNotificationCenter` adapter executing the policy's decisions (requires the
   `.app` bundle; a bare binary cannot post notifications).
 - **Read-only** disk reader (`EarsDataStore.SessionStore`) for ended-session history and
@@ -69,13 +74,21 @@ back as protocol calls. `@MainActor` is permitted in the shell (it is UI); never
 
 ## UX
 
-**Icon** (template SF Symbol, four variants): idle · recording (paused shows a
-distinguishing mark) · pipeline-busy · attention (stage failed, or daemon unreachable).
+**Icon** (template SF Symbol, one glyph per variant — a menu bar template renders
+monochrome against arbitrary wallpaper, so paused is its own symbol, not a dimmed
+recording one): idle · recording · paused · pipeline-busy · attention (stage failed,
+a source of a live session died, or the daemon is unreachable).
 
 **Menu**, top to bottom, content varying by state:
 
-- Header: `● Recording · Weekly sync · 12:43` / `Idle` / `⚠ Daemon not running`.
-- Verbs: `Start Recording` (manual mic session via `session.start`; shown **only when no
+- Header: `● Recording · Weekly sync · 12:43` / `Idle` / `⚠ Daemon not running`, plus
+  `· ⚠ system stopped` when a source the live session named is in `error` — the daemon
+  isolates a source failure so the rest keeps recording, which is what makes half a
+  meeting go missing unremarked.
+- Verbs: `Start Recording` (a manual `session.start` naming the enabled
+  `[[earsd.source]]` ids, resolved from the same config layers `earsd` reads — the
+  daemon records exactly what a manual session names, and at idle it has no live
+  sources to ask about; shown **only when no
   session is live** — superseding a live session from a menu click is a footgun), or
   `Pause`/`Resume`, `Rename Session…` (small text dialog), `End Session` when one is
   active. Extension-started sessions appear automatically and get the same verbs.
@@ -92,7 +105,9 @@ distinguishing mark) · pipeline-busy · attention (stage failed, or daemon unre
 - Any stage reaches `failed`: *“Transcription failed — Weekly sync”*; click reveals the
   session folder.
 - Unexpected daemon disconnect **while a session is active** notifies (a recording is at
-  risk); daemon-down while idle is icon-only.
+  risk); daemon-down while idle is icon-only. Once per at-risk session, not once per
+  drop — a crash-looping daemon reconnects between crashes, and each reconnect would
+  otherwise re-arm the warning about the same recording.
 - Explicitly quiet: session start/end/pause/resume — the user did those themselves.
 
 ## Daemon-side change: job events for every on-end stage
