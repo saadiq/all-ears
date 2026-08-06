@@ -61,6 +61,17 @@ enum SystemActions {
     NSWorkspace.shared.open(url)
   }
 
+  /// The Login Items pane, where a `.requiresApproval` registration is
+  /// finished. Same System Settings *extension* identifier scheme as
+  /// ``openNotificationSettings()``.
+  static func openLoginItemsSettings() {
+    guard
+      let url = URL(
+        string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+    else { return }
+    NSWorkspace.shared.open(url)
+  }
+
   static func openFolder(_ path: String) {
     guard !path.isEmpty else { return }
     NSWorkspace.shared.open(URL(fileURLWithPath: path))
