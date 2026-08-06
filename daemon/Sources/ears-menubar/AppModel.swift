@@ -50,11 +50,10 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   func start() {
     guard let connection else { return }
     let dataRoot = self.dataRoot
-    let outputRoot = self.outputRoot
+    let provider = recentsProvider
     notifier.bootstrap { action in
       switch action {
       case .openSummary(let session):
-        let provider = RecentSessionsProvider(dataRoot: dataRoot, outputRoot: outputRoot)
         return provider.load(limit: 50).first { $0.session.id == session }?.summaries.first
       case .revealSession(let session):
         return DataStoreLayout.sessionDirectory(
