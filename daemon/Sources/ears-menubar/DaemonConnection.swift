@@ -64,8 +64,13 @@ actor DaemonConnection {
 
   func bounce() async {
     generation += 1
-    await client?.close()
+    // Clear `client` synchronously before the suspending `close()` below —
+    // otherwise a `run()` redial that completes while this awaits could set
+    // a fresh `client`, and the unconditional `client = nil` on resume would
+    // wipe out that healthy connection instead of the stale one.
+    let stale = client
     client = nil
+    await stale?.close()
   }
 
   func perform(_ call: ControlCall) async -> WireError? {
