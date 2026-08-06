@@ -27,6 +27,9 @@ struct ClientConfig: Sendable {
   /// The sources a manually started session declares — see
   /// ``ManualSessionSources``.
   var sources: [SourceID]
+  /// The on-end chain a manually started session declares — see
+  /// ``ManualSessionStages``.
+  var onEndStages: [String]
 
   static func resolve() -> Result<ClientConfig, ConfigResolutionError> {
     let inputs = ConfigLoadInputs(
@@ -50,7 +53,8 @@ struct ClientConfig: Sendable {
         ClientConfig(
           socketPath: socketPath, dataRoot: dataRoot,
           outputRoot: string(loaded.value, "output_root"),
-          sources: ManualSessionSources.resolve(from: loaded.value)))
+          sources: ManualSessionSources.resolve(from: loaded.value),
+          onEndStages: ManualSessionStages.resolve(from: loaded.value)))
     }
   }
 

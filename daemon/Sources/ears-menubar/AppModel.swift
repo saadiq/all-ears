@@ -34,6 +34,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private let recentsProvider: RecentSessionsProvider
   private let notifier = Notifier()
   private let sources: [SourceID]
+  private let onEndStages: [String]
   /// Sessions already warned about via "Recording at risk", so a crash-looping
   /// daemon warns once per session instead of once per crash.
   private var warnedAtRiskSessions: Set<String> = []
@@ -44,6 +45,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     dataRoot = config.dataRoot
     outputRoot = config.outputRoot
     sources = config.sources
+    onEndStages = config.onEndStages
     connection = DaemonConnection(socketPath: config.socketPath)
     recentsProvider = RecentSessionsProvider(
       dataRoot: config.dataRoot, outputRoot: config.outputRoot)
@@ -54,6 +56,7 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     dataRoot = ""
     outputRoot = ""
     sources = []
+    onEndStages = []
     connection = nil
     recentsProvider = RecentSessionsProvider(dataRoot: "", outputRoot: "")
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
@@ -185,7 +188,12 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
     }
     let title = DefaultSessionTitle.forManualStart(
       at: Instant(secondsSinceEpoch: Date().timeIntervalSince1970))
-    send(.sessionStart(SessionStartParams(title: title, sources: sources)), connection)
+    // Declared, never inferred: the daemon runs no chain for a manual session
+    // that doesn't ask, so "Stop → summary" is this app's promise to make.
+    send(
+      .sessionStart(
+        SessionStartParams(title: title, sources: sources, onEndStages: onEndStages)),
+      connection)
   }
 
   func dismiss(jobID: String) {
