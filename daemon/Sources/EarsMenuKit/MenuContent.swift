@@ -10,13 +10,22 @@ public enum Verb: Sendable, Hashable {
   case end(session: String)
 }
 
-public struct PipelineLine: Sendable, Hashable {
+/// One pipeline status row. `id` is the job id the row was rendered from, and
+/// is the row's identity in the menu: two concurrent jobs render byte-identical
+/// text whenever their sessions share a title (two manual starts in the same
+/// minute), and SwiftUI's `ForEach` silently drops rows that collide on
+/// identity — so a job in flight would simply vanish from the menu.
+public struct PipelineLine: Sendable, Hashable, Identifiable {
+  public var id: String
   public var text: String
-  public var dismissibleJobID: String?
+  /// Failed rows persist until the user dismisses them, so they carry a
+  /// dismiss action; in-flight and done rows clear themselves.
+  public var dismissible: Bool
 
-  public init(text: String, dismissibleJobID: String? = nil) {
+  public init(id: String, text: String, dismissible: Bool = false) {
+    self.id = id
     self.text = text
-    self.dismissibleJobID = dismissibleJobID
+    self.dismissible = dismissible
   }
 }
 

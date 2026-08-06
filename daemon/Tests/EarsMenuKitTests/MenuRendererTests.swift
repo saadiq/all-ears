@@ -73,7 +73,25 @@ struct MenuRendererTests {
     let content = MenuRenderer.render(
       state(sessions: [makeSession(state: .ended)], jobs: jobs), now: instant(0))
     #expect(content.icon == .busy)
-    #expect(content.pipeline == [PipelineLine(text: "Transcribing ‘Weekly sync’…")])
+    #expect(content.pipeline == [PipelineLine(id: "t-1", text: "Transcribing ‘Weekly sync’…")])
+  }
+
+  @Test("concurrent jobs with identical text stay distinct rows")
+  func pipelineRowsAreIdentifiedByJob() {
+    // Two manual sessions started in the same minute share a default title, so
+    // their in-flight lines are byte-identical; ForEach would drop one of two
+    // rows that also shared an identity.
+    let jobs = [
+      JobPublishParams(job: "c-1", kind: "cleanup", session: "s1", state: .running),
+      JobPublishParams(job: "c-2", kind: "cleanup", session: "s2", state: .running),
+    ]
+    let sessions = [
+      makeSession(id: "s1", state: .ended), makeSession(id: "s2", state: .ended),
+    ]
+    let content = MenuRenderer.render(state(sessions: sessions, jobs: jobs), now: instant(0))
+    #expect(
+      content.pipeline.map(\.text) == Array(repeating: "Cleaning up ‘Weekly sync’…", count: 2))
+    #expect(Set(content.pipeline.map(\.id)) == ["c-1", "c-2"])
   }
 
   @Test("a failed job renders a dismissible attention line and wins the icon")
@@ -86,7 +104,7 @@ struct MenuRendererTests {
     #expect(content.icon == .attention)
     #expect(
       content.pipeline == [
-        PipelineLine(text: "⚠ Summary failed — Weekly sync", dismissibleJobID: "sum-1")
+        PipelineLine(id: "sum-1", text: "⚠ Summary failed — Weekly sync", dismissible: true)
       ])
   }
 

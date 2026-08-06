@@ -16,10 +16,10 @@ struct MenuContentView: View {
     }
     if !model.content.pipeline.isEmpty {
       Divider()
-      ForEach(model.content.pipeline, id: \.self) { line in
-        if let jobID = line.dismissibleJobID {
+      ForEach(model.content.pipeline) { line in
+        if line.dismissible {
           Menu(line.text) {
-            Button("Dismiss") { model.dismiss(jobID: jobID) }
+            Button("Dismiss") { model.dismiss(jobID: line.id) }
           }
         } else {
           Text(line.text)
