@@ -81,16 +81,19 @@ struct MenuBarLabel: View {
 
   var body: some View {
     Image(systemName: variant.systemImage)
-      .opacity(variant == .paused ? 0.55 : 1)
   }
 }
 
 extension IconVariant {
+  /// Every variant gets a glyph of its own. Paused in particular must not be
+  /// the recording glyph dimmed: a menu bar template image renders monochrome
+  /// against arbitrary wallpaper, and mistaking paused for recording is the
+  /// mistake this icon exists to prevent.
   var systemImage: String {
     switch self {
     case .idle: return "ear"
     case .recording: return "ear.and.waveform"
-    case .paused: return "ear.and.waveform"
+    case .paused: return "pause.circle"
     case .busy: return "ear.badge.checkmark"
     case .attention: return "ear.trianglebadge.exclamationmark"
     }
