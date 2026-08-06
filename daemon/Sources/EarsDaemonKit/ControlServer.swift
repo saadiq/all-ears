@@ -273,6 +273,8 @@ public actor ControlServer {
         return WireError(code: .sessionEnded, message: "session \(id) has ended")
       case .conflict(let message):
         return WireError(code: .conflict, message: message)
+      case .invalidRequest(let message):
+        return WireError(code: .invalidRequest, message: message)
       }
     }
     return WireError(code: .internalError, message: "\(error)")
