@@ -6,7 +6,7 @@ import EarsMenuKit
 /// dropped stream invalidates the generation so stale loops exit silently.
 actor DaemonConnection {
   enum Event: Sendable {
-    case ready(daemon: String, bootChanged: Bool, snapshot: SnapshotData)
+    case ready(daemon: String, snapshot: SnapshotData)
     case event(EventFrame)
     case down
   }
@@ -15,7 +15,6 @@ actor DaemonConnection {
   private let stream: AsyncStream<Event>
   private let continuation: AsyncStream<Event>.Continuation
   private var client: ControlSocketClient?
-  private var lastBootID: String?
   private var generation = 0
 
   init(socketPath: String) {
@@ -42,10 +41,7 @@ actor DaemonConnection {
         }
         client = dialled
         attempt = 0
-        let bootChanged = lastBootID != nil && lastBootID != hello.bootID
-        lastBootID = hello.bootID
-        continuation.yield(
-          .ready(daemon: hello.daemon, bootChanged: bootChanged, snapshot: snapshot))
+        continuation.yield(.ready(daemon: hello.daemon, snapshot: snapshot))
         for await frame in frames {
           guard generation == mine else { break }
           continuation.yield(.event(frame))

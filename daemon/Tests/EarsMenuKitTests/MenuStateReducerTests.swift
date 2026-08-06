@@ -34,7 +34,7 @@ struct ConnectionReductionTests {
     var state = MenuState()
     let session = makeSession()
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      &state, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(rev: 41, sessions: [session]))
     #expect(state.connection == .connected)
     #expect(state.daemon == "earsd 0.1.0")
@@ -42,22 +42,8 @@ struct ConnectionReductionTests {
     #expect(state.lastRev == 41)
   }
 
-  @Test("a boot change drops non-terminal jobs but keeps failures visible")
-  func bootChangePrunesJobs() {
-    var state = MenuState()
-    state.jobs = [
-      JobPublishParams(job: "a", kind: "transcribe", session: "s1", state: .running),
-      JobPublishParams(job: "b", kind: "summarize", session: "s0", state: .failed),
-    ]
-    MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: true, snapshot: makeSnapshot())
-    #expect(state.jobs.map(\.job) == ["b"])
-  }
-
-  @Test(
-    "every (re)connect drops in-flight job telemetry, even without a boot change, keeping failures"
-  )
-  func everyConnectPrunesJobsRegardlessOfBootChange() {
+  @Test("every (re)connect drops in-flight job telemetry, keeping failures visible")
+  func everyConnectPrunesInFlightJobs() {
     var state = MenuState()
     state.jobs = [
       JobPublishParams(job: "a", kind: "transcribe", session: "s1", state: .started),
@@ -66,7 +52,7 @@ struct ConnectionReductionTests {
       JobPublishParams(job: "d", kind: "summarize", session: "s0", state: .failed),
     ]
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false, snapshot: makeSnapshot())
+      &state, daemon: "earsd 0.1.0", snapshot: makeSnapshot())
     #expect(state.jobs.map(\.job) == ["d"])
   }
 
@@ -74,7 +60,7 @@ struct ConnectionReductionTests {
   func disconnectedKeepsState() {
     var state = MenuState()
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      &state, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(sessions: [makeSession()]))
     MenuStateReducer.disconnected(&state)
     #expect(state.connection == .unreachable)
@@ -87,7 +73,7 @@ struct EventApplicationTests {
   func connectedState(rev: Int = 41, sessions: [Session] = [makeSession()]) -> MenuState {
     var state = MenuState()
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      &state, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(rev: rev, sessions: sessions))
     return state
   }

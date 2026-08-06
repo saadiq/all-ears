@@ -8,7 +8,7 @@ struct NotificationPolicyTests {
   func stateWithEndedSession() -> MenuState {
     var state = MenuState()
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      &state, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(rev: 41, sessions: [makeSession(state: .ended)]))
     return state
   }
@@ -55,7 +55,7 @@ struct NotificationPolicyTests {
   func disconnectPolicy() {
     var recording = MenuState()
     MenuStateReducer.connected(
-      &recording, daemon: "earsd 0.1.0", bootChanged: false,
+      &recording, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
     #expect(
       NotificationPolicy.onDisconnect(state: recording)
@@ -69,7 +69,7 @@ struct NotificationPolicyTests {
   func disconnectIsEdgeTriggered() {
     var state = MenuState()
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      &state, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
 
     // First drop while connected: warns.
@@ -86,7 +86,7 @@ struct NotificationPolicyTests {
 
     // Reconnect, then drop again: warns again.
     MenuStateReducer.connected(
-      &state, daemon: "earsd 0.1.0", bootChanged: false,
+      &state, daemon: "earsd 0.1.0",
       snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
     #expect(
       NotificationPolicy.onDisconnect(state: state)

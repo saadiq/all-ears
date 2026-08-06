@@ -70,9 +70,8 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   private func pump(_ connection: DaemonConnection) async {
     for await event in connection.events {
       switch event {
-      case .ready(let daemon, let bootChanged, let snapshot):
-        MenuStateReducer.connected(
-          &state, daemon: daemon, bootChanged: bootChanged, snapshot: snapshot)
+      case .ready(let daemon, let snapshot):
+        MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
       case .event(let frame):
         switch MenuStateReducer.apply(&state, frame) {
         case .gap:

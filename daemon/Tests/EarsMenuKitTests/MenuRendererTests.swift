@@ -12,7 +12,7 @@ struct MenuRendererTests {
     var state = MenuState()
     if phase != .connecting {
       MenuStateReducer.connected(
-        &state, daemon: "earsd 0.1.0", bootChanged: false,
+        &state, daemon: "earsd 0.1.0",
         snapshot: makeSnapshot(rev: 41, sessions: sessions))
     }
     if phase == .unreachable { MenuStateReducer.disconnected(&state) }

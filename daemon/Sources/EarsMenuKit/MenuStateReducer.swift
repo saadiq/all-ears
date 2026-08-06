@@ -11,11 +11,11 @@ public enum MenuStateReducer {
   /// replayed: any `done` event missed during a disconnect/reconnect bounce would
   /// otherwise leave a stale "in progress" line (and the busy icon) forever. Every
   /// (re)subscribe therefore drops all non-failed job lines, boot change or not;
-  /// failed lines persist until the user dismisses them. `bootChanged` is kept as a
-  /// parameter for callers and `lastBootID` bookkeeping upstream, but no longer
-  /// gates this pruning.
+  /// failed lines persist until the user dismisses them. Discarding unconditionally
+  /// subsumes the spec's `boot_id` check — a restarted daemon is one of the cases it
+  /// already covers — so no caller needs to track the boot id.
   public static func connected(
-    _ state: inout MenuState, daemon: String, bootChanged: Bool, snapshot: SnapshotData
+    _ state: inout MenuState, daemon: String, snapshot: SnapshotData
   ) {
     state.connection = .connected
     state.daemon = daemon

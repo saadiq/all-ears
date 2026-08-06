@@ -52,8 +52,10 @@ Two targets, mirroring the repo's "logic in a library, executables are shims" ru
   live icon.
 - A connection actor wrapping `EarsIPC`'s socket client: **Unix socket** (full
   capability tier) → `hello` (`client: "menubar/<version>"`) → `subscribe(events:
-  ["job"])` → frames feed the reducer. Reconnects with backoff; on reconnect compares
-  `boot_id` and resubscribes per the spec.
+  ["job"])` → frames feed the reducer. Reconnects with backoff; every reconnect
+  resubscribes and rebuilds from the fresh snapshot, discarding in-flight job
+  telemetry — which subsumes the spec's `boot_id` comparison, so the client never
+  tracks the boot id itself.
 - `UNUserNotificationCenter` adapter executing the policy's decisions (requires the
   `.app` bundle; a bare binary cannot post notifications).
 - **Read-only** disk reader (`EarsDataStore.SessionStore`) for ended-session history and
@@ -122,7 +124,7 @@ suite-wide non-goal for now (see “Not built yet”).
 ## Testing
 
 - **Tier 0** (`EarsMenuKitTests`, swift-testing): reducer over snapshot/event sequences,
-  including rev-gap → resubscribe and `boot_id` change; menu model per state;
+  including rev-gap → resubscribe and the reconnect state reset; menu model per state;
   notification policy transitions with the quiet cases asserted too. Frames decode via
   the same `EarsCore` codec the golden fixtures round-trip.
 - **Tier 1**: extend the on-end chain smoke test (`CLISmokeTests`) to assert
