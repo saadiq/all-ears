@@ -77,7 +77,12 @@ type PendingPortEvent =
 const MAX_PENDING_PER_PORT = 256;
 
 interface SessionRecord {
-  portId: string;
+  /** Every port that has declared this meeting. Normally one, but the content
+   * scripts inject with `allFrames` (Zoom nests the call in a same-origin
+   * iframe), and each frame opens its own port — so one call can be spread
+   * across several. The session is the *call*, not the frame: any member port
+   * resolves it, and it ends only when the last one disconnects. */
+  portIds: Set<string>;
   platform: Platform;
   externalMeetingId: string;
   /** Daemon-assigned session UUID, once session.start lands. */
@@ -152,13 +157,22 @@ export class SessionTracker {
   ): void {
     const existing = this.sessions.get(externalMeetingId);
     if (existing && !existing.ended) {
-      // Duplicate start — already tracked. A title riding along on the
-      // duplicate is still news, though: treat it exactly like a late scrape.
+      // Duplicate start — already tracked. Two ways that happens: the same
+      // frame re-declaring, and (with `allFrames`) a second frame of the same
+      // call declaring the same external id. Fold the new port into the
+      // session, or its PCM resolves no session tag and its buffered signals
+      // strand on a port no record matches.
+      if (!existing.portIds.has(portId)) {
+        existing.portIds.add(portId);
+        this.drainPending(portId, existing);
+      }
+      // A title riding along on the duplicate is still news, though: treat it
+      // exactly like a late scrape.
       if (title) this.meetingRenamed(externalMeetingId, title);
       return;
     }
     const record: SessionRecord = {
-      portId,
+      portIds: new Set([portId]),
       platform,
       externalMeetingId,
       starting: false,
@@ -353,7 +367,7 @@ export class SessionTracker {
    * and the daemon's ingest-idle / superseded nets. */
   participantLeft(portId: string, participantId: ParticipantId): void {
     for (const record of this.sessions.values()) {
-      if (record.portId !== portId || record.ended) continue;
+      if (!record.portIds.has(portId) || record.ended) continue;
       if (!record.participants.delete(participantId)) continue;
       this.upsertAttendee(record, { id: participantId, left: this.nowISO() });
     }
@@ -364,7 +378,12 @@ export class SessionTracker {
   portDisconnected(portId: string): void {
     this.pendingByPort.delete(portId);
     for (const record of this.sessions.values()) {
-      if (record.portId === portId && !record.ended) this.endSession(record);
+      if (record.ended || !record.portIds.has(portId)) continue;
+      record.portIds.delete(portId);
+      // Only the *last* frame leaving ends the call. A nested frame being torn
+      // down or replaced mid-call must not end a session the sibling frames
+      // are still capturing.
+      if (record.portIds.size === 0) this.endSession(record);
     }
   }
 
@@ -429,7 +448,7 @@ export class SessionTracker {
 
   private findRecord(portId: string, platform: Platform): SessionRecord | undefined {
     for (const record of this.sessions.values()) {
-      if (!record.ended && record.portId === portId && record.platform === platform) return record;
+      if (!record.ended && record.portIds.has(portId) && record.platform === platform) return record;
     }
     return undefined;
   }

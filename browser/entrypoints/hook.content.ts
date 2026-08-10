@@ -1,6 +1,12 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import { installHook, hookDebugState, setMeetGraphSinks, stopMeetGraphProbe } from "../lib/rtc-hook";
+import {
+  installHook,
+  hookDebugState,
+  livePeerConnections,
+  setMeetGraphSinks,
+  stopMeetGraphProbe,
+} from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
@@ -10,6 +16,7 @@ import { startMeetSpeakingWatch } from "../lib/identity/meet-speaking-dom";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { perfTag, setPerfState } from "../lib/perf-main";
+import { parseZoomMeetingId } from "../lib/identity/zoom";
 // Side-effect imports: each adapter registers itself with selectAdapter.
 import "../lib/identity/meet";
 import "../lib/identity/zoom";
@@ -49,6 +56,9 @@ export default defineContentScript({
   ],
   runAt: "document_start",
   world: "MAIN",
+  // See content.ts: the hook has to reach the frame that actually constructs
+  // the RTCPeerConnection, which on Zoom is not the top one.
+  allFrames: true,
   main() {
     installHook();
     // Meet audio-graph probe plumbing (rtc-hook.ts §graph probe). rtc-hook
@@ -213,6 +223,7 @@ const MEETING_TITLE_WATCH_MS = 60_000;
  * sends no title at all.
  */
 function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => void): () => void {
+  if (platform === "zoom") return startZoomMeetingWatch(onMeetingId);
   if (platform !== "meet") return () => {};
 
   let spaceId: string | null = null;
@@ -280,6 +291,51 @@ function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => voi
     window.removeEventListener("message", onMessage);
     if (spaceId) {
       postToIsolated({ kind: "meeting-ended", platform, externalMeetingId: spaceId });
+    }
+  };
+}
+
+/**
+ * Zoom meeting start/end marking. The external id is in the URL, so unlike
+ * Meet there is nothing to scrape and no soft-fail path — but the web client's
+ * page is up *before* the user joins, so declaring on load alone would start a
+ * session (and record the mic) for a call they only glanced at. The declare
+ * therefore waits for the hook to see a live `RTCPeerConnection`, which is the
+ * first hard evidence Zoom is actually in a call.
+ *
+ * With `allFrames` this runs in every frame of the client. The PC gate is what
+ * keeps that honest: only the frame that really holds the connection declares,
+ * and if more than one ever does, `meetingStarted` is idempotent on the
+ * external id and folds the extra ports into the one session.
+ */
+function startZoomMeetingWatch(onMeetingId?: (id: string) => void): () => void {
+  const meetingId = parseZoomMeetingId(location.pathname);
+  if (!meetingId) return () => {};
+
+  let declared = false;
+  const declare = (): boolean => {
+    if (declared) return true;
+    if (livePeerConnections().size === 0) return false;
+    declared = true;
+    onMeetingId?.(meetingId);
+    postToIsolated({ kind: "meeting-started", platform: "zoom", externalMeetingId: meetingId });
+    console.debug(`[ears][hook] Zoom meeting declared: ${meetingId}`);
+    return true;
+  };
+
+  let interval: ReturnType<typeof setInterval> | null = null;
+  // Already connected (re-injection mid-call) declares immediately; otherwise
+  // poll until the connection comes up.
+  if (!declare()) {
+    interval = setInterval(() => {
+      if (declare() && interval !== null) clearInterval(interval);
+    }, MEETING_ID_POLL_MS);
+  }
+
+  return () => {
+    if (interval !== null) clearInterval(interval);
+    if (declared) {
+      postToIsolated({ kind: "meeting-ended", platform: "zoom", externalMeetingId: meetingId });
     }
   };
 }

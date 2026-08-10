@@ -33,6 +33,22 @@ export function parseZoomParticipantId(msid: string | null | undefined): Partici
   return `zoom-${participantNode}`;
 }
 
+/**
+ * Parse the Zoom meeting id from a web-client path, or null if this path isn't
+ * one. Unlike Meet — where the space id has to be scraped out of tile DOM —
+ * Zoom puts it straight in the URL: `/wc/<id>/join` (and `/wc/join/<id>` on
+ * some entry flows).
+ *
+ * The `/j/<id>` landing page is deliberately *excluded*. It's the "Join from
+ * Zoom Workplace app" hand-off page, never hosts a call, and is often opened
+ * and abandoned — declaring a session from it would start recording (mic
+ * included, via `[earsd.sessions].local_sources`) a meeting nobody joined.
+ */
+export function parseZoomMeetingId(pathname: string | null | undefined): string | null {
+  if (!pathname) return null;
+  return pathname.match(/\/wc\/(?:join\/)?(\d+)/)?.[1] ?? null;
+}
+
 class ZoomAdapter implements PlatformAdapter {
   readonly platform = "zoom" as const;
 

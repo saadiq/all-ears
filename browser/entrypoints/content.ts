@@ -40,6 +40,12 @@ export default defineContentScript({
     ...(import.meta.env.WXT_DEV_LOCALHOST ? ["http://localhost/*", "http://127.0.0.1/*"] : []),
   ],
   runAt: "document_start",
+  // Zoom's web client nests the call in a same-origin iframe (app.zoom.us
+  // /wc/<id>/join, one more frame below that), so a top-frame-only injection
+  // puts the relay in the parent realm while the media lives further down.
+  // Each frame gets its own realm, its own epoch, and its own port; the
+  // session layer folds the ports of one call back together.
+  allFrames: true,
   main() {
     console.debug("[ears][relay] content relay loaded on", location.host);
 
