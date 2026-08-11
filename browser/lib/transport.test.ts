@@ -39,6 +39,10 @@ function textSent(ws: FakeWebSocket): unknown[] {
   return ws.sent.filter((s) => typeof s === "string").map((s) => JSON.parse(s as string));
 }
 
+function opens(ws: FakeWebSocket): unknown[] {
+  return textSent(ws).filter((m) => (m as { cmd?: string }).cmd === "ingest.open");
+}
+
 function binarySent(ws: FakeWebSocket): ArrayBuffer[] {
   return ws.sent.filter((s) => s instanceof ArrayBuffer) as ArrayBuffer[];
 }
@@ -141,17 +145,91 @@ describe("EarsSocket", () => {
     ]);
   });
 
-  it("a failed ingest.open marks the participant failed and drops future frames without retry", () => {
+  it("re-opens a rejected participant as soon as a session tag arrives, and the held audio lands", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const opened: string[] = [];
+    const socket = new EarsSocket(47811);
+    socket.onStreamOpened = (id) => opened.push(id);
+    const ws = connectAndOpen(socket);
+
+    // The first frame beats session.start, so there is no tag to stamp and the
+    // daemon refuses the open ("no live session for its identity tag").
+    socket.sendPcm("jane", "meet", new Uint8Array([1]));
+    ws.respond({ ok: false, error: "no live session for its identity tag" });
+    expect(binarySent(ws)).toHaveLength(0);
+
+    // The tracker resolves the meeting id; the next frame carries it. That
+    // absent→present transition is the retry trigger — no waiting on a clock.
+    socket.sendPcm("jane", "meet", new Uint8Array([2]), "kQ0DRVtDaekB");
+    expect(opens(ws)).toEqual([
+      { cmd: "ingest.open", source: sourceLabel("meet", "jane"), format: INGEST_FORMAT },
+      {
+        cmd: "ingest.open",
+        source: sourceLabel("meet", "jane"),
+        format: INGEST_FORMAT,
+        session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
+      },
+    ]);
+
+    ws.respond({ ok: true, data: { stream_id: "s1" } });
+    const frames = binarySent(ws);
+    expect(frames).toHaveLength(2); // both held frames flush — nothing was thrown away
+    expect(decodeFrame(frames[0]!).pcm).toEqual(new Uint8Array([1]));
+    expect(decodeFrame(frames[1]!).streamId).toBe("s1");
+    expect(opened).toEqual(["jane"]); // the session layer hears about it exactly once
+    warnSpy.mockRestore();
+  });
+
+  it("bounds the retries when no session tag ever arrives, then gives up out loud", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+
+    // 60s of a participant talking into a session that is never declared:
+    // 100 ms frames, so ~600 of them. A per-frame retry would be 600 opens.
+    for (let i = 0; i < 600; i++) {
+      const before = opens(ws).length;
+      socket.sendPcm("jane", "meet", new Uint8Array([i & 0xff]));
+      if (opens(ws).length > before) ws.respond({ ok: false, error: "no live session" });
+      vi.advanceTimersByTime(100);
+    }
+    expect(opens(ws).length).toBeLessThanOrEqual(5); // MAX_OPEN_ATTEMPTS
+    expect(opens(ws).length).toBeGreaterThan(1); // but it did retry
+    expect(errorSpy).not.toHaveBeenCalled(); // still inside the hold window
+
+    // Past the hold window the drop is real, so it is reported rather than
+    // left to look like a quiet speaker.
+    vi.advanceTimersByTime(60_000);
+    socket.sendPcm("jane", "meet", new Uint8Array([9]));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("giving up on jane"));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("NOT being recorded"));
+
+    // And it stays given up: no further sockets traffic for this participant.
+    const after = ws.sent.length;
+    for (let i = 0; i < 20; i++) socket.sendPcm("jane", "meet", new Uint8Array([i]), "late-tag");
+    expect(ws.sent).toHaveLength(after);
+    expect(errorSpy).toHaveBeenCalledTimes(1); // reported once, not per frame
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("holds at most OPENING_QUEUE_LIMIT frames while a rejected participant waits to recover", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const socket = new EarsSocket(47811);
     const ws = connectAndOpen(socket);
 
-    socket.sendPcm("jane", "meet", new Uint8Array([1]));
-    ws.respond({ ok: false, error: "boom" });
+    socket.sendPcm("jane", "meet", new Uint8Array([0]));
+    ws.respond({ ok: false, error: "no live session" });
+    // Waiting is not an excuse to grow: the queue stays drop-oldest so a long
+    // refusal can't turn into unbounded memory in the service worker.
+    for (let i = 1; i < 200; i++) socket.sendPcm("jane", "meet", new Uint8Array([i & 0xff]));
 
-    socket.sendPcm("jane", "meet", new Uint8Array([2]));
-    expect(textSent(ws)).toHaveLength(1); // no retry ingest.open
-    expect(binarySent(ws)).toHaveLength(0); // no frame ever sent
+    socket.sendPcm("jane", "meet", new Uint8Array([200]), "kQ0DRVtDaekB");
+    ws.respond({ ok: true, data: { stream_id: "s1" } });
+    const frames = binarySent(ws);
+    expect(frames).toHaveLength(50); // OPENING_QUEUE_LIMIT — the newest 50, oldest dropped
+    expect(decodeFrame(frames.at(-1)!).pcm).toEqual(new Uint8Array([200]));
     warnSpy.mockRestore();
   });
 
