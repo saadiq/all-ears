@@ -107,7 +107,10 @@ def resolve_session(manifest: dict, override: str | None) -> store.Session:
             "this run has no session id. The manifest and the session id must travel "
             "together for a run to be re-scorable; pass --session to supply it by hand."
         )
-    directory = store.DEFAULT_ROOT / "sessions" / session_id
+    directory = (
+        Path(session_id) if "/" in session_id
+        else store.DEFAULT_ROOT / "sessions" / session_id
+    )
     if not directory.exists():
         raise click.ClickException(f"{directory} not found")
     return store.load_session(directory)
@@ -130,14 +133,20 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
     seen = {a.display_name: a for a in session.attendees}
     matched, missing, unexpected = [], [], []
 
+    recorded = ((manifest.get("run") or {}).get("participants") or {})
     for name, spec in guests.items():
-        attendee = seen.get(name)
+        # A signed-in participant's roster label is its Google account name,
+        # recorded by the runner at join. Fall back to the declared name for an
+        # anonymous participant, which types its own label.
+        expected = recorded.get(spec["label"], {}).get("observed_display_name") or name
+        attendee = seen.get(expected)
         if attendee is None:
             missing.append(name)
             continue
         matched.append(
             {
                 "display_name": name,
+                "matched_on": expected,
                 "label": spec["label"],
                 "attendee_id": attendee.id,
                 # Whether the roster entry carries a per-participant source is
@@ -148,7 +157,46 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
                 "anonymous_device_id": bool(re.match(r"spaces/[^/]+/devices/\d+", attendee.id)),
             }
         )
-    for name in seen:
+    # The local participant's own roster entry is expected. Match it by the
+    # display name the runner observed at join — matching on "looks like a
+    # device id" would sweep in every REMOTE participant too, which is the
+    # opposite of the intent.
+    local_name = (
+        ((manifest.get("run") or {}).get("participants") or {})
+        .get(next((p["label"] for p in manifest["participants"] if p["role"] == "local"), ""), {})
+        .get("observed_display_name")
+    )
+    local_ids = {a.id for a in session.attendees if local_name and a.display_name == local_name}
+    # Provisional ids the extension assigns when identity resolution returns
+    # null (`speaker-<n>`, the universal fallback). One per unresolved track is
+    # normal mid-call; a set of them in a call with no remote participants is a
+    # phantom roster, and is reported as its own failure rather than lumped in
+    # with "unexpected", because the two have completely different causes.
+    # A provisional id WITH a source behind it is not a phantom: it is a real
+    # captured participant whose identity had not resolved yet. Meet exposes no
+    # synchronous identity mechanism, so a track legitimately starts under
+    # `speaker-<n>` and is upgraded once speaking-onset correlation names it —
+    # which starts a fresh source rather than renaming in place. Only a
+    # provisional id with NO source is a phantom.
+    provisional = re.compile(r"^(speaker|graphtap|graphgen|webaudio-track)-\d+$")
+    phantom = [
+        {"id": a.id, "source": a.source or None,
+         "joined": a.joined.isoformat() if a.joined else None}
+        for a in session.attendees
+        if provisional.match(a.id) and not a.source
+    ]
+    upgraded = [
+        {"id": a.id, "source": a.source}
+        for a in session.attendees
+        if provisional.match(a.id) and a.source
+    ]
+    matched_names = {m["matched_on"] for m in matched}
+    for attendee in session.attendees:
+        name = attendee.display_name
+        if name in matched_names:
+            continue
+        if attendee.id in local_ids or any(p["id"] == attendee.id for p in phantom):
+            continue
         if name not in declared and name not in observers:
             unexpected.append(name)
 
@@ -159,9 +207,12 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
         "missing": missing,
         "unexpected": unexpected,
         "observers": sorted(observers),
+        "local_device_ids": sorted(local_ids),
+        "phantom_attendees": phantom,
+        "provisional_with_source": upgraded,
         "named_sources": sum(1 for m in matched if m["source"]),
         "attendee_events": len(events),
-        "pass": not missing and not unexpected,
+        "pass": not missing and not unexpected and not phantom,
     }
 
 
@@ -382,6 +433,20 @@ def _print(report: dict) -> None:
         click.echo(f"   missing from the roster: {roster['missing']}")
     if roster["unexpected"]:
         click.echo(f"   unexpected attendees:    {roster['unexpected']}")
+    if roster.get("local_device_ids"):
+        click.echo(f"   local device ids:        {roster['local_device_ids']}")
+    if roster.get("provisional_with_source"):
+        click.echo(
+            f"   pre-upgrade sources ({len(roster['provisional_with_source'])}): captured under a "
+            "provisional id before identity resolved — expected, not duplication")
+        for up in roster["provisional_with_source"]:
+            click.echo(f"      {up['id']:<14} -> {up['source']}")
+    if roster.get("phantom_attendees"):
+        click.echo(
+            f"   PHANTOM ATTENDEES ({len(roster['phantom_attendees'])}): provisional ids in the "
+            "roster with no source behind them")
+        for ph in roster["phantom_attendees"]:
+            click.echo(f"      {ph['id']:<14} source={ph['source'] or '—'} joined={ph['joined']}")
 
     timing = report["timing"]
     click.echo(f"\n2. TIMING/ENERGY  {'pass' if timing['pass'] else 'FAIL'}   "

@@ -44,6 +44,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import click
 
@@ -52,6 +53,21 @@ BRAVE = Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
 CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 EXTENSION = Path(__file__).resolve().parents[2] / "browser" / ".output" / "chrome-mv3"
+
+#: Persistent, manually-signed-in browser profiles — the brief's stated fallback
+#: for when anonymous join is unavailable. Never wiped by ``launch``, never
+#: committed (they hold live Google session cookies), and never written to by
+#: anything here: a human signs in once, by hand, in a browser launched with no
+#: debugging port and no automation flags.
+#:
+#: **What this costs.** An anonymous guest types its own display name, so the
+#: roster label is ground truth by construction. A signed-in guest shows its
+#: Google account name instead, which we neither control nor should change. The
+#: ground truth therefore moves from "the name typed at join" to "which profile
+#: played which WAV" — still by construction, since the runner owns that
+#: mapping, but the runner must now RECORD the observed display name rather than
+#: declare it.
+PROFILES = Path(__file__).resolve().parent / ".profiles"
 
 # Meet gates anonymous join on the user agent, and neither browser here passes.
 # Measured 2026-08-06 against a call whose access type is Open ("This call is
@@ -75,6 +91,28 @@ CHROME_UA = (
 
 class BrowserError(RuntimeError):
     pass
+
+
+def force_english(url: str) -> str:
+    """Pin Meet's UI language to English.
+
+    Every selector here matches on visible button text ("Join now", "Leave
+    call", "Allow microphone"), which makes the whole join path silently
+    locale-dependent. A second Google account whose locale is German rendered
+    "Jetzt teilnehmen" instead, so the pre-join detector found neither a name
+    field nor a join button and sat in `waiting` until it timed out — a failure
+    that looks exactly like Meet refusing the join.
+
+    Pinning `hl=en` is the fix rather than translating the selectors: the set of
+    languages is unbounded, and matching obfuscated class tokens instead is
+    exactly what journal #118 warns against.
+    """
+    if "meet.google.com" not in url:
+        return url
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query))
+    query["hl"] = "en"
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def resolve_binary(name: str) -> Path:
@@ -199,17 +237,23 @@ def launch(
     wav: Path | None = None,
     binary: Path | None = None,
     extension: Path | None = None,
+    profile: Path | None = None,
 ) -> Browser:
-    """Launch one participant browser with the fake-device flags."""
+    """Launch one participant browser with the fake-device flags.
+
+    `profile` names a persistent (signed-in) profile to reuse; omit it for the
+    usual throwaway profile, which is wiped on every launch.
+    """
     binary = binary or resolve_binary("auto-guest")
-    profile = workdir / f"profile-{label}"
+    persistent = profile is not None
+    profile = profile or (workdir / f"profile-{label}")
     rodney_home = workdir / f"rodney-{label}"
-    if profile.exists():
+    if profile.exists() and not persistent:
         shutil.rmtree(profile)
-    profile.mkdir(parents=True)
+    profile.mkdir(parents=True, exist_ok=True)
     rodney_home.mkdir(parents=True, exist_ok=True)
 
-    if "Brave" in binary.name:
+    if "Brave" in binary.name and not persistent:
         default = profile / "Default"
         default.mkdir(parents=True, exist_ok=True)
         (default / "Preferences").write_text(json.dumps(BRAVE_PREFS))
@@ -230,6 +274,7 @@ def launch(
         f"--remote-debugging-port={port}",
         f"--remote-allow-origins=http://127.0.0.1:{port}",
     ]
+    url = force_english(url)
     if wav is not None:
         if not wav.exists():
             raise BrowserError(f"{label}: {wav} does not exist")
@@ -407,7 +452,9 @@ def join_meet(browser: Browser, url: str, display_name: str, timeout: float = 18
     the identical browser started with the meeting URL as its startup argument
     reaches the anonymous pre-join screen every time.
     """
-    if url not in str(browser.js("location.href") or ""):
+    url = force_english(url)
+    # Compare on the meeting path, not the whole URL: the query carries hl=en.
+    if urlparse(url).path not in str(browser.js("location.href") or ""):
         browser.open(url)
 
     deadline = time.time() + timeout
@@ -424,6 +471,10 @@ def join_meet(browser: Browser, url: str, display_name: str, timeout: float = 18
         if any(marker in str(browser.js("location.href") or "") for marker in REFUSAL_MARKERS):
             raise BrowserError(f"{browser.label}: Meet refused the join (redirected away)")
 
+        dismissed = browser.js(_ALLOW_MEDIA_JS)
+        if isinstance(dismissed, str) and dismissed.startswith("clicked:"):
+            result.setdefault("permission_modal", []).append(dismissed.split(":", 1)[1])
+
         outcome = browser.js(_SET_NAME_JS.replace("__NAME__", json.dumps(display_name)))
         if outcome == "set":
             named = True
@@ -438,6 +489,42 @@ def join_meet(browser: Browser, url: str, display_name: str, timeout: float = 18
         f"(name set: {named}, join clicks: {result['clicks']})"
     )
 
+
+# Meet intermittently interposes a "Do you want people to see and hear you?"
+# modal before the pre-join screen, even with `--use-fake-ui-for-media-stream`
+# auto-granting permission. While it is up there is no name field and no "Join
+# now", so the join loop sees a page it does not recognise and times out.
+#
+# **Only ever click Allow.** The modal's other option is "Use without microphone
+# and camera", and taking it joins a participant that transmits nothing — a
+# guest present in the roster, emitting silence, with the manifest still claiming
+# it spoke. That is the silently-wrong-corpus failure this harness exists to
+# prevent, so the "without" wording is explicitly excluded rather than merely
+# not preferred.
+_JOIN_BUTTON_PRESENT_JS = r"""
+(() => {
+  const want = /^(ask to join|join now|join anyway|switch here)$/i;
+  return [...document.querySelectorAll("button, [role=button]")]
+    .some(el => el.offsetParent !== null && want.test((el.innerText || "").trim()));
+})()
+"""
+
+_ALLOW_MEDIA_JS = r"""
+(() => {
+  const deny = /without|dismiss|not now|cancel/i;
+  const allow = /allow (microphone|mic|camera)|allow (and )?continue|^allow$|use (microphone|mic)/i;
+  const button = [...document.querySelectorAll("button, [role=button]")]
+    .filter(el => el.offsetParent !== null)
+    .find(el => {
+      const text = ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).trim();
+      return allow.test(text) && !deny.test(text);
+    });
+  if (!button) return "no-modal";
+  if (button.disabled || button.getAttribute("aria-disabled") === "true") return "disabled";
+  button.click();
+  return "clicked:" + (button.innerText || "").trim();
+})()
+"""
 
 _SET_NAME_JS = r"""
 (() => {
@@ -491,7 +578,12 @@ def _prejoin_state(browser: Browser) -> str:
     text = str(browser.js("JSON.stringify(document.body.innerText.slice(0,400))") or "")
     if "can't join this video call" in text:
         return "refused"
+    # A signed-in profile has no name field — Meet already knows who it is — so
+    # readiness cannot key on that alone. An enabled join affordance is the
+    # common signal across both anonymous and signed-in pre-join screens.
     if browser.js(_SET_NAME_JS.replace("__NAME__", '""')) != "no-field":
+        return "ready"
+    if browser.js(_JOIN_BUTTON_PRESENT_JS) is True:
         return "ready"
     return "waiting"
 
@@ -505,6 +597,7 @@ def launch_and_join(
     wav: Path | None = None,
     binary: Path | None = None,
     extension: Path | None = None,
+    profile: Path | None = None,
     attempts: int = 3,
 ) -> tuple[Browser, dict]:
     """Launch a participant browser and get it into the call, retrying refusals.
@@ -525,7 +618,8 @@ def launch_and_join(
     last = "no attempt made"
     for attempt in range(attempts):
         browser = launch(
-            label, workdir, port, url=meet_url, wav=wav, binary=binary, extension=extension
+            label, workdir, port, url=force_english(meet_url), wav=wav, binary=binary,
+            extension=extension, profile=profile,
         )
         try:
             deadline = time.time() + 60
