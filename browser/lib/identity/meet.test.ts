@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONFIRM_THRESHOLD,
+  MeetAdapter,
   PARTICIPANT_ID_ATTRIBUTES,
   extractDisplayName,
   extractParticipantId,
@@ -356,5 +357,102 @@ describe("rosterDelta", () => {
 describe("CONFIRM_THRESHOLD", () => {
   it("requires at least 2 corroborating turns (2026-08-05: a 1-turn join misattributed under same-room audio)", () => {
     expect(CONFIRM_THRESHOLD).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ── Track ↔ device binding (journal #158) ───────────────────────────────────
+//
+// MeetAdapter reaches `window` only in its constructor (setCollectionsListener);
+// onTrackSpeaking/onDeviceSpeaking/applyMatch touch no DOM at all, so a bare
+// window stub is enough to drive the binding rules end to end. Turns go
+// through the speaking-ring correlator — the per-turn signal that carried the
+// live misbinding.
+
+class FakeTrack {
+  constructor(
+    readonly id: string,
+    public readyState: "live" | "ended" = "live",
+  ) {}
+}
+
+describe("MeetAdapter track ↔ device binding", () => {
+  let clock = 0;
+
+  /** One clean turn: the track's audio onset, then that device's ring burst
+   * 50ms later. Turns are 5s apart — clear of the 1s onset debounce and of the
+   * 3s history that holds consumed pairings. */
+  function turn(adapter: MeetAdapter, track: FakeTrack, deviceId: string): void {
+    clock += 5000;
+    vi.setSystemTime(clock);
+    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true);
+    adapter.onDeviceSpeaking(deviceId, clock + 50);
+  }
+
+  function confirm(adapter: MeetAdapter, track: FakeTrack, deviceId: string): void {
+    for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, track, deviceId);
+  }
+
+  function newAdapter(): { adapter: MeetAdapter; joins: Array<[string, string]> } {
+    const adapter = new MeetAdapter();
+    const joins: Array<[string, string]> = [];
+    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    return { adapter, joins };
+  }
+
+  beforeEach(() => {
+    clock = 100_000;
+    vi.useFakeTimers();
+    (globalThis as { window?: unknown }).window ??= {};
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refuses to rebind a track that already carries a device (the 86-generation flip-flop)", () => {
+    const { adapter, joins } = newAdapter();
+    const remote = new FakeTrack("track-remote");
+
+    confirm(adapter, remote, "devices/160");
+    // The local participant's device then confirms against the same remote
+    // track — the live failure, once its ring bursts stopped colliding.
+    confirm(adapter, remote, "devices/159");
+
+    expect(joins).toEqual([["track-remote", "devices/160"]]);
+  });
+
+  it("refuses a second live track's claim on a device another live track already carries", () => {
+    const { adapter, joins } = newAdapter();
+
+    confirm(adapter, new FakeTrack("track-a"), "devices/160");
+    confirm(adapter, new FakeTrack("track-b"), "devices/160");
+
+    expect(joins).toEqual([["track-a", "devices/160"]]);
+  });
+
+  it("lets a fresh track claim a device whose previous track has ended (a rejoin)", () => {
+    const { adapter, joins } = newAdapter();
+    const first = new FakeTrack("track-a");
+
+    confirm(adapter, first, "devices/160");
+    first.readyState = "ended";
+    confirm(adapter, new FakeTrack("track-a2"), "devices/160");
+
+    expect(joins).toEqual([
+      ["track-a", "devices/160"],
+      ["track-a2", "devices/160"],
+    ]);
+  });
+
+  it("still upgrades an unbound track to an unclaimed device", () => {
+    const { adapter, joins } = newAdapter();
+
+    confirm(adapter, new FakeTrack("track-a"), "devices/160");
+    confirm(adapter, new FakeTrack("track-b"), "devices/161");
+
+    expect(joins).toEqual([
+      ["track-a", "devices/160"],
+      ["track-b", "devices/161"],
+    ]);
   });
 });

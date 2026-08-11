@@ -361,7 +361,9 @@ const UNMUTE_CORRELATION_WINDOW_MS = 2_000;
 // correlator's distinct-tracks guard handles overlap, so 1s is safe margin.
 const DOM_CORRELATION_WINDOW_MS = 1_000;
 
-class MeetAdapter implements PlatformAdapter {
+// Exported for meet.test.ts's binding tests only — production wiring goes
+// through registerAdapter at the bottom of this file, never a direct import.
+export class MeetAdapter implements PlatformAdapter {
   readonly platform = "meet" as const;
 
   /** id → last-known display name. Kept after a tile unmounts (leave/rejoin
@@ -388,9 +390,19 @@ class MeetAdapter implements PlatformAdapter {
    * whichever sees a track first; never explicitly pruned (bounded by the
    * small number of tracks live in a call, and dispose() clears it). */
   private readonly liveTracksById = new Map<string, MediaStreamTrack>();
-  /** track.id → deviceId already pushed via onIdentify, so a repeat match
-   * doesn't re-fire the callback. */
+  /** track.id → deviceId already pushed via onIdentify. A track binds to one
+   * device for its life: a repeat match doesn't re-fire the callback, and a
+   * match naming a *different* device is refused outright (journal #158 — a
+   * rebind restarts the capture pipeline under a new source id, so a pairing
+   * that oscillates shreds one participant's speech across two named sources).
+   * The correlator's symmetric ambiguity rule is what should stop the
+   * oscillation upstream; this bounds the damage of any that gets through to
+   * one wrong name instead of a 30-minute flip-flop. */
   private readonly upgradedTracks = new Map<string, ParticipantId>();
+  /** deviceId → the track.id currently bound to it, so one participant can't
+   * own two live tracks at once. Cleared for a device whose owning track has
+   * ended, which is a genuine rejoin rather than a competing claim. */
+  private readonly deviceOwners = new Map<ParticipantId, string>();
   private identifyCb: ((track: MediaStreamTrack, id: ParticipantId) => void) | null = null;
   private renameCb: ((trackId: string, id: ParticipantId) => void) | null = null;
   private rosterCb: ((entries: RosterEntry[]) => void) | null = null;
@@ -512,7 +524,25 @@ class MeetAdapter implements PlatformAdapter {
 
   private applyMatch(match: CorrelatorMatch | null): void {
     if (!match || match.confirmations < CONFIRM_THRESHOLD) return;
-    if (this.upgradedTracks.get(match.trackKey) === match.deviceId) return; // already pushed
+    const bound = this.upgradedTracks.get(match.trackKey);
+    if (bound !== undefined) {
+      if (bound !== match.deviceId) {
+        console.debug(
+          `[ears][identity] Meet identity rebind refused: track ${match.trackKey} is already ` +
+            `${bound}, so a ${match.confirmations}-turn match on ${match.deviceId} is a ` +
+            `competing claim, not an upgrade (journal #158)`,
+        );
+      }
+      return; // already pushed, or a rebind — either way, nothing to push
+    }
+    if (this.deviceClaimed(match.deviceId, match.trackKey)) {
+      console.debug(
+        `[ears][identity] Meet identity claim refused: device ${match.deviceId} is already ` +
+          `carried by live track ${this.deviceOwners.get(match.deviceId)}, so track ` +
+          `${match.trackKey} cannot also be it (journal #158)`,
+      );
+      return;
+    }
     const track = this.liveTracksById.get(match.trackKey);
     if (!track) {
       // The correlation confirmed, but the track it points at is already gone —
@@ -521,7 +551,7 @@ class MeetAdapter implements PlatformAdapter {
       // source, and the daemon attaches that source to the named attendee (the
       // Etel case — a track that died to the AudioDecoder bug before its
       // upgrade could land, journal #45).
-      this.upgradedTracks.set(match.trackKey, match.deviceId);
+      this.bind(match.trackKey, match.deviceId);
       console.debug(
         `[ears][identity] Meet late join: no live track for device ${match.deviceId} ` +
           `(track ${match.trackKey} ended before ${match.confirmations}-turn confirmation landed)` +
@@ -530,7 +560,7 @@ class MeetAdapter implements PlatformAdapter {
       this.renameCb?.(match.trackKey, match.deviceId);
       return;
     }
-    this.upgradedTracks.set(match.trackKey, match.deviceId);
+    this.bind(match.trackKey, match.deviceId);
     const name = this.names.get(match.deviceId);
     console.debug(
       `[ears][identity] Meet identity join: track ${match.trackKey} → ${match.deviceId}` +
@@ -538,6 +568,21 @@ class MeetAdapter implements PlatformAdapter {
         `via speaking-onset correlation (${match.confirmations} confirming turns)`,
     );
     this.identifyCb?.(track, match.deviceId);
+  }
+
+  private bind(trackKey: string, deviceId: ParticipantId): void {
+    this.upgradedTracks.set(trackKey, deviceId);
+    this.deviceOwners.set(deviceId, trackKey);
+  }
+
+  /** Whether `deviceId` is spoken for by a *live* track other than `trackKey`.
+   * A binding whose track has ended (or was never seen live — the rename path)
+   * no longer blocks: that participant rejoining with a fresh track is the one
+   * legitimate reason for a second claim. */
+  private deviceClaimed(deviceId: ParticipantId, trackKey: string): boolean {
+    const owner = this.deviceOwners.get(deviceId);
+    if (owner === undefined || owner === trackKey) return false;
+    return this.liveTracksById.get(owner)?.readyState === "live";
   }
 
   /**
