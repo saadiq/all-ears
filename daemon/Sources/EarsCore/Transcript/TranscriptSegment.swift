@@ -22,11 +22,23 @@ public struct TranscriptSegment: Sendable, Hashable {
   /// (not inferred from the label text here) so that renaming a speaker
   /// label later doesn't change rendering behaviour.
   public var sourceProvenance: Bool
+  /// Whether this turn is a *backchannel* — a short acknowledgement ("Yeah.",
+  /// "Right.") spoken entirely inside another speaker's turn, which does not
+  /// take the floor. Set by the attribution stage, never inferred from the
+  /// text here, so a later edit to the words cannot silently change how a turn
+  /// renders. Backchannels are demoted in the Markdown body (attached to the
+  /// turn they interrupted rather than breaking it into a new one); they are
+  /// ordinary segments everywhere else, including the JSON sidecar.
+  public var isBackchannel: Bool
 
-  public init(source: SourceID, speaker: String, segment: Segment, sourceProvenance: Bool = false) {
+  public init(
+    source: SourceID, speaker: String, segment: Segment, sourceProvenance: Bool = false,
+    isBackchannel: Bool = false
+  ) {
     self.source = source
     self.speaker = speaker
     self.segment = segment
     self.sourceProvenance = sourceProvenance
+    self.isBackchannel = isBackchannel
   }
 }
