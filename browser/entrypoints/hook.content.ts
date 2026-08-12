@@ -1,6 +1,12 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import { installHook, hookDebugState, setMeetGraphSinks, stopMeetGraphProbe } from "../lib/rtc-hook";
+import {
+  installHook,
+  hookDebugState,
+  livePeerConnections,
+  setMeetGraphSinks,
+  stopMeetGraphProbe,
+} from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
@@ -10,6 +16,8 @@ import { startMeetSpeakingWatch } from "../lib/identity/meet-speaking-dom";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { perfTag, setPerfState } from "../lib/perf-main";
+import { parseZoomMeetingId } from "../lib/identity/zoom";
+import { TeamsMeetingIdWatcher, type TeamsIdSources } from "../lib/identity/teams-meeting-id";
 // Side-effect imports: each adapter registers itself with selectAdapter.
 import "../lib/identity/meet";
 import "../lib/identity/zoom";
@@ -49,6 +57,9 @@ export default defineContentScript({
   ],
   runAt: "document_start",
   world: "MAIN",
+  // See content.ts: the hook has to reach the frame that actually constructs
+  // the RTCPeerConnection, which on Zoom is not the top one.
+  allFrames: true,
   main() {
     installHook();
     // Meet audio-graph probe plumbing (rtc-hook.ts §graph probe). rtc-hook
@@ -213,6 +224,8 @@ const MEETING_TITLE_WATCH_MS = 60_000;
  * sends no title at all.
  */
 function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => void): () => void {
+  if (platform === "zoom") return startZoomMeetingWatch(onMeetingId);
+  if (platform === "teams") return startTeamsMeetingWatch(onMeetingId);
   if (platform !== "meet") return () => {};
 
   let spaceId: string | null = null;
@@ -280,6 +293,124 @@ function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => voi
     window.removeEventListener("message", onMessage);
     if (spaceId) {
       postToIsolated({ kind: "meeting-ended", platform, externalMeetingId: spaceId });
+    }
+  };
+}
+
+/**
+ * Zoom meeting start/end marking. The external id is in the URL, so unlike
+ * Meet there is nothing to scrape and no soft-fail path — but the web client's
+ * page is up *before* the user joins, so declaring on load alone would start a
+ * session (and record the mic) for a call they only glanced at. The declare
+ * therefore waits for the hook to see a live `RTCPeerConnection`, which is the
+ * first hard evidence Zoom is actually in a call.
+ *
+ * With `allFrames` this runs in every frame of the client. The PC gate is what
+ * keeps that honest: only the frame that really holds the connection declares,
+ * and if more than one ever does, `meetingStarted` is idempotent on the
+ * external id and folds the extra ports into the one session.
+ */
+function startZoomMeetingWatch(onMeetingId?: (id: string) => void): () => void {
+  const meetingId = parseZoomMeetingId(location.pathname);
+  if (!meetingId) return () => {};
+
+  let declared = false;
+  const declare = (): boolean => {
+    if (declared) return true;
+    if (livePeerConnections().size === 0) return false;
+    declared = true;
+    onMeetingId?.(meetingId);
+    postToIsolated({ kind: "meeting-started", platform: "zoom", externalMeetingId: meetingId });
+    console.debug(`[ears][hook] Zoom meeting declared: ${meetingId}`);
+    return true;
+  };
+
+  let interval: ReturnType<typeof setInterval> | null = null;
+  // Already connected (re-injection mid-call) declares immediately; otherwise
+  // poll until the connection comes up.
+  if (!declare()) {
+    interval = setInterval(() => {
+      if (declare() && interval !== null) clearInterval(interval);
+    }, MEETING_ID_POLL_MS);
+  }
+
+  return () => {
+    if (interval !== null) clearInterval(interval);
+    if (declared) {
+      postToIsolated({ kind: "meeting-ended", platform: "zoom", externalMeetingId: meetingId });
+    }
+  };
+}
+
+/**
+ * Teams meeting start/end marking. Teams sits between the other two: the id
+ * has to be scraped like Meet's, but there is no participant traffic carrying
+ * it, so the DOM is the only surface (teams-meeting-id.ts explains which parts
+ * of it and what they cost).
+ *
+ * Everything — including the scraping — is gated on `livePeerConnections()`
+ * being non-empty. That gate does double duty here. It stops a pre-join screen
+ * declaring a session and recording the mic for a call nobody joined, exactly
+ * as it does for Zoom; and it keeps the watcher off the DOM entirely while the
+ * user is just sitting in Teams chat with capture enabled, which is the common
+ * state and the one where a per-second document sweep would be pure waste.
+ *
+ * Live evidence says the payoff is real: unlike Zoom, a Teams call carries an
+ * actual `MediaStreamTrack`, and the only thing standing between it and the
+ * daemon was the missing session (journal #160). Attribution stays `speaker-N`
+ * — teams.ts returns null from `identify()` by design.
+ */
+function startTeamsMeetingWatch(onMeetingId?: (id: string) => void): () => void {
+  const sources: TeamsIdSources = {
+    url: location.href,
+    documentText: () => document.documentElement.textContent ?? "",
+    documentHtml: () => document.documentElement.innerHTML,
+  };
+
+  // Resolving *is* declaring here: the poll below only runs once a connection
+  // is live, so the id landing is already the last missing condition.
+  let declared: string | null = null;
+  const watcher = new TeamsMeetingIdWatcher((threadId) => {
+    declared = threadId;
+    onMeetingId?.(threadId);
+    postToIsolated({ kind: "meeting-started", platform: "teams", externalMeetingId: threadId });
+    console.debug(`[ears][hook] Teams meeting declared: ${threadId}`);
+  });
+
+  // Timed from the first live peer connection, not from watch start: capture
+  // is often enabled long before a call, and a warning about an unresolved id
+  // is only meaningful once there is a call to resolve it from.
+  let inCallSince: number | null = null;
+  let warned = false;
+
+  const tick = (): boolean => {
+    if (livePeerConnections().size === 0) return false;
+    inCallSince ??= Date.now();
+    // The URL changes as Teams routes between pre-join and the call, so it is
+    // re-read each tick rather than captured once.
+    sources.url = location.href;
+    watcher.poll(sources);
+    if (declared) return true;
+    if (!warned && Date.now() - inCallSince > MEETING_ID_SOFT_FAIL_MS) {
+      warned = true;
+      console.warn(
+        "[ears][hook] Teams meeting id has not resolved yet — the meeting can't be marked until it does; capture is unaffected",
+      );
+    }
+    return false;
+  };
+
+  let interval: ReturnType<typeof setInterval> | null = null;
+  if (!tick()) {
+    interval = setInterval(() => {
+      if (tick() && interval !== null) clearInterval(interval);
+    }, MEETING_ID_POLL_MS);
+  }
+
+  return () => {
+    if (interval !== null) clearInterval(interval);
+    if (declared) {
+      postToIsolated({ kind: "meeting-ended", platform: "teams", externalMeetingId: declared });
     }
   };
 }

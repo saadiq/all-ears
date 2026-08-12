@@ -225,6 +225,60 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     expect(control.ofVerb("start")).toHaveLength(1);
   });
 
+  it("a second frame's port joins the same session rather than starting another", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    // Zoom nests the call in an iframe and both frames declare (allFrames).
+    tracker.meetingStarted("p1", "zoom", "87973734905");
+    tracker.meetingStarted("p2", "zoom", "87973734905");
+    await flush();
+
+    expect(control.ofVerb("start")).toHaveLength(1);
+    // The late-joining frame's port must resolve the session, or its PCM
+    // carries no membership tag and earsd rejects every ingest.open.
+    expect(tracker.externalIdFor("p2", "zoom")).toBe("87973734905");
+  });
+
+  it("replays a second frame's buffered pre-declare signals when it joins", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "zoom", "87973734905");
+    await flush();
+    // The media frame's audio beats its own declare.
+    tracker.streamOpened("p2", "zoom", "zoom-16781312");
+    expect(control.ofVerb("attendee")).toHaveLength(0); // buffered on p2
+
+    tracker.meetingStarted("p2", "zoom", "87973734905");
+    await flush();
+
+    expect(control.ofVerb("attendee")).toEqual([
+      {
+        verb: "attendee",
+        session: "m-1",
+        attendee: { id: "zoom-16781312", source: "browser:zoom:zoom-16781312" },
+      },
+    ]);
+  });
+
+  it("ends the session only when the last frame's port disconnects", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "zoom", "87973734905");
+    tracker.meetingStarted("p2", "zoom", "87973734905");
+    await flush();
+
+    tracker.portDisconnected("p1");
+    await flush();
+    expect(control.ofVerb("end")).toHaveLength(0); // p2 is still in the call
+
+    tracker.portDisconnected("p2");
+    await flush();
+    expect(control.ofVerb("end")).toHaveLength(1);
+  });
+
   it("attendee signals queue until the session id lands, then flush in order", async () => {
     const control = new FakeControl();
     control.deferStart = true;

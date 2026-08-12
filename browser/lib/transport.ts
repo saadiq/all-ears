@@ -9,7 +9,9 @@ import {
 // The earsd ingest transport. Owns one WebSocket to ws://127.0.0.1:<port>/ingest
 // and one piece of state: the participant → stream_id table. Lazily ingest.open
 // a source on the first PCM for a new participant, stream binary frames, and
-// ingest.close on leave. Reconnect with backoff; drop under back-pressure.
+// ingest.close on leave. Reconnect with backoff; drop under back-pressure. A
+// rejected open is retried (bounded — see MAX_OPEN_ATTEMPTS) rather than
+// treated as the end of that participant.
 //
 // Control responses carry no correlation id — earsd replies in request order
 // over the single TCP-backed WebSocket — so pending requests are matched FIFO.
@@ -22,6 +24,22 @@ const BUFFERED_AMOUNT_LIMIT = 1 << 20; // 1 MiB
 const OPENING_QUEUE_LIMIT = 50; // frames buffered per participant while opening
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 10_000;
+
+// A rejected ingest.open is a lost race, not a verdict. earsd refuses an open
+// whose identity tag names no live session, and its guard is written on the
+// assumption that "the extension opens ingest only after session.start, so a
+// live client simply retries" (openIngestSource, EarsDaemon.swift). The tag
+// comes from the session tracker per frame and is undefined until that port's
+// session is declared, so the honest client behaviour is to hold the
+// participant and re-open when the answer can have changed. These three
+// constants are what keeps "retry" from meaning "hammer the socket":
+const MAX_OPEN_ATTEMPTS = 5; // opens per participant per distinct session tag
+const OPEN_RETRY_MS = 1_000; // floor between same-tag retries (PCM arrives ~10 frames/s)
+// How long a participant may sit un-opened before we call it a fault. Generous:
+// the held queue is bounded either way, so waiting costs nothing but the
+// frames already being lost, and a session tag that shows up at 50s still
+// rescues the rest of the call.
+const OPEN_HOLD_LIMIT_MS = 60_000;
 
 type PendingRequest = { kind: "open"; participantId: ParticipantId } | { kind: "close" };
 
@@ -39,7 +57,24 @@ interface ParticipantState {
   meetingExternalId?: string;
   streamId?: string; // set once ingest.open succeeds
   opening: boolean;
-  failed: boolean;
+  /** Attempts exhausted or held too long: this participant's audio is being
+   * discarded for the rest of the call, and giveUp() said so out loud. */
+  gaveUp: boolean;
+  /** ingest.opens sent for this participant, including one in flight. Reset
+   * when a new session tag arrives, because the rejections so far answered a
+   * question we are no longer asking. */
+  attempts: number;
+  /** The tag stamped on the most recent attempt. An id that differs from this
+   * one (in particular undefined → defined) is the new information worth
+   * spending an attempt on. */
+  attemptedWith?: string;
+  /** Earliest time a same-tag retry may go out; 0 until a rejection sets it. */
+  retryAfter: number;
+  /** Deadline after which holding this participant becomes a reported fault.
+   * Infinity until the first rejection sets it. */
+  holdUntil: number;
+  /** The daemon's last stated reason, carried into the give-up log. */
+  lastError?: string;
   /** Frames held while ingest.open is in flight, with their stamps so a queued
    * frame reaches the daemon with its original send time, not its replay time. */
   queue: Array<{ pcm: Uint8Array; stamp?: FrameStamp }>;
@@ -166,16 +201,33 @@ export class EarsSocket {
 
     let st = this.participants.get(participantId);
     if (!st) {
-      st = { platform, meetingExternalId, opening: false, failed: false, queue: [], dropped: 0 };
+      st = {
+        platform,
+        meetingExternalId,
+        opening: false,
+        gaveUp: false,
+        attempts: 0,
+        retryAfter: 0,
+        holdUntil: Infinity,
+        queue: [],
+        dropped: 0,
+      };
       this.participants.set(participantId, st);
     }
-    if (st.failed) return;
+    // The tag is per-frame precisely because it arrives late: externalIdFor()
+    // is undefined until the tracker has declared this port's session, so a
+    // later frame is where a participant that opened too early learns the
+    // answer. Never overwrite a known tag with undefined — the tracker also
+    // goes quiet once the record is gone, and that is not news.
+    if (meetingExternalId) st.meetingExternalId = meetingExternalId;
+    if (st.gaveUp) return;
 
     if (st.streamId) {
       this.sendFrame(st, st.streamId, pcm, stamp);
       return;
     }
-    // Not open yet: queue (bounded, drop-oldest) and kick off ingest.open once.
+    // Not open yet: queue (bounded, drop-oldest) and open — or wait for a retry
+    // that can do better than the last one.
     if (st.queue.length >= OPENING_QUEUE_LIMIT) {
       st.queue.shift();
       st.dropped++;
@@ -183,11 +235,46 @@ export class EarsSocket {
     }
     st.queue.push({ pcm, stamp });
     this.perf?.queued.set(st.queue.length);
-    if (!st.opening) this.openStream(participantId, st);
+    this.maybeOpen(participantId, st);
+  }
+
+  /**
+   * Send ingest.open, or hold this participant for a retry with better odds.
+   * Runs on every held frame, so every bound on the retry lives here: one open
+   * in flight at a time; a fresh budget whenever the session tag changes (the
+   * only event that can turn a "no live session" rejection into a yes); and
+   * otherwise at most one attempt per OPEN_RETRY_MS until the budget is spent.
+   * Nothing here is timer-driven — a participant that has stopped sending PCM
+   * has nothing left to rescue.
+   */
+  private maybeOpen(participantId: ParticipantId, st: ParticipantState): void {
+    if (st.opening) return;
+    if (st.attempts === 0) {
+      this.openStream(participantId, st);
+      return;
+    }
+    const now = Date.now();
+    if (now >= st.holdUntil) {
+      this.giveUp(participantId, st);
+      return;
+    }
+    if (st.meetingExternalId !== undefined && st.meetingExternalId !== st.attemptedWith) {
+      st.attempts = 0; // new tag, new question
+      this.openStream(participantId, st);
+      return;
+    }
+    if (st.attempts < MAX_OPEN_ATTEMPTS && now >= st.retryAfter) {
+      // Same tag, retried anyway: session.start travels the control socket
+      // while this open travels the ingest one, so the daemon can simply be a
+      // beat behind a tag that is already correct.
+      this.openStream(participantId, st);
+    }
   }
 
   private openStream(participantId: ParticipantId, st: ParticipantState): void {
     st.opening = true;
+    st.attempts++;
+    st.attemptedWith = st.meetingExternalId;
     this.pending.push({ kind: "open", participantId });
     this.sendText({
       cmd: "ingest.open",
@@ -263,11 +350,37 @@ export class EarsSocket {
       for (const f of frames) this.sendFrame(st, st.streamId, f.pcm, f.stamp);
       this.onStreamOpened?.(req.participantId, st.platform);
     } else {
-      // No per-frame retry: mark failed and drop this participant's audio.
-      st.failed = true;
-      st.queue = [];
-      console.warn(`[ears][transport] ingest.open failed for ${req.participantId}: ${parsed.error ?? "unknown"}`);
+      // Not terminal. Keep the participant and its held frames: the usual
+      // cause is a session tag the daemon can't resolve *yet*, and the next
+      // frames carry the tag that fixes it (see maybeOpen for the bounds).
+      st.lastError = parsed.error ?? "unknown";
+      st.retryAfter = Date.now() + OPEN_RETRY_MS;
+      if (st.holdUntil === Infinity) st.holdUntil = Date.now() + OPEN_HOLD_LIMIT_MS;
+      console.warn(
+        `[ears][transport] ingest.open rejected for ${req.participantId} ` +
+          `(attempt ${st.attempts}, session tag ${st.attemptedWith ?? "none"}): ${st.lastError} — holding for a retry`,
+      );
     }
+  }
+
+  /**
+   * The retry budget or the hold window ran out. Drop this participant's audio
+   * for the rest of the call — and say so at error level, because the failure
+   * mode this guards is a recording that looks complete and is missing a
+   * person. A silent drop here is indistinguishable from someone not speaking.
+   */
+  private giveUp(participantId: ParticipantId, st: ParticipantState): void {
+    st.gaveUp = true;
+    const held = st.queue.length;
+    st.queue = [];
+    st.dropped += held;
+    if (held) this.perf?.dropped.add(held);
+    this.perf?.queued.set(0);
+    console.error(
+      `[ears][transport] giving up on ${participantId} after ${st.attempts} ingest.open attempt(s) ` +
+        `over ${OPEN_HOLD_LIMIT_MS / 1000}s (session tag ${st.attemptedWith ?? "none"}, last error: ` +
+        `${st.lastError ?? "unknown"}) — ${st.dropped} frame(s) dropped, this participant is NOT being recorded`,
+    );
   }
 
   private sendText(obj: unknown): void {
