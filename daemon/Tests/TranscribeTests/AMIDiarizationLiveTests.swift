@@ -10,7 +10,7 @@ import struct EarsCore.AudioBuffer
 /// End-to-end diarization check against a real, hand-transcribed multi-speaker
 /// session: the first 5 minutes of AMI session `ES2004a`, using the
 /// `Mix-Headset` stream (a monaural sum of every participant's headset mic —
-/// one channel, several speakers, the same shape as the Dipanshu interview).
+/// one channel, several speakers).
 ///
 /// The AMI Session Corpus is CC BY 4.0. Audio is fetched on demand from the
 /// official Edinburgh mirror and pinned by SHA-256; the reference speaker

@@ -33,9 +33,9 @@ enum SummarizePipeline {
     var promptContent: String
     /// `notes`: a path template for a companion notes file, read as **plain
     /// Markdown** — no frontmatter parsing, no sidecar. When set and the
-    /// expanded path doesn't exist, this preset fails (the others still
-    /// run): a prompt written to fold jotted notes into its output would
-    /// silently drop them otherwise.
+    /// expanded path doesn't exist, the preset still runs with an empty
+    /// notes section and warns on stderr, so a call with no jottings waiting
+    /// still gets summarized from its transcript.
     var notes: PathTemplate? = nil
     /// `out`: a path template for this preset's output, overriding the
     /// default sibling naming. May reference `{notes}` to write back over
@@ -152,11 +152,25 @@ enum SummarizePipeline {
         inputs.notes ?? preset.notes.map { $0.expand(context) }
       var notesContext = context
       notesContext.notes = notesPath
+      let notesContent = notesPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
       return PresetPlan(
         preset: preset,
         notesPath: notesPath,
-        notes: notesPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) },
-        outputURL: preset.out.map { URL(fileURLWithPath: $0.expand(notesContext)) })
+        // A configured path that doesn't resolve degrades to `""` rather than
+        // `nil`: the prompt keeps the two-section shape it was written for,
+        // and `nil` stays reserved for "this preset configures no notes".
+        notes: notesPath == nil ? nil : (notesContent ?? ""),
+        notesMissing: notesPath != nil && notesContent == nil,
+        // `--out` outranks a preset's `out` template, matching how `--notes`
+        // already outranks `notes` just above and how `--set` outranks config
+        // everywhere else: the flag is the highest-precedence layer, not the
+        // lowest. Left `nil` here, the write falls through to `baseOutputURL`,
+        // which `outputBaseURL(for:explicitOut:)` has already resolved to the
+        // explicit path. A preset whose `out` is `{notes}` is redirected too —
+        // overriding the destination is the whole point of the flag.
+        outputURL: inputs.out == nil
+          ? preset.out.map { URL(fileURLWithPath: $0.expand(notesContext)) }
+          : nil)
     }
 
     // Presets run independently (issue #63): one preset's failure no longer
@@ -168,15 +182,18 @@ enum SummarizePipeline {
     var firstFailure: ExitClass? = nil
     for plan in plans {
       let preset = plan.preset
-      // A configured notes file that isn't there is this preset's failure,
-      // not the run's: its prompt is written to fold those notes into its
-      // output, so summarizing without them would silently lose them.
-      if let notesPath = plan.notesPath, plan.notes == nil {
+      // A configured notes file that isn't there used to fail this preset, on
+      // the reasoning that a fold-in prompt would silently lose the jottings.
+      // In practice the common case is the opposite one: most captured calls
+      // have no note waiting at the templated path, and failing there left
+      // every such session with a transcript and no summary at all. The
+      // preset now runs against an empty notes section — the prompt still
+      // sees `## Jotted notes` / `## Transcript` and simply has nothing to
+      // fold — and the absence is reported rather than swallowed.
+      if plan.notesMissing, let notesPath = plan.notesPath {
         dependencies.writeStderr(
-          "error: preset '\(preset.name)': no notes file at \(notesPath)")
-        dependencies.onPresetResult(PresetResult(preset: preset.name, ok: false))
-        if firstFailure == nil { firstFailure = .inputMissing }
-        continue
+          "warning: preset '\(preset.name)': no notes file at \(notesPath); "
+            + "summarizing from the transcript alone")
       }
 
       let prompt = LLMPrompt(
@@ -257,9 +274,14 @@ enum SummarizePipeline {
     var preset: Preset
     /// The expanded `notes` path, when this preset configures one.
     var notesPath: String?
-    /// That file's contents — `nil` when it doesn't exist or can't be read,
-    /// which fails this preset (see the run loop).
+    /// That file's contents. `nil` only when this preset configures no notes
+    /// at all; a configured-but-absent file reads as `""` so the prompt still
+    /// gets its labelled `## Jotted notes` section (see ``notesMissing``).
     var notes: String?
+    /// Whether ``notesPath`` was configured but couldn't be read — the
+    /// stderr warning's trigger, and the one thing `notes == ""` can't
+    /// distinguish from a genuinely empty notes file.
+    var notesMissing: Bool = false
     /// The expanded `out` path, or `nil` for the default sibling naming.
     var outputURL: URL?
   }

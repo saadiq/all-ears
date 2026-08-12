@@ -175,16 +175,21 @@ struct SummarizePipelineTests {
     #expect(prompt.dynamicSuffix.contains("Transcript body."))
   }
 
-  @Test("a configured notes file that doesn't exist fails only its own preset")
-  func missingNotesFailsOnePreset() async throws {
+  @Test("a configured notes file that doesn't exist summarizes with empty notes")
+  func missingNotesFallsBackToEmpty() async throws {
     let directory = Self.makeTempDirectory("missing-notes")
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
 
     let results = Mutex<[SummarizePipeline.PresetResult]>([])
-    var (deps, _) = Self.dependencies(
-      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+    let stderr = Mutex<[String]>([])
+    var (deps, backend) = Self.dependencies(
+      llmResults: [
+        .success(LLMCompletionResult(text: "Summary.")),
+        .success(LLMCompletionResult(text: "Brief.")),
+      ])
     deps.onPresetResult = { result in results.withLock { $0.append(result) } }
+    deps.writeStderr = { line in stderr.withLock { $0.append(line) } }
 
     let exitCode = await SummarizePipeline.run(
       inputs: SummarizePipeline.Inputs(
@@ -198,13 +203,21 @@ struct SummarizePipelineTests {
         out: nil, outputRoot: directory.path),
       dependencies: deps)
 
-    // Exit 3 (input missing) — but the healthy preset still ran and wrote.
-    #expect(exitCode == 3)
+    // Both presets succeed: the absent notes file is a warning, not a failure.
+    #expect(exitCode == 0)
     let recorded = results.withLock { $0 }
     #expect(recorded.count == 2)
-    #expect(recorded.first == SummarizePipeline.PresetResult(preset: "notes", ok: false))
-    #expect(recorded.last?.preset == "brief")
-    #expect(recorded.last?.ok == true)
+    #expect(recorded.filter(\.ok).count == 2)
+
+    // The prompt still carries the labelled two-section shape, with the notes
+    // half empty — that is what "an empty string for the notes" buys.
+    let notesPrompt = try #require(await backend.receivedPrompts.first)
+    #expect(notesPrompt.dynamicSuffix.hasPrefix("## Jotted notes\n\n\n\n## Transcript\n\n"))
+    #expect(notesPrompt.dynamicSuffix.contains("Transcript body."))
+
+    // The absence is reported, not swallowed.
+    let warnings = stderr.withLock { $0 }
+    #expect(warnings.contains { $0.contains("no notes file at") && $0.hasPrefix("warning:") })
   }
 
   @Test("out = {notes} overwrites the notes file, and frontmatter = false writes the body alone")
@@ -244,6 +257,40 @@ struct SummarizePipelineTests {
     #expect(
       !FileManager.default.fileExists(
         atPath: directory.appendingPathComponent("daily/2026-08-05.json").path))
+  }
+
+  @Test("--out overrides a preset's own out template, including out = {notes}")
+  func explicitOutBeatsPresetOut() async throws {
+    let directory = Self.makeTempDirectory("out-precedence")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("daily/2026-08-05.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted".write(to: notesURL, atomically: true, encoding: .utf8)
+    let explicitURL = directory.appendingPathComponent("elsewhere/redirected.md")
+
+    let (deps, _) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "meeting-notes", promptContent: "Notes:",
+            notes: PathTemplate("{output_root}/daily/2026-08-05.md"),
+            out: PathTemplate("{notes}"),
+            frontmatter: false)
+        ],
+        out: explicitURL.path, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    // The summary went where the flag said, parent directory created for it...
+    #expect(try String(contentsOf: explicitURL, encoding: .utf8) == "Summary.\n")
+    // ...and the notes file the preset would have overwritten is untouched.
+    #expect(try String(contentsOf: notesURL, encoding: .utf8) == "- jotted")
   }
 
   @Test("merges sources/vocab and spans the range across multiple input transcripts")

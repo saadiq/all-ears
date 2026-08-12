@@ -1,0 +1,179 @@
+{
+  "model": "eleven_multilingual_v2",
+  "output_format": "mp3_44100_128",
+  "seed": 20260806,
+  "voice_settings": {
+    "stability": 0.5,
+    "use_speaker_boost": true,
+    "similarity_boost": 0.75,
+    "style": 0.0
+  },
+  "voices": {
+    "host": "JBFqnCBsd6RMkjVDRZzb",
+    "alpha": "EXAVITQu4vr4xnSDxMaL",
+    "bravo": "EXAVITQu4vr4xnSDxMaL",
+    "charlie": "CwhRBWXzGAHq8TQ4Fs17"
+  },
+  "passages": {
+    "host-p1.mp3": {
+      "speaker": "host",
+      "label": "p1",
+      "text": "The clay under the back border stays wet all winter, so I forked in leaf mould and coarse grit last autumn.",
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "fingerprint": "63ff289a6266061e0d61d4f4d465f8ea47bdfbbd6fa087982ed23cfd40416500",
+      "sha256": "eda381be27e14007c5d25134bb51b52edffef08694113e1965ded8bb6a292e1f"
+    },
+    "host-p2.mp3": {
+      "speaker": "host",
+      "label": "p2",
+      "text": "Slugs shredded the young hostas again, but the copper ring around the raised bed seems to be holding them off.",
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "fingerprint": "02e7b9f81453b51d10d8df13c8862befbcf09346ef9321e569235653c90789b4",
+      "sha256": "18ca0e4f904dc52d4c82328cbd245622eeed76aa81854fd16245c65021137572"
+    },
+    "host-p3.mp3": {
+      "speaker": "host",
+      "label": "p3",
+      "text": "I moved the compost heap nearer the shed and turned it twice, and the middle is already warm enough to steam.",
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "fingerprint": "63beeda25d430765864cb17634ddeb488aaef233cccb0702383d77b8524389d7",
+      "sha256": "ca029f6fdf2e3ac97ea189cd624e21b0558ccf37422822fca444d704b86c02c4"
+    },
+    "host-p4.mp3": {
+      "speaker": "host",
+      "label": "p4",
+      "text": "Pruning the espaliered pear too late cost me most of the fruiting spurs, so this year I cut back in midsummer.",
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "fingerprint": "3d8cfde7df08c48791e8fb986407dcb591254490c4c6714fcd1bdc9c24af68a7",
+      "sha256": "150655aa9469479610ea0e4f9478ce5a9b53de07137c857b035c27b24103da4b"
+    },
+    "host-ov.mp3": {
+      "speaker": "host",
+      "label": "ov",
+      "text": "The greenhouse vents jam whenever the humidity climbs, so I prop them open with a length of bamboo cane.",
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "fingerprint": "e3676904c584b597b8f4bba318163f193d5cccf639890b40781d3d4a1c818c74",
+      "sha256": "0103c98aa1a67d7a0c0f63c399c09fa1b690ea1cb1ede3dba236dde635bf761b"
+    },
+    "alpha-p1.mp3": {
+      "speaker": "alpha",
+      "label": "p1",
+      "text": "We reefed early because the forecast promised gusts through the afternoon, and the swell was already stacking up outside the harbour.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "cdba8a48746ac81d421672ba7c44eb6b5c9190e614e0fa61e38eb200bae4aa62",
+      "sha256": "28d0bec9f9b74d812feaab19e864b4810d7c2dc9a741b4f210e6b07d9315b520"
+    },
+    "alpha-p2.mp3": {
+      "speaker": "alpha",
+      "label": "p2",
+      "text": "The tide turned against us near the headland, so we ferry glided across and let the current do the work.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "1859e8a5d563cc4c2beceb1eb8c38e021fce428e567ee8acfb076015e29dc0fc",
+      "sha256": "a478add77d7fdb0c2d2ab009617df59192fb9b4b42061552de505413328fb6b3"
+    },
+    "alpha-p3.mp3": {
+      "speaker": "alpha",
+      "label": "p3",
+      "text": "Halyards slap all night in the marina, which is why I lash them away from the mast before turning in.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "9b5822c7622d118c6ec6a90fda174bb0bd0e39aa15559d96b842d786052d15c6",
+      "sha256": "0c516decb72f3f1ba41fcb40cc95c04da2fdc25aeef9782130a73732fab8c76d"
+    },
+    "alpha-p4.mp3": {
+      "speaker": "alpha",
+      "label": "p4",
+      "text": "Anchoring in that bay is fine on sand, but the weed patches nearer the shore refuse to hold a hook.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "a14242860f74b21e5150b20a9ec8a48c19cc79a5c6f083aa6ef105e467fc6d0b",
+      "sha256": "8357929c2c6d278803144181585df31e9ec32508d0c543caf576d45388032dbf"
+    },
+    "alpha-ov.mp3": {
+      "speaker": "alpha",
+      "label": "ov",
+      "text": "Our chartplotter lost its fix twice on the crossing, so we fell back on the compass and a paper chart.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "3bc50248388a78feeaf76cd9a0e42e7b0506cc1cdf3cc2638118df4350de736a",
+      "sha256": "ccafbf54f113f26582ceb560b88b5fdf1201777d624e51ef88a986983f863a4b"
+    },
+    "bravo-p1.mp3": {
+      "speaker": "bravo",
+      "label": "p1",
+      "text": "My starter doubles overnight now, which means the kitchen has finally warmed up enough for a decent rise.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "f03f48ccf8333eeb89d8dc4348ce1dfa88413f2d1b2fd7289ecaeb3f816aa896",
+      "sha256": "fd9ab8bdc4864fc6c7a1fd8c81507cc07bcbc3a1e85bc514ce8d1093ade468ee"
+    },
+    "bravo-p2.mp3": {
+      "speaker": "bravo",
+      "label": "p2",
+      "text": "Scoring the loaf deeper gave a much better ear, though the crumb is still tighter than I would like.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "686424bd48100f88c376551c791437c1e4e2d74a54e2c50be5087dca64c24669",
+      "sha256": "0732df5ca387ac5671e187284cf0e30ffda336e44c904e5b114dc5c0fdee2ef4"
+    },
+    "bravo-p3.mp3": {
+      "speaker": "bravo",
+      "label": "p3",
+      "text": "I switched to a wetter dough and stretched it in the bowl instead of kneading it on the counter.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "f15b125acc3571a1b66748c59d64bf8898c198a4a2ac8cd99224aef097d97216",
+      "sha256": "0b4fea42cec944386479b55b85e6c1204bdece76a7a3dfd23a60497bbaedbfcc"
+    },
+    "bravo-p4.mp3": {
+      "speaker": "bravo",
+      "label": "p4",
+      "text": "Steam matters more than heat at the start, so I throw a tray of boiling water onto the oven floor.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "94c93a701cee14d072181881e93d4b981d9b4214539079c4ab1f6bc156f07ae0",
+      "sha256": "96eb55a19998c33de2508a1b06111bd945c2e995753741c601ff40a7584bcbb0"
+    },
+    "bravo-ov.mp3": {
+      "speaker": "bravo",
+      "label": "ov",
+      "text": "Rye behaves nothing like wheat, it goes sticky under the hands and needs a far shorter proof.",
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "fingerprint": "7b2e49bf918561692770730012fbfca07ce839777403da0a76aac98287b687e2",
+      "sha256": "cee9b18bea24e4837efd239333a9faea5b4da04c4d926baeaacc9811727f9269"
+    },
+    "charlie-p1.mp3": {
+      "speaker": "charlie",
+      "label": "p1",
+      "text": "Collimation drifts every time I carry the scope down the stairs, so I check the secondary mirror before anything else.",
+      "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+      "fingerprint": "ae642707989aad38ec5df6cc7ecd1c830d1a175e38bf64bcea77c95929b04ee9",
+      "sha256": "3e5aaa5b3d112e41eace88ed64aafcc76f77f43d8c3e7ee0dd02c8327337e302"
+    },
+    "charlie-p2.mp3": {
+      "speaker": "charlie",
+      "label": "p2",
+      "text": "Seeing was poor last night, the planet boiled at high magnification and only settled during a few brief gaps.",
+      "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+      "fingerprint": "00d8b1d86037e77105731a4b45a3eedfa230d6d437cf708b69c9924515efccb8",
+      "sha256": "841ed22b7a1bbc7a5ffca4e1773009df02db14f84bbb026541ac3566a8a6706d"
+    },
+    "charlie-p3.mp3": {
+      "speaker": "charlie",
+      "label": "p3",
+      "text": "Light pollution washes out the fainter galaxies, but the narrowband filter still pulls the nebula out of the glow.",
+      "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+      "fingerprint": "5ce14d882a1133ddd8b2a15af9a253eb74e6193075bf6fe509919dd4e7e1764b",
+      "sha256": "e93680635ef05338c5b874c92aa351c04cc13738d35b2db3acdc3d6bc9de2aa1"
+    },
+    "charlie-p4.mp3": {
+      "speaker": "charlie",
+      "label": "p4",
+      "text": "Tracking held well until the counterweight slipped, and after that every long exposure trailed right across the frame.",
+      "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+      "fingerprint": "973a40069e310280e0fc381a0d834732dc1267a5aca58f029ccda1b266d2c523",
+      "sha256": "6390cf03cd21b40d715de435cfdbcf424a33ac2e778dc77c327822897e1b19f7"
+    },
+    "charlie-ov.mp3": {
+      "speaker": "charlie",
+      "label": "ov",
+      "text": "Dew on the corrector plate ends the session faster than cloud, so the heater strip goes on early.",
+      "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+      "fingerprint": "ab189945e52aacfda31fbc6f34b590f77f8ecc1b7ecae0f95b0b606f36b5503b",
+      "sha256": "4d9fe86d73cf2675600a6a93f4cef7cc1f5ef32a79ca517d2cf192f870dd0b90"
+    }
+  }
+}

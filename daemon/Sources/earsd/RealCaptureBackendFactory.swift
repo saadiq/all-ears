@@ -54,10 +54,51 @@ let syntheticCaptureBackendEnvironmentKey = "ALLEARS_CAPTURE_BACKEND"
 /// touching Core Audio or prompting TCC. `earsd`'s own normal invocation
 /// never sets this; only a test harness does, on its own spawned child
 /// process's environment (see `CLISmokeTests`).
+#if DEBUG
+  /// Prefix of the per-source environment variable naming a WAV to capture as
+  /// that source instead of the microphone: `ALLEARS_CAPTURE_FILE_MIC` for
+  /// `mic`, using the id's ``SourceID/pathSafe`` form upper-cased.
+  ///
+  /// **The gate is the build, not this variable.** The whole
+  /// ``FileAudioSourceProvider`` type is `#if DEBUG`, so a release binary has no
+  /// code path that reads a file as a microphone at all — deliberately unlike
+  /// ``syntheticCaptureBackendEnvironmentKey`` next door, which is env-gated and
+  /// does ship. That is defensible for a constant tone and not for arbitrary
+  /// speech: a file-backed mic can put a recording into a stored transcript that
+  /// is indistinguishable from a real one. This variable only chooses *which*
+  /// file, inside a build that already has the capability.
+  ///
+  /// Used by `test/ground-truth/`'s runner so the `mic` source carries the same
+  /// `host.wav` the browser's `--use-file-for-fake-audio-capture` transmits.
+  /// The two readers are independent and start on different clocks; that is by
+  /// design, and the scorer's cross-correlation recovers the offset.
+  let fileCaptureSourceEnvironmentPrefix = "ALLEARS_CAPTURE_FILE_"
+
+  private func fileBackedProvider(for id: SourceID) -> FileAudioSourceProvider? {
+    let key = fileCaptureSourceEnvironmentPrefix + id.pathSafe.uppercased()
+    guard let path = ProcessInfo.processInfo.environment[key], !path.isEmpty else { return nil }
+    do {
+      // Realtime, not offline: the capture path has to run at wall-clock speed
+      // because its timing is scored against a live call.
+      return try FileAudioSourceProvider(url: URL(fileURLWithPath: path), timing: .realtime)
+    } catch {
+      // Fail loud. Falling back to the real microphone here would put room
+      // audio into a corpus that claims to be a known recording — the exact
+      // silent-wrongness this provider exists to remove.
+      fatalError("\(key)=\(path) could not be opened as a capture source: \(error)")
+    }
+  }
+#endif
+
 func realCaptureBackendFactory() -> CaptureBackendFactory {
   guard ProcessInfo.processInfo.environment[syntheticCaptureBackendEnvironmentKey] == "synthetic"
   else {
     return { descriptor in
+      #if DEBUG
+        if let provider = fileBackedProvider(for: descriptor.id) {
+          return MicCaptureBackend(source: descriptor.id, provider: provider)
+        }
+      #endif
       switch descriptor.sourceClass {
       case .mic:
         // Pass the configured device UID through; with none set,

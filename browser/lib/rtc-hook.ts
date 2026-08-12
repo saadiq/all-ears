@@ -6,6 +6,7 @@ import {
   type CollectionsMuteEvent,
 } from "./identity/meet-collections";
 import { AudioGraphRegistry } from "./meet-audio-graph";
+import { looksLikeCaptureDevice } from "./capture-seams";
 
 // The RTCPeerConnection constructor hook — the singleton part of the capture
 // spine, installed exactly once per page realm (claimInstall guards it). On
@@ -894,9 +895,35 @@ function registerWebAudioTrack(track: MediaStreamTrack, via: string): void {
   try {
     const registry = webAudioTrackRegistry();
     if (registry.has(track.id)) return;
+    classifyOnSight(track);
     registry.set(track.id, { track, via, registeredAt: new Date().toISOString() });
   } catch {
     // diagnostic only — never throws into Meet's audio path
+  }
+}
+
+/**
+ * Classify a track the moment it enters the WebAudio registry, so the seam
+ * can never see it unjudged.
+ *
+ * This is the one place a webaudio-seam track is first seen, which makes it
+ * the place to decide: the gUM/sender wraps below only fire when the page
+ * makes those calls *while the hook is installed*, and a track that reaches
+ * `createMediaStreamSource` without one of them having run would otherwise
+ * enter the registry as `unknown` with nothing left to reconsider it.
+ *
+ * Only ever writes `local`, and only on positive evidence. A track with no
+ * device settings is left unclassified rather than called `remote`: absence of
+ * a `deviceId` is not evidence of remoteness, and writing a guess here would
+ * poison `registerTrackProvenance`'s first-write-wins contract for the real
+ * `ontrack` signal that may still arrive.
+ */
+function classifyOnSight(track: MediaStreamTrack): void {
+  try {
+    if (!looksLikeCaptureDevice(track.getSettings?.())) return;
+    registerTrackProvenance(track.id, "local", "device-settings");
+  } catch {
+    // bookkeeping only — a track that won't report its settings stays unknown
   }
 }
 
@@ -932,9 +959,18 @@ export function webAudioTracks(): MediaStreamTrack[] {
 // track from the page's own API contract, never from signal analysis: a track
 // handed out by getUserMedia/getDisplayMedia or handed to a sender is local by
 // construction; a track delivered by `ontrack` is remote; a clone inherits its
-// parent. Everything else stays unknown — and unknown ADOPTS (capture-seams.ts
-// policy): a wrongly dropped remote track is unrecoverable data loss, a missed
-// local one only a transcript-quality bug, so classification can only fail safe.
+// parent; a track that reports a capture device in getSettings() is local
+// (`classifyOnSight`, the signal that survives when the hook installed too late
+// to witness any of the above). Everything else stays unknown — and unknown
+// ADOPTS (capture-seams.ts policy): a wrongly dropped remote track is
+// unrecoverable data loss, a missed local one only a transcript-quality bug, so
+// classification can only fail safe.
+//
+// Classification is a picture that only improves, never a one-shot decision:
+// a track can arrive unclassified and be named local later, when the page
+// hands it to a sender. `seamTracksToRetire` is what acts on that — the
+// 2026-08-06 call adopted the local mic as unknown and, because provenance was
+// read once at adoption, kept capturing the user for the whole 42 minutes.
 //
 // Realm-global like __earsLiveTracks, so re-injected epochs share one lineage.
 // Reads and writes never enumerate getSenders()/getReceivers() — only the

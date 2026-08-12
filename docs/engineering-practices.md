@@ -33,7 +33,10 @@ Tier-2/3 suites that need real Core ML/ANE inference (and, for some, an internet
 
 - **ASR + word timings** — LibriSpeech `1089-134686-0000` (CC BY 4.0), a ~10 s single-speaker clip.
 - **Diarization** — the first 5 min of AMI meeting `ES2004a` `Mix-Headset` (CC BY 4.0), a real multi-speaker meeting with a hand-annotated RTTM reference.
-- **Diarization (local)** — `DipanshuDiarizeLiveTests` runs against a local file via `EARS_DIARIZE_TEST_FILE` (default `~/Downloads/Dipanshu.m4a`); the suite stays disabled unless that file is present.
+
+### The ground-truth corpus is the one committed exception
+
+`test/ground-truth/raw/` holds ~1.8 MB of TTS renders (20 files, each under ~120 KB), committed rather than fetched. There is no public URL to fetch them from, and re-rendering is not reproducible: the same script, voice id, model and seed can return different audio as ElevenLabs updates its models, so a fetch-on-demand fixture would silently change what the corpus means. `raw/manifest.json` pins each file by SHA-256 along with the voice, model, seed and settings that produced it — but a hash is only useful next to the bytes it describes. The corpus is worthless if a run recorded today cannot be re-scored against a new algorithm next month, and that is the whole reason it exists. See [`test/ground-truth/README.md`](../test/ground-truth/README.md) for the harness and [`CORPUS.md`](../test/ground-truth/CORPUS.md) for the passages and slot grid.
 
 ## Small, incremental commits
 

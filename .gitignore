@@ -5,3 +5,8 @@
 docs/**/journal.db
 docs/**/journal.db-shm
 docs/**/journal.db-wal
+
+# Local secrets
+.env
+.env.*
+!.env.example
