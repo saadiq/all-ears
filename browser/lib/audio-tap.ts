@@ -16,6 +16,7 @@ import {
   seamOrderFor,
   seamTracksToAdopt,
   seamTracksToRetire,
+  admitReceiverTrack,
   type SeamId,
 } from "./capture-seams";
 import type { PlatformAdapter } from "./identity/adapter";
@@ -296,16 +297,81 @@ function handleLateIdentity(trackId: string, id: ParticipantId): void {
   postToIsolated({ kind: "participant-renamed", platform: cfg.platform, fromId, toId: id });
 }
 
+/**
+ * Receiver tracks deferred because they were muted when dispatched, keyed to
+ * their listener cleanup.
+ *
+ * Meet pre-allocates remote audio transceivers before there is anyone to fill
+ * them — journal #142 saw three in a SOLO call, and #165 confirmed the same
+ * three on a two-person call with only the carrying one ever unmuting. Every
+ * one that reaches ``startPipeline`` becomes a `speaker-<n>` attendee in
+ * session.toml and an `attendee_joined` in events.jsonl, for a participant who
+ * does not exist; that noise has been in every session file since July.
+ *
+ * `muted` is the discriminator, and it costs nothing to wait on: a muted track
+ * carries no audio by definition, and ``AudioFrameSource`` already could not
+ * build its processor until the same edge (a MediaStreamTrackProcessor
+ * constructed on a muted track never delivers frames, even after it unmutes).
+ * So the pipeline was always going to start at first unmute — this only stops
+ * us announcing a participant before then.
+ *
+ * NOTE this covers receiver/`ontrack` tracks only. The webaudio seam's tracks
+ * all report `muted=false` even when inert: on the 2026-08-12 call all three
+ * were unmuted, yet `webaudio-track-2` and `-3` transcribed to zero segments
+ * (#171). Suppressing those needs a different signal — they carry frames, the
+ * frames are just silent — and silence alone must not retire a source, because
+ * a genuinely quiet participant looks identical (DTX / noise suppression).
+ */
+const deferredMutedTracks = new Map<MediaStreamTrack, () => void>();
+
+/** Start once `track` unmutes, so a never-filled transceiver never becomes an
+ * attendee. Idempotent per track; self-cleaning on unmute, end, or teardown. */
+function deferUntilUnmuted(
+  track: MediaStreamTrack,
+  stream: MediaStream,
+  transceiver: RTCRtpTransceiver,
+): void {
+  if (deferredMutedTracks.has(track)) return;
+  const epoch = cfg.epoch;
+  const cleanup = (): void => {
+    track.removeEventListener("unmute", onUnmute);
+    track.removeEventListener("ended", onEnded);
+    deferredMutedTracks.delete(track);
+  };
+  function onUnmute(): void {
+    cleanup();
+    // Re-run the same admission check sink ran: an epoch handoff, a seam
+    // escalation, or another path adopting this track may all have happened
+    // while we waited. `muted` is false by definition on this edge.
+    if (!isCurrentEpoch(epoch)) return;
+    const seam = activeSeam();
+    if (admitReceiverTrack(seam, { muted: false, alreadyCapturing: pipelines.has(track) }) !== "start") return;
+    startPipeline(track, { seam, rtc: { stream, transceiver } });
+  }
+  function onEnded(): void {
+    cleanup();
+    console.debug(
+      `[ears][capture] muted receiver track ${track.id} ended without ever unmuting` +
+        ` — no attendee was created (pre-allocated transceiver, journal #165)`,
+    );
+  }
+  track.addEventListener("unmute", onUnmute);
+  track.addEventListener("ended", onEnded);
+  deferredMutedTracks.set(track, cleanup);
+  console.debug(`[ears][capture] deferring muted receiver track ${track.id} until it unmutes`);
+}
+
 const sink: TrackSink = (track, stream, transceiver) => {
   if (!isCurrentEpoch(cfg.epoch)) return; // a newer epoch owns capture
-  if (pipelines.has(track)) return; // already capturing this track
-  // Receiver tracks feed pipelines only while a receiver-based seam is active
-  // (the raw track, or the encoded tee that keys on it). Once the call has
-  // escalated past those, the tracks are known-silent decoys (journal #82) and
-  // capturing them would post empty sources to the daemon.
   const seam = activeSeam();
-  if (!seamUsesReceiverTracks(seam)) return;
-  startPipeline(track, { seam, rtc: { stream, transceiver } });
+  switch (admitReceiverTrack(seam, { muted: track.muted, alreadyCapturing: pipelines.has(track) })) {
+    case "skip":
+      return;
+    case "defer-until-unmute":
+      return deferUntilUnmuted(track, stream, transceiver);
+    case "start":
+      return startPipeline(track, { seam, rtc: { stream, transceiver } });
+  }
 };
 
 function activeSeam(): SeamId {
@@ -506,6 +572,9 @@ function teardownAll(): void {
   // untouched. Stopping them releases the processors holding them open.
   for (const clone of adoptedSeamTracks.values()) clone.stop();
   adoptedSeamTracks.clear();
+  // Drop unmute listeners for tracks this epoch was waiting on; the next epoch
+  // replays the live registry and re-defers whatever is still muted.
+  for (const cleanup of [...deferredMutedTracks.values()]) cleanup();
   loggedSeamSkips.clear();
 }
 
