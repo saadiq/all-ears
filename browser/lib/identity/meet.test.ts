@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONFIRM_THRESHOLD,
   MeetAdapter,
+  SELF_MARKER,
+  findLocalDeviceId,
   PARTICIPANT_ID_ATTRIBUTES,
   extractDisplayName,
   extractParticipantId,
@@ -454,5 +456,167 @@ describe("MeetAdapter track ↔ device binding", () => {
       ["track-a", "devices/160"],
       ["track-b", "devices/161"],
     ]);
+  });
+});
+
+// ── Local-participant detection (journal #164, #167, #169) ──────────────────
+
+describe("findLocalDeviceId", () => {
+  const tile = (id: string, text: string) =>
+    new FakeEl({ attrs: { "data-participant-id": id }, text });
+
+  // fakeDoc above only answers the "audio, video" selector; the tile scan uses
+  // the participant-id selector, so it needs its own document fake.
+  const fakeTileDoc = (tiles: FakeEl[]): DocumentLike => ({
+    querySelectorAll: (sel) => (sel.includes("data-participant-id") ? tiles : []),
+    querySelector: () => null,
+  });
+
+  it("returns the device id of the tile carrying the (You) marker", () => {
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/108", "Priya Raman"),
+      tile("spaces/s/devices/107", "Tom Elliot (You)"),
+    ]);
+    expect(findLocalDeviceId(doc)).toBe("spaces/s/devices/107");
+  });
+
+  it("matches the live shape: two elements per device, only the panel row marked", () => {
+    // Meet renders a video tile and a People row per participant; only the row
+    // carries the marker, and both carry the same data-participant-id.
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/108", "Priya Raman"),
+      tile("spaces/s/devices/107", "Tom Elliot"),
+      tile("spaces/s/devices/107", "Tom Elliot (You)"),
+      tile("spaces/s/devices/108", "Priya Raman"),
+    ]);
+    expect(findLocalDeviceId(doc)).toBe("spaces/s/devices/107");
+  });
+
+  it("returns undefined when no tile is marked (a non-English UI)", () => {
+    const doc = fakeTileDoc([tile("spaces/s/devices/108", "Priya Raman"), tile("spaces/s/devices/107", "Tom Elliot")]);
+    expect(findLocalDeviceId(doc)).toBeUndefined();
+  });
+
+  it("returns undefined when two devices are marked — ambiguous beats wrong", () => {
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/107", "Tom Elliot (You)"),
+      tile("spaces/s/devices/108", "A Trickster (you)"),
+    ]);
+    expect(findLocalDeviceId(doc)).toBeUndefined();
+  });
+
+  it("does not match a name that merely starts with 'you'", () => {
+    expect(SELF_MARKER.test("Youssef Haddad")).toBe(false);
+    const doc = fakeTileDoc([tile("spaces/s/devices/107", "Youssef Haddad")]);
+    expect(findLocalDeviceId(doc)).toBeUndefined();
+  });
+
+  it("tolerates spacing variations Meet might render", () => {
+    expect(SELF_MARKER.test("Tom Elliot ( You )")).toBe(true);
+    expect(SELF_MARKER.test("Tom Elliot (you)")).toBe(true);
+  });
+
+  it("returns undefined for a document with no tiles at all", () => {
+    expect(findLocalDeviceId(fakeTileDoc([]))).toBeUndefined();
+  });
+});
+
+describe("MeetAdapter local-participant exclusion", () => {
+  let clock = 0;
+
+  const tileEl = (id: string, text: string) =>
+    new FakeEl({ attrs: { "data-participant-id": id }, text });
+
+  function stubDocument(tiles: FakeEl[]): void {
+    (globalThis as { document?: unknown }).document = {
+      querySelectorAll: (sel: string) => (sel.includes("data-participant-id") ? tiles : []),
+      querySelector: () => null,
+      body: null,
+      documentElement: null,
+    };
+  }
+
+  function turn(adapter: MeetAdapter, track: { id: string }, deviceId: string): void {
+    clock += 5000;
+    vi.setSystemTime(clock);
+    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true);
+    adapter.onDeviceSpeaking(deviceId, clock + 50);
+  }
+
+  beforeEach(() => {
+    clock = 100_000;
+    vi.useFakeTimers();
+    (globalThis as { window?: unknown }).window ??= {};
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete (globalThis as { document?: unknown }).document;
+  });
+
+  it("never binds a remote track to the local device, however many turns confirm", () => {
+    // The journal #172 failure: the user backchannels over the remote's turn,
+    // their ring burst lands in the remote track's window, and the pairing
+    // confirms — titling the remote's whole call with the local user's name.
+    stubDocument([
+      tileEl("devices/107", "Tom Elliot (You)"),
+      tileEl("devices/108", "Priya Raman"),
+    ]);
+    const adapter = new MeetAdapter();
+    const joins: Array<[string, string]> = [];
+    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.pollIdentities(); // roster scan latches the local device
+
+    for (let i = 0; i < 6; i++) turn(adapter, { id: "track-remote" }, "devices/107");
+
+    expect(joins).toEqual([]);
+  });
+
+  it("still binds the REMOTE device on the same track", () => {
+    stubDocument([
+      tileEl("devices/107", "Tom Elliot (You)"),
+      tileEl("devices/108", "Priya Raman"),
+    ]);
+    const adapter = new MeetAdapter();
+    const joins: Array<[string, string]> = [];
+    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.pollIdentities();
+
+    for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, { id: "track-remote" }, "devices/108");
+
+    expect(joins).toEqual([["track-remote", "devices/108"]]);
+  });
+
+  it("excludes nobody when the marker is absent — degrades to pre-fix behaviour, not to silence", () => {
+    // A non-English UI: no marker anywhere. Identity must still work; it is only
+    // the self-exclusion guarantee that is lost.
+    stubDocument([tileEl("devices/107", "Tom Elliot"), tileEl("devices/108", "Priya Raman")]);
+    const adapter = new MeetAdapter();
+    const joins: Array<[string, string]> = [];
+    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.pollIdentities();
+
+    for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, { id: "track-remote" }, "devices/108");
+
+    expect(joins).toEqual([["track-remote", "devices/108"]]);
+  });
+
+  it("ignores the local device's collections mic-open edge too", () => {
+    stubDocument([tileEl("devices/107", "Tom Elliot (You)")]);
+    const adapter = new MeetAdapter();
+    const joins: Array<[string, string]> = [];
+    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.pollIdentities();
+
+    // Drive the unmute correlator: track unmute + the local device's mic-open.
+    for (let i = 0; i < 6; i++) {
+      clock += 5000;
+      vi.setSystemTime(clock);
+      adapter.onTrackUnmute({ id: "track-remote" } as unknown as MediaStreamTrack);
+      (adapter as unknown as { onCollectionsEvent(e: { deviceId: string; micOpen: boolean }): void })
+        .onCollectionsEvent({ deviceId: "devices/107", micOpen: true });
+    }
+
+    expect(joins).toEqual([]);
   });
 });

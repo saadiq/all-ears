@@ -213,6 +213,48 @@ export function extractParticipantId(tile: ElementLike): string | null {
   return null;
 }
 
+/**
+ * Marks the local participant's own roster row. Meet appends "(You)" to your
+ * own name in the People panel, and — live-verified 2026-08-12, journal
+ * #164/#167/#169 — that is the ONLY self signal left on this build:
+ * `data-self-name` is gone entirely (zero elements document-wide) and tile
+ * `aria-label` never contains it.
+ *
+ * The marker lives on the panel row, not the video tile: Meet renders two
+ * elements per device, and only the `role="listitem"` one carries it. Both
+ * carry `[data-participant-id]`, so a tile-selector scan finds it either way.
+ * Closing the People panel collapses that row to 0×0 but does NOT unmount it,
+ * and the rows exist before the panel is ever opened, so this needs no UI
+ * interaction and no panel visit.
+ *
+ * LOCALE-DEPENDENT by construction — it is English UI text. Journal #148 is
+ * the precedent: Meet DOM automation broke silently under a non-`en` locale.
+ * ``findLocalDeviceId`` therefore fails CLOSED, returning undefined rather than
+ * guessing, and every caller treats undefined as "exclude nobody" — the
+ * pre-#158 behaviour, which is wrong in a bounded way rather than newly broken.
+ */
+export const SELF_MARKER = /\(\s*you\s*\)/i;
+
+/**
+ * The local participant's device id, read from the "(You)" marker, or
+ * undefined when it cannot be established beyond doubt.
+ *
+ * Requires exactly ONE device id to carry the marker. Zero means a build or
+ * locale that does not render it; two or more means something ambiguous (a
+ * nested container, or a participant whose display name literally contains
+ * "(You)") and a wrong answer here is worse than none — excluding the wrong
+ * device would silence a real participant's identity for the whole call.
+ */
+export function findLocalDeviceId(doc: DocumentLike): string | undefined {
+  const marked = new Set<string>();
+  for (const tile of doc.querySelectorAll(TILE_SELECTOR)) {
+    const id = extractParticipantId(tile);
+    if (!id) continue;
+    if (SELF_MARKER.test(tile.textContent ?? "")) marked.add(id);
+  }
+  return marked.size === 1 ? [...marked][0] : undefined;
+}
+
 /** Climb from a media element to the nearest ancestor carrying a participant id. */
 export function findParticipantTile(el: ElementLike): ElementLike | null {
   for (let node: ElementLike | null = el; node; node = node.parentElement) {
@@ -403,6 +445,11 @@ export class MeetAdapter implements PlatformAdapter {
    * own two live tracks at once. Cleared for a device whose owning track has
    * ended, which is a genuine rejoin rather than a competing claim. */
   private readonly deviceOwners = new Map<ParticipantId, string>();
+  /** The local participant's own device id (``findLocalDeviceId``), cached once
+   * found — it cannot change for the life of a call. undefined means "not
+   * established", which excludes nobody. */
+  private localDeviceId: ParticipantId | undefined;
+  private warnedNoSelfMarker = false;
   private identifyCb: ((track: MediaStreamTrack, id: ParticipantId) => void) | null = null;
   private renameCb: ((trackId: string, id: ParticipantId) => void) | null = null;
   private rosterCb: ((entries: RosterEntry[]) => void) | null = null;
@@ -486,10 +533,30 @@ export class MeetAdapter implements PlatformAdapter {
   onDeviceSpeaking(deviceId: ParticipantId, at: number): void {
     if (this.disposed) return;
     try {
+      if (this.isLocalDevice(deviceId)) return; // never correlate the user to a remote track
       this.applyMatch(this.domCorrelator.recordDeviceOnset(deviceId, at));
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
+  }
+
+  /**
+   * Whether `deviceId` is the local participant's own device.
+   *
+   * Dropping these onsets at the door is the real fix for journal #158: the
+   * user's speaking-ring bursts while they backchannel over someone else's turn
+   * are what land inside a remote track's onset window and confirm a wrong
+   * pairing. The correlator's ambiguity rules can only make that pairing *harder*
+   * to reach; they cannot know it is nonsense. Nothing else can either — the
+   * local participant is a roster device like any other.
+   *
+   * The 2026-08-12 call is the worked example: with #159's guards live it made
+   * exactly one binding all call, and that binding was the local device, so the
+   * remote's 1816 turns were titled with the local user's name (#172).
+   */
+  private isLocalDevice(deviceId: ParticipantId): boolean {
+    if (this.localDeviceId === undefined) return false;
+    return this.localDeviceId === deviceId;
   }
 
   /** audio-tap.ts calls this on every track's "unmute" event. A remote track
@@ -515,6 +582,7 @@ export class MeetAdapter implements PlatformAdapter {
       const now = Date.now();
       this.deviceState.set(event.deviceId, { micOpen: event.micOpen, lastSeen: now });
       if (!event.micOpen) return; // only the mic-open edge is a correlatable onset
+      if (this.isLocalDevice(event.deviceId)) return; // the user's own mic toggle, not a remote's
       this.applyMatch(this.correlator.recordDeviceOnset(event.deviceId, now));
       this.applyMatch(this.unmuteCorrelator.recordDeviceOnset(event.deviceId, now));
     } catch {
@@ -524,6 +592,15 @@ export class MeetAdapter implements PlatformAdapter {
 
   private applyMatch(match: CorrelatorMatch | null): void {
     if (!match || match.confirmations < CONFIRM_THRESHOLD) return;
+    if (this.isLocalDevice(match.deviceId)) {
+      // Belt and braces: the onset filters should mean this never fires, but a
+      // pairing confirmed before the marker was first read could still arrive.
+      console.debug(
+        `[ears][identity] Meet identity match refused: ${match.deviceId} is the local participant, ` +
+          `so track ${match.trackKey} cannot be it (journal #158)`,
+      );
+      return;
+    }
     const bound = this.upgradedTracks.get(match.trackKey);
     if (bound !== undefined) {
       if (bound !== match.deviceId) {
@@ -652,7 +729,38 @@ export class MeetAdapter implements PlatformAdapter {
       const name = extractDisplayName(tile);
       if (name) this.names.set(id, name);
     }
+    this.resolveLocalDevice();
     this.emitRoster();
+  }
+
+  /**
+   * Latch the local participant's device id on the first scan that can see it.
+   *
+   * Latched rather than re-read because the answer cannot change within a call
+   * and re-reading could only ever lose it — the People row is present from the
+   * moment the roster populates, but a mid-call DOM churn that briefly empties
+   * the tile set would otherwise clear an exclusion we already rely on.
+   */
+  private resolveLocalDevice(): void {
+    if (this.localDeviceId !== undefined) return;
+    const found = findLocalDeviceId(document);
+    if (found) {
+      this.localDeviceId = found;
+      console.debug(
+        `[ears][identity] Meet local participant resolved: ${found} — excluded from identity correlation`,
+      );
+      return;
+    }
+    // MUST-NOT #13: a build or locale that never renders the marker must not
+    // look like working code. Warn once, only once a roster actually exists
+    // (an empty tile set early in a call is normal and means nothing).
+    if (this.warnedNoSelfMarker || this.names.size === 0) return;
+    this.warnedNoSelfMarker = true;
+    console.warn(
+      `[ears][identity] Meet roster has ${this.names.size} named participant(s) but no "(You)" marker on any tile — ` +
+        `the local participant cannot be identified, so identity correlation may attribute a remote track to the local user ` +
+        `(journal #158). Most likely a non-English Meet UI; see lib/identity/meet.ts SELF_MARKER.`,
+    );
   }
 
   /** Forward newly-resolved (id → name) pairs to the roster callback, once
