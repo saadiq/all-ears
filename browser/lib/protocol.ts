@@ -77,7 +77,17 @@ export type MainMessage =
   // resolved (Meet's spaces/<space> segment — see identity/meet-meeting-id.ts),
   // and the call ended (capture toggled off / teardown). May arrive after
   // capture starts — meeting bookkeeping never gates capture.
-  | { kind: "meeting-started"; platform: Platform; externalMeetingId: string }
+  | {
+      kind: "meeting-started";
+      platform: Platform;
+      externalMeetingId: string;
+      /** The meeting's human name, when the tab already knows it at declare
+       * time. Absent means "not found (yet)" — the daemon's own default
+       * (identity → Meet id) stands, and a later `meeting-renamed` may still
+       * supply one. */
+      title?: string;
+    }
+  | { kind: "meeting-renamed"; platform: Platform; externalMeetingId: string; title: string }
   | { kind: "meeting-ended"; platform: Platform; externalMeetingId: string }
   // Debug logging only: a batch of the MAIN-world hook's tapped console
   // entries, which the isolated relay forwards to the background's log store.
@@ -186,7 +196,8 @@ export type PortMessage =
   | { type: "left"; participantId: ParticipantId }
   // A participant's capture died mid-call (see MainMessage "capture-failed").
   | { type: "capture-failed"; participantId: ParticipantId; platform: Platform; reason: string }
-  | { type: "meeting-started"; platform: Platform; externalMeetingId: string }
+  | { type: "meeting-started"; platform: Platform; externalMeetingId: string; title?: string }
+  | { type: "meeting-renamed"; platform: Platform; externalMeetingId: string; title: string }
   | { type: "meeting-ended"; platform: Platform; externalMeetingId: string };
 
 // ── earsd wire (background.ts → earsd) ───────────────────────────────────────
@@ -296,11 +307,25 @@ export const controlRequest = {
     ({ id, method: "hello", params: { protocol: PROTOCOL_VERSION, client } }) as const,
   subscribe: (id: RequestId, events: readonly string[]) =>
     ({ id, method: "subscribe", params: { events } }) as const,
-  sessionStart: (id: RequestId, platform: Platform, externalMeetingId: string) =>
+  sessionStart: (id: RequestId, platform: Platform, externalMeetingId: string, title?: string) =>
     ({
       id,
       method: "session.start",
-      params: { platform, external_id: externalMeetingId, trigger: BROWSER_TRIGGER },
+      params: {
+        platform,
+        external_id: externalMeetingId,
+        trigger: BROWSER_TRIGGER,
+        ...(title ? { title } : {}),
+      },
+    }) as const,
+  /** `if_rev` makes the rename a compare-and-set: the daemon rejects it with
+   * `conflict` if the session moved on, so a scraped name never clobbers one
+   * the user set by hand. */
+  sessionRename: (id: RequestId, session: string, title: string, ifRev?: number) =>
+    ({
+      id,
+      method: "session.rename",
+      params: { session, title, ...(ifRev === undefined ? {} : { if_rev: ifRev }) },
     }) as const,
   sessionEnd: (id: RequestId, session: string) =>
     ({ id, method: "session.end", params: { session } }) as const,

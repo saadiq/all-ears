@@ -14,6 +14,11 @@
 /// (`earsd.source[1].device_uid`) so a precise element is identifiable.
 /// An element that isn't itself a table is reported as a type mismatch at the
 /// indexed path.
+///
+/// A field declaring `pathTemplateTokens` (a ``PathTemplate``-valued string,
+/// e.g. `[cleanup] output`) has every `{token}` it names checked against that
+/// set, so a mistyped token is a reported config error rather than a literal
+/// brace in a written filename.
 public func validateConfig(_ value: ConfigValue, against schema: ConfigSchema) -> [ConfigError] {
   guard case .table(let table) = value else {
     return []
@@ -44,6 +49,16 @@ private func validateTable(
         ConfigError(keyPath: path, reason: .typeMismatch(expected: field.type, got: value.kind))
       )
       continue
+    }
+
+    if let allowedTokens = field.pathTemplateTokens, case .string(let template) = value {
+      for token in PathTemplate.unknownTokens(in: template, allowing: allowedTokens) {
+        errors.append(
+          ConfigError(
+            keyPath: path,
+            reason: .invalidValue("unknown path-template token '{\(token)}'"))
+        )
+      }
     }
 
     if let children = field.children, case .table(let nested) = value {

@@ -22,6 +22,15 @@ enum FrontmatterRenderer {
     if let session = frontmatter.session {
       lines.append(YAML.line("session", .plain(session)))
     }
+    // The path-template context a downstream stage reads back
+    // (`TranscriptFrontmatter.title`/`started`): present only for a document
+    // that has session context to carry.
+    if let title = frontmatter.title {
+      lines.append(YAML.line("title", scalar(title)))
+    }
+    if let started = frontmatter.started {
+      lines.append(YAML.line("started", .plain(UTCCalendar.iso8601(started))))
+    }
     lines.append(YAML.line("sources", .flowArray(frontmatter.sources.map(sourceValue))))
     lines.append(
       YAML.line(

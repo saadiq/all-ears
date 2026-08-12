@@ -151,13 +151,14 @@ struct Transcribe: AsyncParsableCommand {
     // `run.summary`; the summary now reflects the outcome we return here,
     // never a `status=ok` logged before the work could fail (issue #25). The
     // `--print-config`/`--config-path` fast paths return before `work` runs.
-    // A `--file` run writes next to each input, never into `output_root`, so
-    // its `run.start` omits that field instead of advertising a directory the
-    // run won't touch.
+    // No `transcribe` run writes into `output_root` any more — raw
+    // transcripts are intermediates in the data store, and only `cleanup`
+    // publishes — so `run.start` omits the field rather than advertising a
+    // directory the run never touches.
     let diagnostics = RunDiagnostics()
     let exitCode = await EarsCLI.run(
       tool: "transcribe", version: "0.1.0", arguments: arguments,
-      usesOutputRoot: files.isEmpty
+      usesOutputRoot: false
     ) { bootstrap in
       if !files.isEmpty {
         return await TranscribeRuntime.runFiles(

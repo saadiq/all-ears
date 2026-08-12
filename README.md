@@ -40,9 +40,10 @@ ears status
 - **Where things go.** Binaries → `$PREFIX/bin` (default `~/.local`; if that
   isn't on your `PATH`, `make install` prints the line to add). LaunchAgent →
   `~/Library/LaunchAgents/net.tomelliot.ears.earsd.plist`. Pre-logger crash
-  output → `~/Library/Logs/ears/`. Your config, recordings, and transcripts live
-  under `~/.config/ears`, `~/Library/Application Support/ears`, and
-  `~/Documents/Transcripts` respectively.
+  output → `~/Library/Logs/ears/`. Your config lives under `~/.config/ears`,
+  recordings and raw transcripts under `~/Library/Application Support/ears`,
+  and published transcripts and summaries under `~/Documents/Transcripts`
+  (configurable — see [Where things land](#where-things-land)).
 - **System-wide install.** `make install PREFIX=/usr/local` puts the binaries on
   the default `PATH`; the copy elevates itself with `sudo` when needed. Run
   `make install` as your normal user, never under `sudo` — the agent must load
@@ -98,10 +99,16 @@ ears config show | grep chunk    # confirm the resolved value
 
 ```sh
 ears session end <session-id>
-transcribe --session <session-id> --out call.transcript.md
-cleanup call.transcript.md --out call.clean.md
-summarize call.clean.md --preset action-items --out call.summary.md
+transcribe --session <session-id>   # raw transcript, into the session's store
+cleanup --session <session-id>      # publishes the cleaned transcript
+summarize --session <session-id> --preset action-items
 ```
+
+The raw transcript is an intermediate: it stays in the data store, addressed
+by session. The cleaned transcript and the summaries are what get published,
+to `~/Documents/Transcripts/<year>/<month>/<day>/<date> - <title>.md` by
+default — and to wherever you point them, since the path is a template. See
+[Where things land](#where-things-land).
 
 A summary preset is a prompt file you write, named in your config — see
 [Your model, your prompts](#your-model-your-prompts).
@@ -136,6 +143,28 @@ prompt_file = "prompts/action-items.md"
 Summarisation prompts are entirely yours: each `[[summarize.preset]]` pairs a name with a prompt file you write, and `summarize --preset <name>` (or `--all-presets`) runs it over the transcript — one output file per preset. Both tools take `--model` to override the configured model for a single run. The full option reference is in [`docs/configuration.md`](docs/configuration.md).
 
 Transcription currently has one model: Parakeet, running locally on the Neural Engine via FluidAudio. A `[transcribe]` table arrives when there is more than one choice to make.
+
+## Where things land
+
+Published files go where you say. The destination is a path template with date, week, and title tokens, so transcripts file themselves into whatever tree you already keep:
+
+```toml
+[cleanup]
+output = "~/obsidian/Transcripts/{year}/{month}/{day}/{date} - {title}.md"
+```
+
+A preset can go further — read the notes you jotted during the call, and write its output back over that same note:
+
+```toml
+[[summarize.preset]]
+name = "meeting-notes"
+prompt_file = "~/obsidian/prompts/meeting-notes.md"
+notes = "~/obsidian/daily-notes/{year}/{month}/{week}/{date}/{date} - {title}.md"
+out = "{notes}"
+frontmatter = false     # the vault owns its own frontmatter
+```
+
+`{title}` is the meeting's real name — the browser extension reads it off the call, so a calendar meeting called "Kevin Weekly" files under that. Dates come from when the session started, so a call that runs past midnight still files under the day it began. Full token list in [`docs/configuration.md`](docs/configuration.md#path-templates).
 
 ## How it works
 

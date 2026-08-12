@@ -29,6 +29,11 @@ struct Cleanup: AsyncParsableCommand {
   @Argument(help: "Path to the transcript to clean (a .transcript.md or .clean.md file).")
   var transcript: String?
 
+  @Option(
+    name: .customLong("session"),
+    help: "Clean a session's stored transcript by session id, instead of naming a path.")
+  var session: String?
+
   @Option(name: .customLong("config"), help: "Path to a TOML config file.")
   var config: String?
 
@@ -110,6 +115,7 @@ struct Cleanup: AsyncParsableCommand {
 
     // Snapshot the flags into locals the `@Sendable` work closure captures.
     let transcript = self.transcript
+    let session = self.session
     let out = self.out
     let prompt = self.prompt
     let vocab = self.vocab
@@ -125,11 +131,18 @@ struct Cleanup: AsyncParsableCommand {
     let exitCode = await EarsCLI.run(
       tool: "cleanup", version: "0.1.0", arguments: arguments
     ) { _ in
-      guard let transcript else {
-        // A usage error, but checked here (not by ArgumentParser) because
-        // `--print-config`/`--config-path` must work with no positional at
-        // all — so it adopts the same EX_USAGE code ArgumentParser exits with.
-        let message = "error: a transcript path is required"
+      // Usage errors, but checked here (not by ArgumentParser) because
+      // `--print-config`/`--config-path` must work with no positional at
+      // all — so they adopt the same EX_USAGE code ArgumentParser exits with.
+      // A path and `--session` name the same thing two ways, so requiring
+      // exactly one is a precise error rather than a silent precedence rule.
+      let message: String? =
+        switch (transcript, session) {
+        case (nil, nil): "error: a transcript path or --session is required"
+        case (.some, .some): "error: a transcript path cannot be combined with --session"
+        default: nil
+        }
+      if let message {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         diagnostics.recordError(message)
         return RunOutcome(class: .usage, error: message)
@@ -138,6 +151,7 @@ struct Cleanup: AsyncParsableCommand {
         arguments: arguments,
         inputs: CleanupCLIInputs(
           transcriptPath: transcript,
+          sessionID: session,
           out: out,
           promptFile: prompt,
           vocabPath: vocab,

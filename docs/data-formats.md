@@ -11,6 +11,10 @@ This document defines the on-disk contract. Because the storage layout *is* the 
       session.toml                   # session record (schema 3: identity, state, intervals,
                                      #   roster, sources); kept forever, never evicted
       events.jsonl                   # append-only session timeline; kept forever
+      transcript.md                  # RAW TRANSCRIPT (from `transcribe --session`) — an
+      transcript.json                #   intermediate; kept forever, never swept
+      mic.follow.transcript.md       # a `transcribe --follow` run's live transcript,
+                                     #   one per followed source
       sources/                       # AUDIO — deleted as one unit by retention
         <source-id>/                 # e.g. mic, system, browser_meet_jane
           meta.toml                  # source descriptor (class, device, sample rate, codec)
@@ -27,23 +31,27 @@ This document defines the on-disk contract. Because the storage layout *is* the 
   vocab/
     global.txt                       # global known-word list
     <session-id>.txt                 # optional per-session vocabulary (session UUID)
+  runs/                              # range runs (`--last`/`--from`/`--to`) have no session
+    2026-07-17T10-30-00Z_mic.transcript.md    # …so their raw transcripts land here
+    2026-07-17T10-30-00Z_mic.transcript.json
   runtime/
     earsd.sock                       # control socket (path configurable)
     earsd.pid
 
-<output-root>/                       # default: ~/Documents/Transcripts
-  2026-07-17/
-    10-30-00_standup.transcript.md   # transcript (from `transcribe`)
-    10-30-00_standup.clean.md        # cleaned transcript (from `cleanup`)
-    10-30-00_standup.summary.md      # summary (from `summarize`)
-    10-30-00_standup.transcript.json # optional canonical sidecar (word timings, confidence)
+<output-root>/                       # default: ~/Documents/Transcripts — PUBLISHED output,
+  2026/08/05/                        #   laid out by `[cleanup] output`'s path template
+    2026-08-05 - Kevin Weekly.md          # cleaned transcript (from `cleanup`)
+    2026-08-05 - Kevin Weekly.json        # its canonical sidecar (word timings, confidence)
+    2026-08-05 - Kevin Weekly.summary.md  # summary (from `summarize`)
 ```
+
+**Two tiers.** Raw transcripts are **intermediates**: addressed by session (or range-run id) inside the data store, with no user-facing layout. The **published** artifacts — the cleaned transcript and the summaries — go wherever their path template resolves to, `output_root` by default. A preset can publish somewhere else entirely (an Obsidian daily note, say); see [configuration](./configuration.md#path-templates).
 
 `<source-id>` is the source's stable id with characters unsafe for paths replaced by `_` (e.g. `app:us.zoom.xos` → `app_us.zoom.xos`). The id itself, as used on the socket and in metadata, keeps its natural form.
 
 Audio is **session-scoped**: a source records only while a session names it, and everything it writes lands under that session's own `sources/` tree. Two consequences:
 
-- **Transcripts** (under `<output-root>`) are never evicted — they are the durable artifact.
+- **Transcripts are never evicted**, in either tier. Raw transcripts in the data store are deliberately not swept: once the audio is gone they are the only route to re-running cleanup or summarize with a different prompt or model.
 - **Retention is a per-session delete.** Once an ended session's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the session has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `sessions/<uuid>/sources/` directory. `session.toml` and `events.jsonl` survive as the session's record. See `[earsd.retention]` in [configuration](./configuration.md).
 
 The daemon enforces a **single-active-session invariant**: a `session.start` for a new identity (or a manual start) supersedes any session still live, running the old one through its full end pipeline first. At most one active session means exactly one legal directory for any capture actor at any moment, so a source's audio can never land in the wrong session's directory.
@@ -159,6 +167,14 @@ session: 0d5e7f6a-…         # the session UUID this transcript unions the
                             # instead of `session:` on a raw range run
                             # (`--last`/`--from`/`--to`) — a synthesized
                             # <start-timestamp>_<slug> identifier
+title: Weekly standup       # the session's display title, and `{title}` in a
+                            # downstream path template; absent with no session
+started: 2026-07-17T10:30:00Z
+                            # when the session began, as distinct from `range`
+                            # below (a --from/--to rerun narrows the range but
+                            # not the session). The date tokens key on this, so
+                            # a call that ran past midnight always files under
+                            # the day it started
 sources: [mic, "app:us.zoom.xos"]
 range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }
 model: { name: parakeet, backend: fluidaudio, version: "0.x" }
@@ -186,7 +202,9 @@ Rules:
 
 - Segments are grouped by speaker turn, each headed by a timestamp and a speaker label.
 - **Speaker labels** derive from the source: `mic` → `You`, every other source → its source id (a per-participant browser source is therefore already a per-person label). Within-stream diarization — stable `Speaker N` labels inside a multi-speaker source — is designed but not yet implemented.
+- **The path-template context travels here, not on the command line.** `title:` and `started:` are what a publishing stage expands `{title}`/`{date}`/`{week}` against, so a manual rerun files exactly where the daemon-spawned run did.
 - `cleanup` and `summarize` outputs use the same frontmatter convention with `kind: clean` / `kind: summary` and a `derived_from` field naming the source transcript. A summary also carries a `preset` field naming the `[[summarize.preset]]` it was generated from.
+- A `[[summarize.preset]]` with `frontmatter = false` writes its body alone — no YAML block and no JSON sidecar. That output is plain Markdown, not an ears document, which is what a destination owning its own frontmatter (an Obsidian vault) needs.
 
 ### Canonical JSON sidecar (optional)
 

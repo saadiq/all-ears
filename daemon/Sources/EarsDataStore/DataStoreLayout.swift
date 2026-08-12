@@ -74,6 +74,46 @@ public enum DataStoreLayout {
       "session.toml")
   }
 
+  /// `<data-root>/sessions/<session-id>/transcript.md` — the session's raw
+  /// transcript, an **intermediate**: addressed by session, with no
+  /// user-facing layout. The published, cleaned transcript is `cleanup`'s
+  /// concern and lands wherever `[cleanup] output` resolves to.
+  ///
+  /// Kept here rather than swept with the audio: once the audio is evicted
+  /// this file is the only route to re-running cleanup/summarize with a
+  /// different prompt or model (`docs/specs/capture-daemon.md`'s retention
+  /// section).
+  public static func sessionTranscriptFile(dataRoot: URL, sessionID: String) -> URL {
+    sessionDirectory(dataRoot: dataRoot, sessionID: sessionID)
+      .appendingPathComponent("transcript.md")
+  }
+
+  /// `<data-root>/sessions/<session-id>/<source>.follow.transcript.md` — the
+  /// live transcript a `transcribe --follow` run rewrites on every commit.
+  /// Named apart from ``sessionTranscriptFile(dataRoot:sessionID:)`` so a
+  /// follow run and the session's authoritative batch transcript never
+  /// overwrite one another, and per-source so two followers of one session
+  /// don't collide.
+  public static func sessionFollowTranscriptFile(
+    dataRoot: URL, sessionID: String, sourceID: SourceID
+  ) -> URL {
+    sessionDirectory(dataRoot: dataRoot, sessionID: sessionID)
+      .appendingPathComponent("\(sourceID.pathSafe).follow.transcript.md")
+  }
+
+  /// `<data-root>/runs/` — where a range run (`--last`/`--from`/`--to`), which
+  /// has no session directory to live in, files its intermediate transcript.
+  public static func runsDirectory(dataRoot: URL) -> URL {
+    dataRoot.appendingPathComponent("runs")
+  }
+
+  /// `<data-root>/runs/<range-run-id>.transcript.md`, keyed by the same
+  /// `<start-timestamp>_<slug>` identifier the transcript's `range_run:`
+  /// frontmatter carries.
+  public static func rangeRunTranscriptFile(dataRoot: URL, runIdentifier: String) -> URL {
+    runsDirectory(dataRoot: dataRoot).appendingPathComponent("\(runIdentifier).transcript.md")
+  }
+
   /// The `chunks/<filename>` or `asr/<filename>` path recorded in
   /// `index.jsonl`'s `chunk`/`evict` events -- relative to the source
   /// directory, matching the doc's literal examples

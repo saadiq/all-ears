@@ -209,14 +209,22 @@ struct OnEndChainSmokeTests {
 
     // The chain's artifacts exist on disk: each stage's envelope named a real
     // file that fed the next stage.
+    // The raw transcript is an intermediate: it lands in the session's own
+    // data-store directory, never under `output_root`.
     #expect(
-      !Self.files(withSuffix: ".transcript.md", under: outputRoot).isEmpty,
-      "expected a .transcript.md under \(outputRoot)")
+      !Self.files(withSuffix: "sessions/\(session.id)/transcript.md", under: dataRoot).isEmpty,
+      "expected the session's raw transcript under \(dataRoot)")
+    // The cleaned transcript and the summaries are the *published* artifacts:
+    // they land under `output_root`, where `[cleanup] output`'s template puts
+    // them — never in the data store.
     #expect(
-      !Self.files(withSuffix: ".clean.md", under: outputRoot).isEmpty,
-      "expected a .clean.md under \(outputRoot)")
+      !Self.files(withSuffix: ".md", under: outputRoot).isEmpty,
+      "expected a published cleaned transcript under \(outputRoot)")
     #expect(
       !Self.files(withSuffix: ".summary.md", under: outputRoot).isEmpty,
       "expected a .summary.md under \(outputRoot)")
+    #expect(
+      Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
+      "the data store must hold intermediates only, never a published clean transcript")
   }
 }

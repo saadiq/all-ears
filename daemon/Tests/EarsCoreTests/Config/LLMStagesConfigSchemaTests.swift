@@ -25,7 +25,12 @@ struct LLMStagesConfigSchemaTests {
       ]),
       "cleanup": .table([
         "prompt_file": .string(""),
+        // Overrides [llm] model for this stage — cleanup is bulk mechanical
+        // work, so it defaults to the cheap model rather than the shared one.
+        "model": .string("claude-haiku-4-5"),
+        "chunk_seconds": .int(300),
         "use_vocab": .bool(true),
+        "output": .string("{output_root}/{year}/{month}/{day}/{date} - {title}.md"),
       ]),
       "summarize": .table([
         "preset": .array([])
@@ -35,6 +40,61 @@ struct LLMStagesConfigSchemaTests {
       ]),
     ])
     #expect(LLMStagesConfigSchema.defaults == expected)
+  }
+
+  @Test("a preset's notes/out/frontmatter keys validate")
+  func presetPublishingKeysValidate() {
+    let value = mergeConfigLayers([
+      LLMStagesConfigSchema.defaults,
+      .table([
+        "summarize": .table([
+          "preset": .array([
+            .table([
+              "name": .string("meeting-notes"),
+              "prompt_file": .string("/prompts/notes.md"),
+              "notes": .string("{output_root}/daily/{date}/{date} - {title}.md"),
+              "out": .string("{notes}"),
+              "frontmatter": .bool(false),
+            ])
+          ])
+        ])
+      ]),
+    ])
+
+    #expect(validateConfig(value, against: LLMStagesConfigSchema.schema).isEmpty)
+  }
+
+  @Test("an unknown token in [cleanup] output is reported with its key path")
+  func unknownCleanupOutputToken() {
+    let value = mergeConfigLayers([
+      LLMStagesConfigSchema.defaults,
+      .table(["cleanup": .table(["output": .string("{output_root}/{titel}.md")])]),
+    ])
+
+    let errors = validateConfig(value, against: LLMStagesConfigSchema.schema)
+    #expect(errors.count == 1)
+    #expect(errors.first?.keyPathString == "cleanup.output")
+    #expect(errors.first?.message == "cleanup.output: unknown path-template token '{titel}'")
+  }
+
+  @Test("{notes} is rejected in a preset's notes template but accepted in its out template")
+  func notesTokenScopedToOut() {
+    func errors(for preset: ConfigValue) -> [ConfigError] {
+      validateConfig(
+        mergeConfigLayers([
+          LLMStagesConfigSchema.defaults,
+          .table(["summarize": .table(["preset": .array([preset])])]),
+        ]),
+        against: LLMStagesConfigSchema.schema)
+    }
+
+    let inNotes = errors(
+      for: .table(["name": .string("x"), "notes": .string("{notes}.md")]))
+    #expect(inNotes.count == 1)
+    #expect(inNotes.first?.keyPathString == "summarize.preset[0].notes")
+    #expect(inNotes.first?.reason == .invalidValue("unknown path-template token '{notes}'"))
+
+    #expect(errors(for: .table(["name": .string("x"), "out": .string("{notes}")])).isEmpty)
   }
 
   @Test("a [[summarize.preset]] block round-trips through validation")

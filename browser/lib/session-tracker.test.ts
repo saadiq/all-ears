@@ -23,8 +23,9 @@ function sessionWire(overrides: Partial<SessionWire> = {}): SessionWire {
 }
 
 type Call =
-  | { verb: "start"; platform: string; externalMeetingId: string }
+  | { verb: "start"; platform: string; externalMeetingId: string; title?: string }
   | { verb: "end" | "pause" | "resume"; session: string }
+  | { verb: "rename"; session: string; title: string; ifRev?: number }
   | { verb: "attendee"; session: string; attendee: AttendeeUpsert };
 
 /** Records every verb; resolves immediately unless `deferStart` holds the
@@ -35,8 +36,12 @@ class FakeControl implements SessionControl {
   private startResolvers: Array<(m: SessionWire) => void> = [];
   startResult: SessionWire = sessionWire();
 
-  sessionStart(platform: string, externalMeetingId: string): Promise<SessionWire> {
-    this.calls.push({ verb: "start", platform, externalMeetingId });
+  /** Set to make session.rename reject, standing in for the daemon's
+   * `conflict` when `if_rev` no longer matches (a manual rename landed). */
+  renameFails = false;
+
+  sessionStart(platform: string, externalMeetingId: string, title?: string): Promise<SessionWire> {
+    this.calls.push({ verb: "start", platform, externalMeetingId, ...(title ? { title } : {}) });
     if (this.deferStart) {
       return new Promise((resolve) => this.startResolvers.push(resolve));
     }
@@ -60,6 +65,12 @@ class FakeControl implements SessionControl {
   sessionResume(session: string): Promise<SessionWire> {
     this.calls.push({ verb: "resume", session });
     return Promise.resolve(sessionWire({ id: session, state: "active" }));
+  }
+
+  sessionRename(session: string, title: string, ifRev?: number): Promise<SessionWire> {
+    this.calls.push({ verb: "rename", session, title, ...(ifRev === undefined ? {} : { ifRev }) });
+    if (this.renameFails) return Promise.reject(new Error("conflict"));
+    return Promise.resolve(sessionWire({ id: session, title, rev: (ifRev ?? 0) + 1 }));
   }
 
   sessionAttendee(session: string, attendee: AttendeeUpsert): Promise<SessionWire> {
@@ -115,6 +126,92 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.meetingEnded("abc");
     await flush();
     expect(tracker.externalIdFor("p1", "meet")).toBeUndefined();
+  });
+
+  it("a title known at declare time rides along on session.start", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc", "Kevin Weekly");
+    await flush();
+
+    expect(control.ofVerb("start")).toEqual([
+      { verb: "start", platform: "meet", externalMeetingId: "abc", title: "Kevin Weekly" },
+    ]);
+    expect(control.ofVerb("rename")).toEqual([]);
+  });
+
+  it("a title discovered after join renames the session, compare-and-set on rev", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    await flush();
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    await flush();
+
+    expect(control.ofVerb("rename")).toEqual([
+      { verb: "rename", session: "m-1", title: "Kevin Weekly", ifRev: 1 },
+    ]);
+  });
+
+  it("sends at most one rename per discovered name", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    await flush();
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    await flush();
+
+    expect(control.ofVerb("rename")).toHaveLength(1);
+  });
+
+  it("never renames to the title it already declared with", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc", "Kevin Weekly");
+    await flush();
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    await flush();
+
+    expect(control.ofVerb("rename")).toEqual([]);
+  });
+
+  it("a rename that lost the compare-and-set is not retried — a manual rename wins", async () => {
+    const control = new FakeControl();
+    control.renameFails = true;
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    await flush();
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    await flush();
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    await flush();
+
+    expect(control.ofVerb("rename")).toHaveLength(1);
+  });
+
+  it("a title discovered before session.start lands still reaches the daemon", async () => {
+    const control = new FakeControl();
+    control.deferStart = true;
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    tracker.meetingRenamed("abc", "Kevin Weekly");
+    await flush();
+    // Nothing to rename yet — the session has no id.
+    expect(control.ofVerb("rename")).toEqual([]);
+
+    control.resolveStart();
+    await flush();
+
+    expect(control.ofVerb("rename")).toEqual([
+      { verb: "rename", session: "m-1", title: "Kevin Weekly", ifRev: 1 },
+    ]);
   });
 
   it("a duplicate meeting-started is not re-declared", async () => {

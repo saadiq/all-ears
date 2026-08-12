@@ -5,6 +5,7 @@ import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
+import { MeetMeetingTitleWatcher } from "../lib/identity/meet-meeting-title";
 import { startMeetSpeakingWatch } from "../lib/identity/meet-speaking-dom";
 import { isControlEnvelope, isMainEnvelope, postToIsolated, type Platform } from "../lib/protocol";
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
@@ -191,6 +192,11 @@ function stopCapture(): void {
 const MEETING_ID_POLL_MS = 1000;
 const MEETING_ID_SOFT_FAIL_MS = 15_000;
 
+// How long the title watcher keeps polling for a meeting name. Calendar
+// names usually appear within seconds of join; past this the call is treated
+// as unnamed and the daemon's own default (identity → Meet id) stands.
+const MEETING_TITLE_WATCH_MS = 60_000;
+
 /**
  * Meeting start/end marking (Meet only today). Watches both external-id
  * surfaces — tile DOM polling, plus the participant-joined traffic audio-tap
@@ -199,14 +205,44 @@ const MEETING_ID_SOFT_FAIL_MS = 15_000;
  * function fires `meeting-ended` (capture toggled off, teardown). Soft-fails
  * by design: an unresolved id logs once and skips marking; capture is never
  * blocked or delayed (identity's standing contract, see meet.ts).
+ *
+ * The meeting's *name* is watched on the same interval. It rides along on
+ * `meeting-started` when it is already known at declare time, and arrives as
+ * `meeting-renamed` when it resolves later (calendar names often do) — which
+ * the background turns into a compare-and-set `session.rename`. No name found
+ * sends no title at all.
  */
 function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => void): () => void {
   if (platform !== "meet") return () => {};
 
-  const watcher = new MeetMeetingIdWatcher((spaceId) => {
-    console.debug(`[ears][hook] Meet meeting id resolved: ${spaceId}`);
-    onMeetingId?.(spaceId);
-    postToIsolated({ kind: "meeting-started", platform, externalMeetingId: spaceId });
+  let spaceId: string | null = null;
+  let title: string | null = null;
+
+  const titleWatcher = new MeetMeetingTitleWatcher((resolved) => {
+    console.debug(`[ears][hook] Meet meeting name resolved: ${resolved}`);
+    title = resolved;
+    // Only a *late* name needs its own message: an early one is already
+    // carried by the `meeting-started` below.
+    if (spaceId) {
+      postToIsolated({
+        kind: "meeting-renamed",
+        platform,
+        externalMeetingId: spaceId,
+        title: resolved,
+      });
+    }
+  });
+
+  const watcher = new MeetMeetingIdWatcher((resolvedSpaceId) => {
+    console.debug(`[ears][hook] Meet meeting id resolved: ${resolvedSpaceId}`);
+    spaceId = resolvedSpaceId;
+    onMeetingId?.(resolvedSpaceId);
+    postToIsolated({
+      kind: "meeting-started",
+      platform,
+      externalMeetingId: resolvedSpaceId,
+      ...(title ? { title } : {}),
+    });
   });
 
   const onMessage = (event: MessageEvent): void => {
@@ -218,14 +254,20 @@ function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => voi
 
   const startedAt = Date.now();
   let warned = false;
+  // The name is scanned first, so a call whose title is already up at join
+  // declares with it rather than declaring and immediately renaming.
+  titleWatcher.poll(document);
   watcher.poll(document);
   const interval = setInterval(() => {
+    if (!titleWatcher.title && Date.now() - startedAt < MEETING_TITLE_WATCH_MS) {
+      titleWatcher.poll(document);
+    }
     watcher.poll(document);
-    if (watcher.spaceId) {
+    if (watcher.spaceId && (titleWatcher.title || Date.now() - startedAt > MEETING_TITLE_WATCH_MS)) {
       clearInterval(interval);
       return;
     }
-    if (!warned && Date.now() - startedAt > MEETING_ID_SOFT_FAIL_MS) {
+    if (!warned && !watcher.spaceId && Date.now() - startedAt > MEETING_ID_SOFT_FAIL_MS) {
       warned = true;
       console.warn(
         "[ears][hook] Meet meeting id has not resolved yet — the meeting can't be marked until it does; capture is unaffected",
@@ -236,7 +278,6 @@ function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => voi
   return () => {
     clearInterval(interval);
     window.removeEventListener("message", onMessage);
-    const spaceId = watcher.spaceId;
     if (spaceId) {
       postToIsolated({ kind: "meeting-ended", platform, externalMeetingId: spaceId });
     }

@@ -111,6 +111,38 @@ struct TranscriptRenderingTests {
     #expect(parsed.session == "0d5e1111-aaaa-bbbb-cccc-222233334444")
   }
 
+  @Test("title: and started: carry the path-template context forward, and round-trip")
+  func titleAndStartedRoundTrip() throws {
+    var frontmatter = Self.standupFrontmatter()
+    frontmatter.rangeRun = nil
+    frontmatter.session = "0d5e1111"
+    frontmatter.title = "Kevin: Weekly"
+    frontmatter.started = Instant(secondsSinceEpoch: 1_784_284_100)
+    let rendered = TranscriptRenderer.renderMarkdown(
+      TranscriptDocument(frontmatter: frontmatter, segments: []))
+
+    #expect(
+      rendered.contains(
+        "session: 0d5e1111\ntitle: \"Kevin: Weekly\"\nstarted: 2026-07-17T10:28:20Z\n"))
+
+    let parsed = try TranscriptParser.parseFrontmatter(rendered)
+    #expect(parsed.title == "Kevin: Weekly")
+    #expect(parsed.started == Instant(secondsSinceEpoch: 1_784_284_100))
+  }
+
+  @Test("a transcript with no session context omits title: and started: entirely")
+  func titleAndStartedAreOptional() throws {
+    let rendered = TranscriptRenderer.renderMarkdown(
+      TranscriptDocument(frontmatter: Self.standupFrontmatter(), segments: []))
+
+    #expect(!rendered.contains("title:"))
+    #expect(!rendered.contains("started:"))
+
+    let parsed = try TranscriptParser.parseFrontmatter(rendered)
+    #expect(parsed.title == nil)
+    #expect(parsed.started == nil)
+  }
+
   @Test("kind: clean renders derived_from after kind")
   func cleanKindWithDerivedFrom() {
     let frontmatter = Self.standupFrontmatter(

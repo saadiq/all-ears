@@ -151,6 +151,10 @@ public enum TranscriptParser {
     // `session:`, a plain range transcript only `range_run:`.
     let rangeRun = fields["range_run"].map(unquote)
     let session = fields["session"].map(unquote)
+    // The path-template context (see `TranscriptFrontmatter.title`/`started`):
+    // both optional, both absent on a document with no session context.
+    let title = fields["title"].map(unquote)
+    let started = try fields["started"].map { try instant("started", $0) }
     let sources = try splitFlowArray(field("sources")).map { SourceID(unquote($0)) }
 
     let rangeMapping = try flowMappingFields(field("range"))
@@ -192,6 +196,8 @@ public enum TranscriptParser {
       kind: kind,
       rangeRun: rangeRun,
       session: session,
+      title: title,
+      started: started,
       sources: sources,
       range: range,
       model: model,

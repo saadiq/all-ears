@@ -57,6 +57,19 @@ public enum UTCCalendar {
     return String(repeating: "0", count: width - digits.count) + digits
   }
 
+  /// Howard Hinnant's `days_from_civil`: the inverse of ``civilFromDays(_:)``,
+  /// converting a proleptic Gregorian date into a day count since the Unix
+  /// epoch. ``WeekNumbering`` uses it to derive a date's ordinal day of year
+  /// and its weekday, both of which are day-count arithmetic.
+  static func daysFromCivil(year: Int, month: Int, day: Int) -> Int {
+    let y = year - (month <= 2 ? 1 : 0)
+    let era = (y >= 0 ? y : y - 399) / 400
+    let yearOfEra = y - era * 400  // [0, 399]
+    let dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1  // [0, 365]
+    let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear  // [0, 146096]
+    return era * 146_097 + dayOfEra - 719_468
+  }
+
   /// Howard Hinnant's `civil_from_days`: converts a day count since the Unix
   /// epoch (1970-01-01) into a proleptic Gregorian (year, month, day).
   /// Exact for all `Int`-representable day counts, including before 1970.

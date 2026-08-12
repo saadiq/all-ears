@@ -85,12 +85,10 @@ struct TranscribePipelineTests {
   @Test("no --source is a precise, non-zero error")
   func noSourceIsError() async throws {
     let dataRoot = makeTempDirectory("no-source")
-    let outputRoot = makeTempDirectory("no-source-output")
 
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -107,12 +105,10 @@ struct TranscribePipelineTests {
   @Test("an unknown source is a precise, non-zero error, and never invokes the transcriber")
   func unknownSourceIsError() async throws {
     let dataRoot = makeTempDirectory("unknown-source")
-    let outputRoot = makeTempDirectory("unknown-source-output")
 
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -132,7 +128,6 @@ struct TranscribePipelineTests {
   @Test("an empty --last range is a precise, non-zero error")
   func emptyRangeIsError() async throws {
     let dataRoot = makeTempDirectory("empty-range")
-    let outputRoot = makeTempDirectory("empty-range-output")
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
@@ -141,7 +136,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "0s", sourceIDs: ["mic"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -158,7 +152,6 @@ struct TranscribePipelineTests {
   @Test("a single source's speech window is read, transcribed, and written to disk")
   func singleSourceEndToEnd() async throws {
     let dataRoot = makeTempDirectory("single-source")
-    let outputRoot = makeTempDirectory("single-source-output")
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
@@ -171,7 +164,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -199,9 +191,10 @@ struct TranscribePipelineTests {
     #expect(fedAudio.sampleRate == 16000)
     #expect(fedAudio.duration > 8 && fedAudio.duration < 10.5)
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil)
+    let paths = TranscriptStorePaths.rangeRun(
+      dataRoot: dataRoot,
+      runIdentifier: TranscriptStorePaths.rangeRunIdentifier(
+        requestedStart: now.advanced(by: -20), sourceIDs: ["mic"]))
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("hello world"))
     #expect(markdown.contains("You"))
@@ -229,7 +222,6 @@ struct TranscribePipelineTests {
   )
   func unreadableChunkDoesNotAbortRun() async throws {
     let dataRoot = makeTempDirectory("unreadable-chunk")
-    let outputRoot = makeTempDirectory("unreadable-chunk-output")
 
     try SourceMetaStore.write(
       SourceDescriptor(
@@ -283,7 +275,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -298,9 +289,10 @@ struct TranscribePipelineTests {
     // surviving (good-chunk) audio still reaches the transcriber and the file.
     #expect(exitCode == 0)
     #expect(scripted.recordedCalls.count == 1)
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil)
+    let paths = TranscriptStorePaths.rangeRun(
+      dataRoot: dataRoot,
+      runIdentifier: TranscriptStorePaths.rangeRunIdentifier(
+        requestedStart: now.advanced(by: -20), sourceIDs: ["mic"]))
     #expect(try outputText(at: paths.markdown).contains("survived the corrupt chunk"))
 
     // The corrupt chunk is named in a per-chunk log line, not swallowed.
@@ -315,7 +307,6 @@ struct TranscribePipelineTests {
   @Test("--session reads the session's audio from its own directory and writes a transcript")
   func sessionEndToEnd() async throws {
     let dataRoot = makeTempDirectory("session")
-    let outputRoot = makeTempDirectory("session-output")
     let sessionID = "fixture-session"
 
     // session.toml lives under the global data root; the audio lives under
@@ -345,7 +336,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -360,9 +350,7 @@ struct TranscribePipelineTests {
     #expect(exitCode == 0)
     #expect(scripted.recordedCalls.count == 1)
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, slug: sessionID)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("session hello"))
     #expect(markdown.contains("session: \(sessionID)"))
@@ -379,7 +367,6 @@ struct TranscribePipelineTests {
   )
   func sessionRosterDrivesSpeakerNames() async throws {
     let dataRoot = makeTempDirectory("session-roster")
-    let outputRoot = makeTempDirectory("session-roster-output")
     let sessionID = "roster-session"
 
     // The roster links the browser source to a display name; the pipeline
@@ -412,7 +399,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -424,9 +410,7 @@ struct TranscribePipelineTests {
     )
 
     #expect(exitCode == 0)
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["browser:meet:speaker-1"], explicitOut: nil, slug: sessionID)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
     // The turn renders under the roster name, not the raw source id.
     #expect(markdown.contains("Jane Doe"))
@@ -436,7 +420,6 @@ struct TranscribePipelineTests {
   @Test("--session merges an optional vocab/<session-id>.txt into the transcribe context")
   func sessionVocabKeyedBySessionID() async throws {
     let dataRoot = makeTempDirectory("session-vocab")
-    let outputRoot = makeTempDirectory("session-vocab-output")
     let sessionID = "vocab-session"
 
     let session = Session(
@@ -469,7 +452,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -490,7 +472,6 @@ struct TranscribePipelineTests {
   )
   func sessionPrefersPerSessionAndFallsBackToRing() async throws {
     let dataRoot = makeTempDirectory("session-mixed")
-    let outputRoot = makeTempDirectory("session-mixed-output")
     let sessionID = "mixed-session"
 
     let session = Session(
@@ -526,7 +507,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -540,9 +520,7 @@ struct TranscribePipelineTests {
     #expect(exitCode == 0)
     #expect(scripted.recordedCalls.count == 2)
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: sessionID)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("mic-from-ring"))
     #expect(markdown.contains("browser-from-session"))
@@ -561,7 +539,6 @@ struct TranscribePipelineTests {
   @Test("--session with no audio in any store exits 0 and logs a per-source reason")
   func sessionEmptyLogsPerSourceReason() async throws {
     let dataRoot = makeTempDirectory("session-empty")
-    let outputRoot = makeTempDirectory("session-empty-output")
     let sessionID = "empty-session"
 
     // session.toml exists, but neither the per-session dir nor the ring holds
@@ -580,7 +557,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -604,9 +580,7 @@ struct TranscribePipelineTests {
 
     // An empty session still produces a (segment-less) transcript with the
     // per-source store record (`none`, since nothing was found).
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-2"], explicitOut: nil, slug: sessionID)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-2=none\"]"))
   }
@@ -622,7 +596,6 @@ struct TranscribePipelineTests {
     // never a silent exit-0-empty), and name `mic` as missing in both the log
     // and the transcript's per-source `audio_stores` record (issue #21).
     let dataRoot = makeTempDirectory("session-partial")
-    let outputRoot = makeTempDirectory("session-partial-output")
     let sessionID = "b7acc61f"
 
     let session = Session(
@@ -651,7 +624,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -675,9 +647,7 @@ struct TranscribePipelineTests {
     // from silence (issue #21).
     #expect(lines.contains { $0.contains("sources_resolved=1 sources_missing=1") })
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "browser:meet:speaker-1"], explicitOut: nil, slug: sessionID)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
     // The transcript carries the transcribed text and, in metadata, the
     // per-source outcome: `mic` read from no store, the browser source from the
@@ -691,7 +661,6 @@ struct TranscribePipelineTests {
   )
   func sessionPrefersPerSessionOverRing() async throws {
     let dataRoot = makeTempDirectory("session-both")
-    let outputRoot = makeTempDirectory("session-both-output")
     let sessionID = "both-session"
 
     let session = Session(
@@ -723,7 +692,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(session: sessionID, sourceIDs: [], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -738,9 +706,7 @@ struct TranscribePipelineTests {
     // Only the chosen (per-session) store is read — never both.
     #expect(scripted.recordedCalls.count == 1)
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil, slug: sessionID)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
     #expect(markdown.contains("audio_stores: [\"mic=session\"]"))
   }
@@ -748,7 +714,6 @@ struct TranscribePipelineTests {
   @Test("segments from two sources are merged onto one shared timeline, ordered by time")
   func twoSourcesMergeByTime() async throws {
     let dataRoot = makeTempDirectory("two-sources")
-    let outputRoot = makeTempDirectory("two-sources-output")
 
     // mic's speech span is chronologically *later* (closer to `now`) than
     // zoom's, so the merged transcript must reorder them by wall-clock
@@ -780,7 +745,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic", "app:us.zoom.xos"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -793,9 +757,10 @@ struct TranscribePipelineTests {
 
     #expect(exitCode == 0)
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20),
-      sourceIDs: ["mic", "app:us.zoom.xos"], explicitOut: nil)
+    let paths = TranscriptStorePaths.rangeRun(
+      dataRoot: dataRoot,
+      runIdentifier: TranscriptStorePaths.rangeRunIdentifier(
+        requestedStart: now.advanced(by: -20), sourceIDs: ["mic", "app:us.zoom.xos"]))
     let markdown = try outputText(at: paths.markdown)
 
     let zoomRange = markdown.range(of: "zoom-earlier")
@@ -811,7 +776,6 @@ struct TranscribePipelineTests {
   @Test("--out overrides the output path")
   func explicitOutOverridesPath() async throws {
     let dataRoot = makeTempDirectory("explicit-out")
-    let outputRoot = makeTempDirectory("explicit-out-output")
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
@@ -823,7 +787,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic"], out: customPath),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -840,16 +803,14 @@ struct TranscribePipelineTests {
     #expect(FileManager.default.fileExists(atPath: sidecarPath))
   }
 
-  @Test("the emitted stdout path is absolute and standardized, not the output root's raw spelling")
+  @Test("the emitted stdout path is absolute and standardized, not the data root's raw spelling")
   func stdoutPathIsAbsoluteAndStandardized() async throws {
-    let dataRoot = makeTempDirectory("stdout-path")
-    let outputBase = makeTempDirectory("stdout-path-output")
-    // The relative-spelling case (`output_root = "."`): Foundation resolves a
+    // The relative-spelling case (`data_root = "."`): Foundation resolves a
     // relative `fileURLWithPath` against cwd at URL creation, so what actually
     // survives to the emitter is the un-normalized dot component — the daemon
     // parsing the emitted line must get the standardized absolute path, not
     // the root's raw spelling.
-    let outputRoot = URL(fileURLWithPath: outputBase.path + "/./transcripts")
+    let dataRoot = URL(fileURLWithPath: makeTempDirectory("stdout-path").path + "/./store")
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
@@ -863,7 +824,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),
@@ -879,17 +839,18 @@ struct TranscribePipelineTests {
     let emitted = try #require(stdoutLines.withLock { $0 }.last)
     #expect(emitted.hasPrefix("/"))
     #expect(!emitted.contains("/./"))
-    let expected = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: now.advanced(by: -20), sourceIDs: ["mic"],
-      explicitOut: nil
-    ).markdown.standardizedFileURL.path
+    let expected = TranscriptStorePaths.rangeRun(
+      dataRoot: dataRoot,
+      runIdentifier: TranscriptStorePaths.rangeRunIdentifier(
+        requestedStart: now.advanced(by: -20), sourceIDs: ["mic"])
+    )
+    .markdown.standardizedFileURL.path
     #expect(emitted == expected)
   }
 
   @Test("the configured LoadOptions is passed through to the transcriber's load call")
   func loadOptionsPassedThrough() async throws {
     let dataRoot = makeTempDirectory("load-options")
-    let outputRoot = makeTempDirectory("load-options-output")
     try await writeFixtureSource(
       sourceID: "mic", dataRoot: dataRoot,
       chunkStart: now.advanced(by: -20), chunkDuration: 20,
@@ -901,7 +862,6 @@ struct TranscribePipelineTests {
     let exitCode = await TranscribePipeline.run(
       inputs: .init(last: "20s", sourceIDs: ["mic"], out: nil),
       dataRoot: dataRoot,
-      outputRoot: outputRoot,
       backendName: "fluidaudio",
       dependencies: .init(
         clock: ManualClock(now),

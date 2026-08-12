@@ -20,6 +20,8 @@ Each is a separate binary. They share nothing but the [data formats](./data-form
 
 `earsd` runs in the background and records only while a session is active. When one starts, it captures the session's sources — microphone, system audio, a single app's audio, or per-participant call audio pushed in by the [browser extension](./browser-extension.md) — into that session's own directory on disk, compressed. A cheap voice-activity detector runs alongside and writes speech/silence spans to an index. Once the session's transcript lands, the audio is deleted a couple of hours later (7 days if transcription failed, so it can be retried); the transcript is the durable artifact.
 
+Artifacts come in two tiers. The **raw transcript** is an intermediate: it stays in the session's own directory in the data store, addressed by session id, with no user-facing layout — and it is never swept, because once the audio is gone it is the only way to re-run the LLM stages with a different prompt or model. The **cleaned transcript and summaries** are what get published, to a path you configure with a template: date and week folders, the meeting's real name in the filename, an Obsidian daily note, whatever fits your setup. See [configuration](./configuration.md#path-templates).
+
 Two use cases drive everything:
 
 - **Meeting notes, hands-free.** The browser extension detects a call starting in a tab, declares a session, and streams each participant's audio in; when the call ends, the daemon transcribes the session automatically and files a dated Markdown note with no manual step.

@@ -16,16 +16,20 @@ import Foundation
 /// timeline (``TranscriptAssembly``), and write the Markdown transcript +
 /// JSON sidecar atomically.
 ///
-/// Deliberately takes `dataRoot`/`outputRoot`/`backendName` as plain,
-/// already-resolved values rather than reading config/environment itself --
-/// that resolution is ``TranscribeRuntime``'s job (the thin, tier-2/3 glue
-/// layer that reads `ProcessInfo.environment`/the home directory/the real
-/// config file). Splitting it this way means this type -- everything from
-/// "have a data root and an output root" onward, which is most of
-/// `transcribe`'s actual behaviour -- is directly unit-testable against a
-/// fixture data root and an injected fake ``Transcriber`` with no
-/// environment-variable or config-file setup at all, per
-/// `docs/engineering-practices.md`'s tier-1 "fixture audio store on disk"
+/// The transcript it writes is an **intermediate**: it lands in the data
+/// store (``TranscriptStorePaths``), addressed by session or range-run
+/// identifier, never under `output_root`. Publishing — a cleaned transcript
+/// at a user-configured path — is `cleanup`'s job.
+///
+/// Deliberately takes `dataRoot`/`backendName` as plain, already-resolved
+/// values rather than reading config/environment itself -- that resolution is
+/// ``TranscribeRuntime``'s job (the thin, tier-2/3 glue layer that reads
+/// `ProcessInfo.environment`/the home directory/the real config file).
+/// Splitting it this way means this type -- everything from "have a data
+/// root" onward, which is most of `transcribe`'s actual behaviour -- is
+/// directly unit-testable against a fixture data root and an injected fake
+/// ``Transcriber`` with no environment-variable or config-file setup at all,
+/// per `docs/engineering-practices.md`'s tier-1 "fixture audio store on disk"
 /// strategy.
 enum TranscribePipeline {
   /// Everything real production code has to fake to test this type: the
@@ -140,14 +144,13 @@ enum TranscribePipeline {
   static func run(
     inputs: Inputs,
     dataRoot: URL,
-    outputRoot: URL,
     backendName: String,
     socketPath: String? = nil,
     dependencies: Dependencies
   ) async -> Int32 {
     guard let sessionID = inputs.session else {
       return await runResolved(
-        inputs: inputs, dataRoot: dataRoot, outputRoot: outputRoot, backendName: backendName,
+        inputs: inputs, dataRoot: dataRoot, backendName: backendName,
         dependencies: dependencies)
     }
     let job = JobEventPublisher(
@@ -157,7 +160,7 @@ enum TranscribePipeline {
       log: dependencies.log)
     await job.publish(state: .started)
     let code = await runResolved(
-      inputs: inputs, dataRoot: dataRoot, outputRoot: outputRoot, backendName: backendName,
+      inputs: inputs, dataRoot: dataRoot, backendName: backendName,
       dependencies: dependencies)
     await job.publish(
       state: code == 0 ? .done : .failed, detail: code == 0 ? nil : "exit \(code)")
@@ -168,7 +171,6 @@ enum TranscribePipeline {
   private static func runResolved(
     inputs: Inputs,
     dataRoot: URL,
-    outputRoot: URL,
     backendName: String,
     dependencies: Dependencies
   ) async -> Int32 {
@@ -274,7 +276,7 @@ enum TranscribePipeline {
     // synthesized `<start-timestamp>_<slug>` identifier for a raw range run.
     let runIdentifier =
       sessionRecord?.id
-      ?? OutputPathResolution.rangeRunIdentifier(
+      ?? TranscriptStorePaths.rangeRunIdentifier(
         requestedStart: requestedRange.start, sourceIDs: sourceIDs)
 
     // Optional per-session vocabulary, keyed by session id by convention:
@@ -486,6 +488,11 @@ enum TranscribePipeline {
       // run still carries the synthesized `range_run:` identifier.
       rangeRun: sessionRecord == nil ? runIdentifier : nil,
       session: sessionRecord?.id,
+      // The path-template context every downstream stage reads back from the
+      // document rather than being told again on the command line, so a
+      // manual rerun files exactly where the daemon-spawned run did.
+      title: sessionRecord?.title,
+      started: sessionRecord?.started ?? requestedRange.start,
       speakers: speakers,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,
@@ -495,9 +502,17 @@ enum TranscribePipeline {
       audioStores: audioStores
     )
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: requestedRange.start, sourceIDs: sourceIDs,
-      explicitOut: inputs.out, slug: sessionRecord?.id)
+    // Intermediates live in the data store, addressed by session (or by
+    // range-run identifier); `output_root` is the *published* artifacts' root
+    // and this stage never writes there. `--out` still overrides verbatim.
+    let paths: TranscriptStorePaths.Paths
+    if let out = inputs.out, !out.isEmpty {
+      paths = TranscriptStorePaths.explicit(out)
+    } else if let sessionRecord {
+      paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionRecord.id)
+    } else {
+      paths = TranscriptStorePaths.rangeRun(dataRoot: dataRoot, runIdentifier: runIdentifier)
+    }
 
     do {
       let markdown = TranscriptRenderer.renderMarkdown(document)

@@ -225,16 +225,14 @@ enum TranscribeFilePipeline {
   /// `<input-dir>/<input-name>.transcript.md` and the sibling `.transcript.json`,
   /// so the transcript sits beside the recording it came from.
   private static func outputPaths(for fileURL: URL, explicitOut: String?)
-    -> OutputPathResolution.Paths
+    -> TranscriptStorePaths.Paths
   {
     if let explicitOut, !explicitOut.isEmpty {
-      let markdown = URL(fileURLWithPath: explicitOut)
-      let sidecar = markdown.deletingPathExtension().appendingPathExtension("json")
-      return OutputPathResolution.Paths(markdown: markdown, sidecar: sidecar)
+      return TranscriptStorePaths.explicit(explicitOut)
     }
     let directory = fileURL.deletingLastPathComponent()
     let base = fileURL.deletingPathExtension().lastPathComponent
-    return OutputPathResolution.Paths(
+    return TranscriptStorePaths.Paths(
       markdown: directory.appendingPathComponent("\(base).transcript.md"),
       sidecar: directory.appendingPathComponent("\(base).transcript.json"))
   }

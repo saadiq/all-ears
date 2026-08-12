@@ -202,12 +202,19 @@ struct JSONEnvelopeContractSmokeTests {
     return markdownURL.path
   }
 
+  /// Echoes a `cleanup` prompt's marked turn lines back unchanged (a no-op
+  /// cleaner), and answers anything else with the fixture utterance — see
+  /// `PlainModeContractSmokeTests.writeFakeLLMScript`.
   private static func writeFakeLLMScript(in temp: TempDirectory) throws -> String {
     let scriptURL = temp.url.appendingPathComponent("fake-llm.sh")
     let script = """
       #!/bin/sh
-      /bin/cat >/dev/null
-      printf '%s' '\(fixtureUtterance)'
+      marked=$(/bin/cat | /usr/bin/grep '^\\[\\[')
+      if [ -n "$marked" ]; then
+        printf '%s' "$marked"
+      else
+        printf '%s' '\(fixtureUtterance)'
+      fi
       """
     try script.write(to: scriptURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes(
@@ -263,11 +270,13 @@ struct JSONEnvelopeContractSmokeTests {
     #expect(envelope.ok)
     let output = try #require(envelope.output)
     #expect(output.hasPrefix("/"), "output must be an absolute path, got: \(output)")
-    #expect(output.hasSuffix(".transcript.md"))
+    #expect(output.hasSuffix("/sessions/\(sessionID)/transcript.md"))
     #expect(FileManager.default.fileExists(atPath: output))
     let outputs = try #require(envelope.outputs)
     #expect(outputs.first == output, "outputs must lead with the primary artifact")
-    #expect(outputs.contains { $0.hasSuffix(".transcript.json") }, "outputs must list the sidecar")
+    #expect(
+      outputs.contains { $0.hasSuffix("/sessions/\(sessionID)/transcript.json") },
+      "outputs must list the sidecar")
     for path in outputs {
       #expect(path.hasPrefix("/"), "every outputs entry must be absolute, got: \(path)")
       #expect(FileManager.default.fileExists(atPath: path), "outputs entry must exist: \(path)")
@@ -321,6 +330,7 @@ struct JSONEnvelopeContractSmokeTests {
     let configPath = temp.write(
       """
       data_root = "\(temp.url.path)/data"
+      output_root = "\(temp.url.path)/out"
 
       [llm]
       backend = "command"
@@ -340,11 +350,13 @@ struct JSONEnvelopeContractSmokeTests {
     #expect(envelope.ok)
     let output = try #require(envelope.output)
     #expect(output.hasPrefix("/"), "output must be an absolute path, got: \(output)")
-    #expect(output.hasSuffix(".clean.md"))
+    #expect(output.hasSuffix("/out/1970/01/01/1970-01-01 - mic.md"))
     #expect(FileManager.default.fileExists(atPath: output))
     let outputs = try #require(envelope.outputs)
     #expect(outputs.first == output, "outputs must lead with the primary artifact")
-    #expect(outputs.contains { $0.hasSuffix(".clean.json") }, "outputs must list the sidecar")
+    #expect(
+      outputs.contains { $0.hasSuffix("/out/1970/01/01/1970-01-01 - mic.json") },
+      "outputs must list the sidecar")
     for path in outputs {
       #expect(FileManager.default.fileExists(atPath: path), "outputs entry must exist: \(path)")
     }

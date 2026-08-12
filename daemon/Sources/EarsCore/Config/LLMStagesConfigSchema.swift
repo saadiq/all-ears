@@ -10,6 +10,27 @@
 /// ``effectiveDefaults`` compose the two via ``ConfigSchema/union(_:)`` into
 /// what `cleanup`/`summarize` actually validate against.
 public enum LLMStagesConfigSchema {
+  /// The smart default for `[cleanup] output` — a date-foldered
+  /// `<date> - <title>.md` under `output_root`. Named here so the schema's
+  /// defaults and `cleanup`'s own fallback can never drift apart.
+  public static let defaultCleanupOutput = "{output_root}/{year}/{month}/{day}/{date} - {title}.md"
+
+  /// The model `cleanup` uses unless told otherwise, overriding `[llm] model`
+  /// for this stage alone.
+  ///
+  /// Cleanup is bulk mechanical correction — homophones, punctuation, casing,
+  /// against a supplied vocabulary — over every turn of every recording, which
+  /// makes it both the highest-volume LLM stage and the one least sensitive to
+  /// model strength. `summarize` is the opposite on both counts, so the two
+  /// stages defaulting to the same model served neither: pinning the cheap
+  /// model here leaves `[llm] model` free to name a stronger default for
+  /// summaries.
+  public static let defaultCleanupModel = "claude-haiku-4-5"
+
+  /// Spoken seconds of transcript per `cleanup` LLM call. See
+  /// ``CleanupChunker`` for why the unit is talking time.
+  public static let defaultCleanupChunkSeconds = 300
+
   public static let defaults: ConfigValue = .table([
     "llm": .table([
       // "llm-cli" | "command"; see docs/configuration.md's [llm] table.
@@ -22,7 +43,14 @@ public enum LLMStagesConfigSchema {
     "cleanup": .table([
       // Empty => the built-in cleanup prompt (CleanupPromptBuilder's default).
       "prompt_file": .string(""),
+      // Overrides [llm] model for this stage; empty falls back to it.
+      "model": .string(defaultCleanupModel),
+      "chunk_seconds": .int(defaultCleanupChunkSeconds),
       "use_vocab": .bool(true),
+      // The smart default for the *published* cleaned transcript: a
+      // date-foldered `<date> - <title>.md` under `output_root`. Raw
+      // transcripts never land here — they stay in the data store.
+      "output": .string(defaultCleanupOutput),
     ]),
     "summarize": .table([
       "preset": .array([])
@@ -39,6 +67,19 @@ public enum LLMStagesConfigSchema {
       "name": ConfigSchema.Field(type: .string, description: "Preset name, selected via --preset."),
       "prompt_file": ConfigSchema.Field(
         type: .string, description: "Path to this preset's summary prompt."),
+      "notes": ConfigSchema.Field(
+        type: .string,
+        description:
+          "Path template for a companion notes file, read as plain Markdown alongside the transcript.",
+        pathTemplateTokens: PathTemplate.publishedTokens),
+      "out": ConfigSchema.Field(
+        type: .string,
+        description:
+          "Path template for this preset's output; {notes} writes back over the notes file.",
+        pathTemplateTokens: PathTemplate.presetOutTokens),
+      "frontmatter": ConfigSchema.Field(
+        type: .bool,
+        description: "Emit the ears YAML frontmatter block; false writes the summary body alone."),
     ]
   )
 
@@ -68,8 +109,19 @@ public enum LLMStagesConfigSchema {
               type: .string,
               description: "Path to a custom cleanup system prompt; empty uses the built-in prompt."
             ),
+            "model": ConfigSchema.Field(
+              type: .string,
+              description:
+                "Model id for the cleanup stage, overriding [llm] model; empty falls back to it."),
+            "chunk_seconds": ConfigSchema.Field(
+              type: .int,
+              description: "Spoken seconds of transcript batched into one cleanup LLM call."),
             "use_vocab": ConfigSchema.Field(
               type: .bool, description: "Apply the vocabulary list as a correction backstop."),
+            "output": ConfigSchema.Field(
+              type: .string,
+              description: "Path template for the published cleaned transcript.",
+              pathTemplateTokens: PathTemplate.publishedTokens),
           ]
         ),
         description: "Transcript-cleanup stage settings."),
@@ -79,7 +131,9 @@ public enum LLMStagesConfigSchema {
           fields: [
             "preset": ConfigSchema.Field(
               type: .array, elementSchema: presetElementSchema,
-              description: "Named summary presets, each a name and a prompt_file.")
+              description:
+                "Named summary presets: a name, a prompt_file, and optional notes/out/frontmatter."
+            )
           ]
         ),
         description: "Summary stage settings."),

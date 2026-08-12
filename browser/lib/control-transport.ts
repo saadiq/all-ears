@@ -155,9 +155,20 @@ export class ControlSocket {
   // ── Typed command surface (what session-tracker.ts consumes) ──────────────
 
   /** session.start (idempotent on platform+external id) → the session. */
-  async sessionStart(platform: Platform, externalMeetingId: string): Promise<SessionWire> {
+  async sessionStart(
+    platform: Platform,
+    externalMeetingId: string,
+    title?: string,
+  ): Promise<SessionWire> {
     return (await this.request((id) =>
-      controlRequest.sessionStart(id, platform, externalMeetingId),
+      controlRequest.sessionStart(id, platform, externalMeetingId, title),
+    )) as SessionWire;
+  }
+
+  /** session.rename, compare-and-set on `ifRev` when given. */
+  async sessionRename(session: string, title: string, ifRev?: number): Promise<SessionWire> {
+    return (await this.request((id) =>
+      controlRequest.sessionRename(id, session, title, ifRev),
     )) as SessionWire;
   }
 
