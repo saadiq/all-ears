@@ -275,42 +275,97 @@ public enum TranscriptParser {
     guard !body.isEmpty else { return [] }
 
     let blocks = body.components(separatedBy: "\n\n")
-    return try blocks.map { block -> TranscriptSegment in
-      let lines = block.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-      guard let headingLine = lines.first, headingLine.hasPrefix("## [") else {
+    var segments: [TranscriptSegment] = []
+    for block in blocks {
+      // A block is one turn plus any backchannels attached beneath it. The
+      // turn's own text may not contain a line beginning "> [", which is the
+      // reserved backchannel form (see ``MarkdownBodyRenderer``).
+      var lines = block.components(separatedBy: "\n")
+      guard !lines.isEmpty else {
         throw TranscriptParsingError.malformedField(field: "segment heading", value: block)
       }
-      let text = lines.count > 1 ? String(lines[1]) : ""
-
-      guard let closeBracket = headingLine.firstIndex(of: "]") else {
-        throw TranscriptParsingError.malformedField(
-          field: "segment heading", value: String(headingLine))
+      let labelLine = lines.removeFirst()
+      var backchannelLines: [String] = []
+      while let last = lines.last, last.hasPrefix("> [") {
+        backchannelLines.insert(lines.removeLast(), at: 0)
       }
-      let timeString = headingLine[
-        headingLine.index(headingLine.startIndex, offsetBy: 4)..<closeBracket]
-      var rest = headingLine[headingLine.index(after: closeBracket)...].trimmingCharacters(
-        in: .whitespaces)
 
-      var source = fallbackSource
-      var sourceProvenance = false
-      if let commentRange = rest.range(of: "<!-- source: ") {
-        let afterMarker = rest[commentRange.upperBound...]
-        if let endMarker = afterMarker.range(of: " -->") {
-          source = SourceID(String(afterMarker[afterMarker.startIndex..<endMarker.lowerBound]))
-          sourceProvenance = true
-        }
-        rest = String(rest[rest.startIndex..<commentRange.lowerBound]).trimmingCharacters(
-          in: .whitespaces)
+      segments.append(
+        try turn(
+          label: labelLine, text: lines.joined(separator: "\n"), rangeStart: rangeStart,
+          fallbackSource: fallbackSource))
+      for line in backchannelLines {
+        segments.append(
+          try backchannel(line, rangeStart: rangeStart, fallbackSource: fallbackSource))
       }
-      let speaker = rest
-
-      let startOffset = try timeOfDayOffset(timeString, rangeStart: rangeStart)
-      return TranscriptSegment(
-        source: source,
-        speaker: speaker,
-        segment: Segment(start: startOffset, end: startOffset, text: text),
-        sourceProvenance: sourceProvenance)
     }
+    return segments
+  }
+
+  /// One turn from its label line and body text. Accepts both the current
+  /// `**[HH:MM:SS] speaker**` form and the `## [HH:MM:SS] speaker` heading
+  /// written before that change, so transcripts already on disk keep parsing.
+  private static func turn(
+    label: String, text: String, rangeStart: Instant, fallbackSource: SourceID
+  ) throws -> TranscriptSegment {
+    let marker: String
+    if label.hasPrefix("**[") {
+      marker = "**["
+    } else if label.hasPrefix("## [") {
+      marker = "## ["
+    } else {
+      throw TranscriptParsingError.malformedField(field: "segment heading", value: label)
+    }
+
+    guard let closeBracket = label.firstIndex(of: "]") else {
+      throw TranscriptParsingError.malformedField(field: "segment heading", value: label)
+    }
+    let timeString = label[label.index(label.startIndex, offsetBy: marker.count)..<closeBracket]
+    var rest = label[label.index(after: closeBracket)...].trimmingCharacters(in: .whitespaces)
+
+    var source = fallbackSource
+    var sourceProvenance = false
+    if let commentRange = rest.range(of: "<!-- source: ") {
+      let afterMarker = rest[commentRange.upperBound...]
+      if let endMarker = afterMarker.range(of: " -->") {
+        source = SourceID(String(afterMarker[afterMarker.startIndex..<endMarker.lowerBound]))
+        sourceProvenance = true
+      }
+      rest = String(rest[rest.startIndex..<commentRange.lowerBound]).trimmingCharacters(
+        in: .whitespaces)
+    }
+    // The bold form closes with `**`; the heading form has no trailing marker.
+    if rest.hasSuffix("**") { rest = String(rest.dropLast(2)).trimmingCharacters(in: .whitespaces) }
+
+    let startOffset = try timeOfDayOffset(timeString, rangeStart: rangeStart)
+    return TranscriptSegment(
+      source: source,
+      speaker: rest,
+      segment: Segment(start: startOffset, end: startOffset, text: text),
+      sourceProvenance: sourceProvenance)
+  }
+
+  /// One backchannel from its `> [HH:MM:SS] speaker: text` line.
+  private static func backchannel(
+    _ line: String, rangeStart: Instant, fallbackSource: SourceID
+  ) throws -> TranscriptSegment {
+    guard let closeBracket = line.firstIndex(of: "]") else {
+      throw TranscriptParsingError.malformedField(field: "backchannel", value: line)
+    }
+    let timeString = line[line.index(line.startIndex, offsetBy: 3)..<closeBracket]
+    let rest = line[line.index(after: closeBracket)...].trimmingCharacters(in: .whitespaces)
+    guard let colon = rest.firstIndex(of: ":") else {
+      throw TranscriptParsingError.malformedField(field: "backchannel", value: line)
+    }
+    let speaker = String(rest[rest.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+    let text = String(rest[rest.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+
+    let startOffset = try timeOfDayOffset(timeString, rangeStart: rangeStart)
+    return TranscriptSegment(
+      source: fallbackSource,
+      speaker: speaker,
+      segment: Segment(start: startOffset, end: startOffset, text: text),
+      isBackchannel: true)
   }
 
   /// Resolves a Markdown heading's `HH:MM:SS` time-of-day back to a seconds

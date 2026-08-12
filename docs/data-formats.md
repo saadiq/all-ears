@@ -191,16 +191,20 @@ vocab: [global, standup]
                             # so a wrong-store read is visible
 ---
 
-## [10:30:04] You
+**[10:30:04] You**
 Morning — let's keep this quick. Any blockers?
 
-## [10:30:11] app:us.zoom.xos
+**[10:30:11] app:us.zoom.xos**
 Nothing from me, the deploy went out last night.
+> [10:30:14] You: Nice.
 ```
 
 Rules:
 
-- Segments are grouped by speaker turn, each headed by a timestamp and a speaker label.
+- Segments are grouped by speaker turn, each labelled with a timestamp and a speaker name. The label is **bold text, not a heading**: a speaker name is metadata, not document structure, and an `##` per turn rendered a one-word "Yeah." at display size while buying an outline of a thousand entries named after two people. Readers of transcripts written before this change are unaffected — the parser still accepts the old `## [HH:MM:SS] speaker` form.
+- **A turn is never split.** Turns are emitted whole in start order, even when two people overlap. Splitting a turn wherever another speaker intrudes is faithful to the audio and unreadable as a document — it shreds both sentences into alternating single words. Nor are a speaker's consecutive segments merged: an ASR pause is a paragraph break a reader wants.
+- **Backchannels are demoted.** A turn of at most four words falling entirely inside another speaker's turn — "Yeah.", "Right." — renders as a `> [HH:MM:SS] speaker: text` blockquote line attached beneath the turn it interrupted, instead of breaking that turn in two. It stays a full segment in the JSON sidecar, so nothing is lost; only the Markdown demotes it.
+- **Turns with no text are dropped.** A heading with no words tells a reader nothing.
 - **Speaker labels** derive from the source: `mic` → `You`, every other source → its source id (a per-participant browser source is therefore already a per-person label). Within-stream diarization — stable `Speaker N` labels inside a multi-speaker source — is designed but not yet implemented.
 - **The path-template context travels here, not on the command line.** `title:` and `started:` are what a publishing stage expands `{title}`/`{date}`/`{week}` against, so a manual rerun files exactly where the daemon-spawned run did.
 - `cleanup` and `summarize` outputs use the same frontmatter convention with `kind: clean` / `kind: summary` and a `derived_from` field naming the source transcript. A summary also carries a `preset` field naming the `[[summarize.preset]]` it was generated from.
