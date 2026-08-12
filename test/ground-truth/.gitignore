@@ -16,3 +16,7 @@ runs/*/
 
 # Python bytecode from the harness scripts.
 __pycache__/
+
+# Persistent signed-in browser profiles. Never commit these — they hold live
+# Google session cookies.
+.profiles/

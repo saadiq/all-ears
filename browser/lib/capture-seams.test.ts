@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SeamArbiter,
   SEAM_ESCALATION_GRACE_MS,
+  admitReceiverTrack,
   looksLikeCaptureDevice,
   seamUsesReceiverTracks,
   seamOrderFor,
@@ -306,5 +307,41 @@ describe("looksLikeCaptureDevice", () => {
 
   it("treats an empty-string groupId as no device rather than as a device", () => {
     expect(looksLikeCaptureDevice({ deviceId: "default", groupId: "" })).toBe(false);
+  });
+});
+
+describe("admitReceiverTrack", () => {
+  it("starts an unmuted track on a receiver seam", () => {
+    expect(admitReceiverTrack("receiver-track", { muted: false, alreadyCapturing: false })).toBe("start");
+    expect(admitReceiverTrack("meet-encoded-tee", { muted: false, alreadyCapturing: false })).toBe("start");
+  });
+
+  it("defers a MUTED track instead of minting a phantom attendee (journal #142, #165)", () => {
+    // Meet pre-allocates three remote transceivers before anyone fills them.
+    // Each one that starts a pipeline becomes a speaker-<n> in session.toml.
+    expect(admitReceiverTrack("receiver-track", { muted: true, alreadyCapturing: false })).toBe(
+      "defer-until-unmute",
+    );
+  });
+
+  it("skips a track already being captured, muted or not", () => {
+    expect(admitReceiverTrack("receiver-track", { muted: false, alreadyCapturing: true })).toBe("skip");
+    expect(admitReceiverTrack("receiver-track", { muted: true, alreadyCapturing: true })).toBe("skip");
+  });
+
+  it("skips receiver tracks entirely once the call has escalated past them (journal #82)", () => {
+    // Post-escalation the receiver tracks are known-silent decoys; a muted one
+    // must not even be deferred, or it would start a pipeline on a later unmute.
+    expect(admitReceiverTrack("webaudio-track", { muted: false, alreadyCapturing: false })).toBe("skip");
+    expect(admitReceiverTrack("webaudio-track", { muted: true, alreadyCapturing: false })).toBe("skip");
+  });
+
+  it("admits the carrying track of a pre-allocated trio and defers the other two", () => {
+    // The exact 2026-08-12 shape: three ontrack tracks, one unmuted.
+    const trio = [{ muted: false }, { muted: true }, { muted: true }];
+    const verdicts = trio.map((t) =>
+      admitReceiverTrack("receiver-track", { muted: t.muted, alreadyCapturing: false }),
+    );
+    expect(verdicts).toEqual(["start", "defer-until-unmute", "defer-until-unmute"]);
   });
 });

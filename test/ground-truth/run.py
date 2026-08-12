@@ -161,6 +161,18 @@ def note_observers(
     return observers
 
 
+def _tile_names(browser: browsers.Browser) -> list[str]:
+    """Display names currently on the host page's participant tiles."""
+    roster = browser.js(browsers.ROSTER_JS)
+    names = []
+    if isinstance(roster, list):
+        for tile in roster:
+            text = tile.get("text") or []
+            if text and text[0]:
+                names.append(text[0])
+    return names
+
+
 def wait_for_session(since: datetime, timeout: float = 180.0) -> store.Session | None:
     """Poll the store for the session the extension declared for this call."""
     deadline = now() + timeout
@@ -348,14 +360,21 @@ def _hold(browser: browsers.Browser, seconds: float) -> None:
 @click.option("--guest-browser", default="auto-guest")
 @click.option("--keep-open", is_flag=True)
 @click.option("--convener", "convener_name", default=None,
-              help="Display name of the signed-in participant holding the call open.")
+              help="Deprecated: no longer needed now participants sign in.")
+@click.option("--profile", "profile_map", multiple=True, metavar="LABEL=DIR",
+              help="Run this participant from a signed-in profile under .profiles/.")
 def scenario(scenario_id: str, meet_url: str, host_browser: str, guest_browser: str,
-             keep_open: bool, convener_name: str | None) -> None:
+             keep_open: bool, convener_name: str | None,
+             profile_map: tuple[str, ...]) -> None:
     """Run one scenario end to end and write its run record."""
     manifest_path = gt.MANIFESTS / f"{scenario_id}.json"
     if not manifest_path.exists():
         raise click.ClickException(f"{manifest_path} missing — run `uv run assemble.py build`")
     manifest = json.loads(manifest_path.read_text())
+    # label -> signed-in profile directory. Anonymous join is no longer
+    # available, so a participant without a profile here can only join a call
+    # that still permits anonymous guests.
+    profiles = dict(entry.split("=", 1) for entry in profile_map)
 
     out = gt.RUNS / f"{stamp()}-{scenario_id}"
     out.mkdir(parents=True)
@@ -383,11 +402,18 @@ def scenario(scenario_id: str, meet_url: str, host_browser: str, guest_browser: 
         # The instrumented participant first: it must be in the call before any
         # guest, so the extension is capturing from the first remote track.
         local = next(p for p in manifest["participants"] if p["role"] == "local")
+        host_profile = profiles.get(local["label"])
         host, joined = browsers.launch_and_join(
-            local["label"], WORK, BASE_PORT, meet_url, local["display_name"],
+            local["label"], WORK, BASE_PORT, meet_url,
+            # A signed-in profile has no name field: Meet supplies the name, so
+            # the ground-truth label moves from "the name we typed" to "which
+            # profile played which WAV". The runner owns that mapping, so the
+            # truth is still by construction — it just has to be recorded.
+            "" if host_profile else local["display_name"],
             wav=gt.HERE / local["wav"],
             binary=browsers.resolve_binary(host_browser),
             extension=browsers.EXTENSION,
+            profile=browsers.PROFILES / host_profile if host_profile else None,
         )
         launched[local["label"]] = host
         host_audio_start = host.launched_at
@@ -395,13 +421,24 @@ def scenario(scenario_id: str, meet_url: str, host_browser: str, guest_browser: 
         check_extension_origin(host, run)
         run["participants"][local["label"]] = {
             "display_name": local["display_name"],
+            "signed_in_profile": host_profile,
             "audio_start_epoch": host_audio_start,
             "join": joined,
             "admitted_at_epoch": joined["admitted_at"],
         }
         admitted = joined
-        run["observers"] = note_observers(
-            host, {p["display_name"] for p in manifest["participants"]}, convener_name)
+        # The convener role is gone (a signed-in participant revives a dormant
+        # call by itself), so there is nothing to declare as an observer. What
+        # is worth recording is the host's OWN tile name: a signed-in profile
+        # shows its Google account name rather than the label we declared, and
+        # the scorer needs to know which is which. It lands only in run.json,
+        # which is gitignored.
+        run["observers"] = []
+        # Read the roster while the host is alone: whatever name is here is the
+        # host's own, which is what makes a later new name attributable.
+        known_names = set(_tile_names(host))
+        if known_names:
+            run["participants"][local["label"]]["observed_display_name"] = sorted(known_names)[0]
         host.js(browsers.RING_OBSERVER_JS)
 
         # Grid t=0 is the host's audio start plus its preroll: everything in the
@@ -429,21 +466,36 @@ def scenario(scenario_id: str, meet_url: str, host_browser: str, guest_browser: 
             while pending and elapsed >= pending[0]["audio_start_grid_seconds"]:
                 spec = pending.pop(0)
                 click.echo(f"  [{elapsed:6.1f}s] launching {spec['display_name']}")
+                guest_profile = profiles.get(spec["label"])
                 guest, state = browsers.launch_and_join(
-                    spec["label"], WORK, port, meet_url, spec["display_name"],
+                    spec["label"], WORK, port, meet_url,
+                    "" if guest_profile else spec["display_name"],
                     wav=gt.HERE / spec["wav"],
                     binary=browsers.resolve_binary(guest_browser),
+                    profile=browsers.PROFILES / guest_profile if guest_profile else None,
                 )
                 port += 1
                 launched[spec["label"]] = guest
                 entry = {
                     "display_name": spec["display_name"],
+                    "signed_in_profile": guest_profile,
                     "audio_start_epoch": guest.launched_at,
                     "audio_start_grid_seconds": guest.launched_at - grid_zero,
                     "join": state,
                 }
                 entry["admitted_at_epoch"] = state["admitted_at"]
                 entry["admitted_grid_seconds"] = state["admitted_at"] - grid_zero
+                # A signed-in guest shows its Google account name, not the label
+                # we declared, so the expected roster name has to be OBSERVED.
+                # The newly-appeared tile is this guest's: the mapping stays
+                # ground truth because the runner owns which profile plays which
+                # WAV, it is just recorded rather than declared.
+                if guest_profile:
+                    seen_now = _tile_names(host)
+                    fresh = [n for n in seen_now if n not in known_names]
+                    if fresh:
+                        entry["observed_display_name"] = fresh[0]
+                        known_names.update(fresh)
                 late = entry["admitted_grid_seconds"] - spec["intended_join_grid_seconds"]
                 entry["admission_lateness_seconds"] = late
                 if state["admitted_at"] > guest.launched_at + gt.PREROLL_SECONDS:

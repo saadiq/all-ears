@@ -156,7 +156,8 @@ enum TranscriptAssembly {
     model: TranscriptModelInfo,
     generated: Instant,
     speechSeconds: Double,
-    audioStores: [TranscriptAudioStore] = []
+    audioStores: [TranscriptAudioStore] = [],
+    backchannelMaxWords: Int = defaultBackchannelMaxWords
   ) -> TranscriptDocument {
     var turns: [TranscriptSegment] = []
     for transcription in transcriptions {
@@ -168,7 +169,14 @@ enum TranscriptAssembly {
             source: transcription.sourceID, base: base, segment: segment, spans: spans))
       }
     }
-    let ordered = interleave(turns)
+    // A turn with no words says nothing a reader can use, and the ASR emits
+    // plenty of them — eleven of the first fifteen on the 2026-08-12 call. Drop
+    // them before weaving so they cannot end a speaker's floor or host a
+    // backchannel. They carry no words, so the word count is unaffected.
+    let spoken = turns.filter {
+      !$0.segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    let ordered = weave(spoken, backchannelMaxWords: backchannelMaxWords)
 
     // Word count is computed after interleaving, but is invariant to it: a
     // split partitions a segment's words across its two halves (their counts
@@ -206,34 +214,49 @@ enum TranscriptAssembly {
     return TranscriptDocument(frontmatter: frontmatter, segments: ordered)
   }
 
-  /// Weaves every source's turns into one chronological stream, splitting a
-  /// turn at word boundaries wherever another speaker begins speaking *during*
-  /// it — so a long continuous segment no longer swallows the shorter replies
-  /// that overlap it (per `docs/specs/transcribe.md`'s "merge sources on a
-  /// shared timeline" step and this PR's acceptance criteria).
+  /// Longest an utterance can be and still count as a backchannel. Four words
+  /// covers "Yeah.", "Right.", "Yeah. Yep.", "Oh that's interesting" while
+  /// leaving a real interjection to stand as its own turn. A taste judgement,
+  /// not a fact — hence a parameter, awaiting a config key.
+  static let defaultBackchannelMaxWords: Int = 4
+
+  /// Weaves every source's turns into one readable stream.
   ///
-  /// Guarantees:
-  /// - **Non-decreasing starts.** Each iteration emits the turn with the
-  ///   minimum start currently pending and only re-queues remainders that
-  ///   start strictly later, so emitted starts never decrease.
-  /// - **No fragmentation without overlap.** A turn is split only where a
-  ///   *different-speaker* turn starts inside its span; single-speaker runs
-  ///   (and single-source transcripts) are never split, so their turns — and
-  ///   the whole document's bytes — are identical to ordering by `start`
-  ///   alone.
-  /// - **Word granularity, whole-segment fidelity.** Splitting cuts on word
-  ///   start times and synthesises the piece's text from its words; an unsplit
-  ///   turn keeps its original ``Segment`` (and thus its exact `text`)
-  ///   untouched.
-  /// - **Wordless fallback.** A segment with no word timings can't be split
-  ///   (it has no internal boundaries) and is emitted whole, ordered by
-  ///   `start` — but it can still act as the intruder that splits a
-  ///   *word-timed* segment, so a mic reply without word timings still lands
-  ///   at its own time inside another source's turn.
-  private static func interleave(_ turns: [TranscriptSegment]) -> [TranscriptSegment] {
+  /// The previous implementation split a turn at word boundaries wherever
+  /// another speaker started talking inside it. That is faithful to the audio
+  /// and unreadable as a document: on the 2026-08-12 call a mutual "nice to
+  /// meet you" became ten one-word turns and neither sentence survived. Audio
+  /// is a timeline; a transcript is a document, and a document is read one
+  /// thing at a time.
+  ///
+  /// Two rules:
+  ///
+  /// 1. **A speaker holds the floor: nothing is ever split.** Turns are
+  ///    emitted whole, ordered by start time. This is the entire fix for
+  ///    shredding — the fragments existed *because* of splitting, so declining
+  ///    to split restores them. Note it deliberately does NOT merge a
+  ///    speaker's consecutive segments: an ASR pause is a paragraph break a
+  ///    reader wants, and merging on a time threshold turns a one-hour
+  ///    single-speaker recording into one unbroken block.
+  /// 2. **Backchannels are demoted.** An utterance sitting entirely inside
+  ///    another speaker's utterance, at most `backchannelMaxWords` long, is
+  ///    flagged ``TranscriptSegment/isBackchannel``. It keeps its text and
+  ///    timing — "did they agree?" is a real question to ask a transcript —
+  ///    but the renderer attaches it to the turn it interrupted rather than
+  ///    breaking that turn in two. Each one is hoisted to sit immediately
+  ///    after its host, which is what keeps the Markdown round-trippable with
+  ///    three or more speakers, where the host is not necessarily the previous
+  ///    turn by start time.
+  ///
+  /// Because nothing is split or merged, every turn keeps its original
+  /// ``Segment`` and its authoritative text, and the word count is identical
+  /// to the pre-weave total.
+  private static func weave(
+    _ turns: [TranscriptSegment], backchannelMaxWords: Int
+  ) -> [TranscriptSegment] {
     // Ascending by start, input order preserved on ties (stable) so equal-time
     // turns keep a deterministic, source-then-segment ordering.
-    var pending =
+    let ordered =
       turns
       .enumerated()
       .sorted {
@@ -242,36 +265,52 @@ enum TranscriptAssembly {
           : $0.offset < $1.offset
       }
       .map { $0.element }
+    return hoistBackchannels(ordered, maxWords: backchannelMaxWords)
+  }
+
+  /// Rule 2 — flag contained short utterances and place each one directly
+  /// after the utterance hosting it.
+  private static func hoistBackchannels(
+    _ utterances: [TranscriptSegment], maxWords: Int
+  ) -> [TranscriptSegment] {
+    func length(_ turn: TranscriptSegment) -> Int {
+      turn.segment.words.isEmpty
+        ? turn.segment.text.split(whereSeparator: \.isWhitespace).count
+        : turn.segment.words.count
+    }
+
+    // hostIndex[i] = index of the utterance that i is a backchannel inside.
+    var hostIndex: [Int: Int] = [:]
+    for (index, turn) in utterances.enumerated() where length(turn) <= maxWords {
+      for (other, host) in utterances.enumerated()
+      where other != index
+        && host.speaker != turn.speaker
+        && host.segment.start <= turn.segment.start
+        && turn.segment.end <= host.segment.end
+      {
+        // Longest containing utterance wins, so a backchannel inside nested
+        // spans attaches to the one actually holding the floor.
+        if let existing = hostIndex[index] {
+          let span = utterances[existing].segment.end - utterances[existing].segment.start
+          if host.segment.end - host.segment.start <= span { continue }
+        }
+        hostIndex[index] = other
+      }
+    }
+
+    var children: [Int: [Int]] = [:]
+    for (child, host) in hostIndex.sorted(by: { $0.key < $1.key }) {
+      children[host, default: []].append(child)
+    }
 
     var result: [TranscriptSegment] = []
-    while !pending.isEmpty {
-      let turn = pending.removeFirst()
-
-      // Earliest point at which a different speaker starts talking strictly
-      // inside this turn — the only place worth splitting.
-      var cut: Double?
-      for other in pending where intrudes(other, on: turn) {
-        cut = min(cut ?? other.segment.start, other.segment.start)
+    for (index, turn) in utterances.enumerated() where hostIndex[index] == nil {
+      result.append(turn)
+      for child in children[index] ?? [] {
+        var backchannel = utterances[child]
+        backchannel.isBackchannel = true
+        result.append(backchannel)
       }
-
-      guard let cutAt = cut, !turn.segment.words.isEmpty else {
-        result.append(turn)
-        continue
-      }
-
-      let head = turn.segment.words.filter { $0.start < cutAt }
-      let tail = turn.segment.words.filter { $0.start >= cutAt }
-      // Nothing to gain if the cut lands before the first word or after the
-      // last — emit whole and let the intruder follow at its own time.
-      guard let headEnd = head.last?.end, let tailStart = tail.first?.start else {
-        result.append(turn)
-        continue
-      }
-
-      let headSegment = slice(turn.segment, words: head, start: turn.segment.start, end: headEnd)
-      let tailSegment = slice(turn.segment, words: tail, start: tailStart, end: turn.segment.end)
-      result.append(retagging(turn, as: headSegment))
-      insertByStart(&pending, retagging(turn, as: tailSegment))
     }
     return result
   }

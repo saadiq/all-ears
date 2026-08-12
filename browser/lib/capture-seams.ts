@@ -157,6 +157,41 @@ export function seamTracksToAdopt(
   return availableIds.filter((id) => keep.has(id) && !adoptedIds.has(id));
 }
 
+/** What to do with a receiver track the `ontrack` hook just handed us. */
+export type ReceiverAdmission = "start" | "defer-until-unmute" | "skip";
+
+/**
+ * Whether a receiver track should start a pipeline now, wait, or be ignored.
+ *
+ * The `defer-until-unmute` verdict exists because Meet pre-allocates remote
+ * audio transceivers before there is anyone to fill them: journal #142 found
+ * three in a SOLO call, and #165 confirmed the same three on a two-person call
+ * with only the carrying one ever unmuting. Starting a pipeline for each one
+ * mints a `speaker-<n>` attendee for a participant who does not exist — the
+ * phantom roster entries in every session file since July.
+ *
+ * Deferring costs nothing. A muted track carries no audio by definition, and
+ * `AudioFrameSource` already could not build its processor until that same
+ * unmute edge (a MediaStreamTrackProcessor constructed on a muted track never
+ * delivers frames, even after it unmutes). The pipeline was always starting at
+ * first unmute; this only stops us *announcing a participant* before then.
+ *
+ * Scope: receiver tracks only. Webaudio-seam tracks all report `muted=false`
+ * even when inert — on 2026-08-12 all three were unmuted and two transcribed to
+ * zero segments (#171) — so `muted` cannot filter those, and silence alone must
+ * never retire a source, because a genuinely quiet participant looks identical
+ * under DTX / noise suppression.
+ */
+export function admitReceiverTrack(
+  seam: SeamId,
+  opts: { muted: boolean; alreadyCapturing: boolean },
+): ReceiverAdmission {
+  if (opts.alreadyCapturing) return "skip";
+  // Past the receiver-based seams the tracks are known-silent decoys (#82).
+  if (!seamUsesReceiverTracks(seam)) return "skip";
+  return opts.muted ? "defer-until-unmute" : "start";
+}
+
 /**
  * Adopted tracks that have since been classified `local` — the user's own
  * audio, captured a second time behind the daemon's mic source.

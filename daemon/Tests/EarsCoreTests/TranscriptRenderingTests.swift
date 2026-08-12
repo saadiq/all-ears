@@ -80,13 +80,13 @@ struct TranscriptRenderingTests {
       "vocab: [global, standup]",
       "---",
       "",
-      "## [10:30:04] You",
+      "**[10:30:04] You**",
       "Morning — let's keep this quick. Any blockers?",
       "",
-      "## [10:30:11] Speaker 2  <!-- source: app:us.zoom.xos -->",
+      "**[10:30:11] Speaker 2**  <!-- source: app:us.zoom.xos -->",
       "Nothing from me, the deploy went out last night.",
       "",
-      "## [10:30:19] Speaker 3  <!-- source: app:us.zoom.xos -->",
+      "**[10:30:19] Speaker 3**  <!-- source: app:us.zoom.xos -->",
       "I'm blocked on the API key rotation.",
       "",
     ].joined(separator: "\n")
@@ -201,7 +201,7 @@ struct TranscriptRenderingTests {
     )
 
     let rendered = TranscriptRenderer.renderMarkdown(document)
-    #expect(rendered.hasSuffix("## [10:30:00] You\nHello.\n"))
+    #expect(rendered.hasSuffix("**[10:30:00] You**\nHello.\n"))
     #expect(!rendered.contains("<!-- source:"))
   }
 

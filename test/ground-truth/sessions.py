@@ -23,6 +23,7 @@ Everything here is therefore a pure function of a `sessions/<uuid>/` directory:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -31,7 +32,14 @@ from pathlib import Path
 
 import numpy as np
 
-DEFAULT_ROOT = Path.home() / "Library" / "Application Support" / "ears"
+#: Where to read the audio store from. Overridable with `GT_DATA_ROOT` so a run
+#: against an isolated daemon (its own data_root, so a synthetic call can never
+#: reach the user's real store or publishing config) is still readable by the
+#: runner and the scorer.
+DEFAULT_ROOT = Path(
+    os.environ.get("GT_DATA_ROOT")
+    or Path.home() / "Library" / "Application Support" / "ears"
+)
 SAMPLE_RATE = 48_000
 
 
