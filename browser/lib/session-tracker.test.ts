@@ -477,66 +477,92 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     ]);
   });
 
-  it("participantRenamed attaches the dead track's source to the named attendee", async () => {
+  it("participantIdentified attaches the capture source to the named attendee", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
-    // The Etel case: speaker-1's audio recorded, the roster named the device,
-    // and the track died before the identity upgrade could restart capture.
+    // The Etel case: t1's audio recorded, the roster named the device, and the
+    // identity confirmed after the track died. The confirmation is just an
+    // attendee upsert linking the source — whenever it arrives.
     tracker.rosterUpdate("p1", "meet", [
       { participantId: "spaces/s/devices/183", displayName: "Etel Friedmann" },
     ]);
-    tracker.participantRenamed("p1", "meet", "speaker-1", "spaces/s/devices/183");
+    tracker.participantIdentified("p1", "meet", "spaces/s/devices/183", "t1");
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
       { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", display_name: "Etel Friedmann", origin: "platform" } },
       // Name and source now land on the same attendee row — the join the
-      // transcript's speaker map needs. The id is sanitized into the label.
-      // A rename target is a confirmed platform id by contract.
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1", origin: "platform" } },
+      // transcript's speaker map needs. The capture id is sanitized into the
+      // label. An identified id is a confirmed platform id by contract.
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:t1", origin: "platform" } },
     ]);
   });
 
-  it("a rename is identity-only: it does not enrol a capture participant", async () => {
+  it("participantIdentified carries the display name when the adapter resolved one", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
-    tracker.participantJoined("p1", "meet", syntheticParticipant("speaker-1"));
-    tracker.participantRenamed("p1", "meet", "speaker-1", "spaces/s/devices/183");
+    // No separate roster entry needed: the one upsert joins id, name, and
+    // source on a single attendee row.
+    tracker.participantIdentified("p1", "meet", "spaces/s/devices/183", "t1", "Etel Friedmann");
+    await flush();
+
+    expect(control.ofVerb("attendee")).toEqual([
+      {
+        verb: "attendee",
+        session: "m-1",
+        attendee: {
+          id: "spaces/s/devices/183",
+          display_name: "Etel Friedmann",
+          source: "browser:meet:t1",
+          origin: "platform",
+        },
+      },
+    ]);
+  });
+
+  it("an identity link is identity-only: it does not enrol a capture participant", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    await flush();
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t1"));
+    tracker.participantIdentified("p1", "meet", "spaces/s/devices/183", "t1");
     await flush();
     const upsertsBefore = control.ofVerb("attendee").length;
 
-    // The rename target has no capture pipeline — its `left` stamps nothing.
+    // The identified attendee has no capture pipeline — its `left` stamps nothing.
     tracker.participantLeft("p1", "spaces/s/devices/183");
     await flush();
     expect(control.ofVerb("attendee")).toHaveLength(upsertsBefore);
 
-    tracker.participantLeft("p1", "speaker-1");
+    tracker.participantLeft("p1", "t1");
     await flush();
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
       session: "m-1",
-      attendee: { id: "speaker-1", left: NOW },
+      attendee: { id: "t1", left: NOW },
     });
     expect(control.ofVerb("end")).toHaveLength(0);
   });
 
-  it("buffers a rename that arrives before meeting-started and flushes it once it lands", async () => {
+  it("buffers an identity link that arrives before meeting-started and flushes it once it lands", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
-    tracker.participantRenamed("p1", "meet", "speaker-1", "spaces/s/devices/183");
+    tracker.participantIdentified("p1", "meet", "spaces/s/devices/183", "t1");
     expect(control.ofVerb("attendee")).toHaveLength(0); // no record yet — buffered
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1", origin: "platform" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:t1", origin: "platform" } },
     ]);
   });
 

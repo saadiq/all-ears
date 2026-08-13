@@ -70,7 +70,13 @@ type PendingPortEvent =
   | { kind: "joined"; platform: Platform; participant: ParticipantRef; displayName?: string }
   | { kind: "stream"; platform: Platform; participantId: string }
   | { kind: "roster"; platform: Platform; entries: RosterEntry[] }
-  | { kind: "renamed"; platform: Platform; fromId: string; toId: string };
+  | {
+      kind: "identified";
+      platform: Platform;
+      participantId: string;
+      captureId: string;
+      displayName?: string;
+    };
 
 // Guard against unbounded growth if a port never declares a session (e.g. a
 // non-meeting tab that still opens a pcm port). Far above any real pre-declare
@@ -271,25 +277,27 @@ export class SessionTracker {
   }
 
   /**
-   * A late identity join from the tab (see protocol.ts "participant-renamed"):
-   * `fromId`'s track died before its identity upgrade could restart the
-   * pipeline, so the audio already recorded stays under `fromId`'s source.
-   * Attach that source to the *named* `toId` attendee so name and source land
-   * on one roster row — which is what the transcript's speaker-name map keys
-   * on. Identity only: `toId` is not enrolled as a capture participant.
+   * A confirmed identity for a captured source (see protocol.ts
+   * "participant-identified"): the audio recorded under `captureId`'s source
+   * belongs to the platform-identified `participantId`. Attach that source
+   * (and the display name, when resolved) to the *named* attendee so name and
+   * source land on one roster row — which is what the transcript's
+   * speaker-name map keys on. Identity only: `participantId` is not enrolled
+   * as a capture participant.
    */
-  participantRenamed(
+  participantIdentified(
     portId: string,
     platform: Platform,
-    fromId: string,
-    toId: string,
+    participantId: string,
+    captureId: string,
+    displayName?: string,
   ): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
-      this.enqueuePending(portId, { kind: "renamed", platform, fromId, toId });
+      this.enqueuePending(portId, { kind: "identified", platform, participantId, captureId, displayName });
       return;
     }
-    this.applyRename(record, platform, fromId, toId);
+    this.applyIdentified(record, platform, participantId, captureId, displayName);
   }
 
   /** An ingest stream for this participant is confirmed open on earsd — link
@@ -325,17 +333,19 @@ export class SessionTracker {
     });
   }
 
-  private applyRename(
+  private applyIdentified(
     record: SessionRecord,
     platform: Platform,
-    fromId: string,
-    toId: string,
+    participantId: string,
+    captureId: string,
+    displayName?: string,
   ): void {
-    // A rename joins a dead track's source to a *confirmed platform id* —
+    // An identity link joins a captured source to a *confirmed platform id* —
     // that is the whole meaning of the message (protocol.ts).
     this.upsertAttendee(record, {
-      id: toId,
-      source: sourceLabel(platform, fromId),
+      id: participantId,
+      ...(displayName ? { display_name: displayName } : {}),
+      source: sourceLabel(platform, captureId),
       origin: "platform",
     });
   }
@@ -373,7 +383,8 @@ export class SessionTracker {
       if (event.platform !== record.platform) continue; // different platform on the same port — not this session
       if (event.kind === "joined") this.applyJoined(record, event.participant, event.displayName);
       else if (event.kind === "roster") this.applyRoster(record, event.entries);
-      else if (event.kind === "renamed") this.applyRename(record, event.platform, event.fromId, event.toId);
+      else if (event.kind === "identified")
+        this.applyIdentified(record, event.platform, event.participantId, event.captureId, event.displayName);
       else this.applyStream(record, event.platform, event.participantId);
     }
   }

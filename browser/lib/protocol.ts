@@ -110,16 +110,22 @@ export type MainMessage =
       seq: number;
       sentAt: number;
     }
-  // A confirmed identity for a participant whose capture pipeline can no
-  // longer be restarted under the new id (the track died before the Meet
-  // collections correlation confirmed — the Etel case). The audio already
-  // recorded stays under `fromId`'s source; this message lets the daemon
-  // attach that source to the *named* attendee (`toId`) so the transcript
-  // still labels the speaker by name. Live-track upgrades keep using the
-  // restart path (see audio-tap.ts handleIdentityUpgrade) and never send this.
-  // `fromId` is the (typically synthetic) id the audio was captured under;
-  // `toId` is always platform-minted — a rename IS the platform id confirming.
-  | { kind: "participant-renamed"; platform: Platform; fromId: string; toId: string }
+  // A confirmed identity for a captured source: the platform id (and display
+  // name, when resolved) that owns the audio recorded under `captureId`'s
+  // source. Source ids are stable per-track handles that never carry identity,
+  // so this upsert is the ONLY way a platform identity reaches the daemon's
+  // roster with a source link — sent whenever the identity is known, whether
+  // at admission (Zoom MSID, a Meet tile hit), after speaking-onset
+  // correlation confirms mid-call, or after the track already died. Nothing
+  // restarts and no audio is lost: the daemon just gains a roster row joining
+  // name and source. `participantId` is always platform-minted.
+  | {
+      kind: "participant-identified";
+      platform: Platform;
+      participantId: string;
+      captureId: string;
+      displayName?: string;
+    }
   | { kind: "status"; text: string }
   // A participant's capture pipeline died for good (e.g. the Meet decoder gave
   // up after exhausting its restart budget). Distinct from participant-left: the
@@ -250,10 +256,17 @@ export type PortMessage =
   // background upserts each onto the daemon session's attendee roster without
   // treating them as capture participants (no `left` is ever stamped on them).
   | { type: "roster"; platform: Platform; entries: RosterEntry[] }
-  // A late identity for a dead-track participant (see MainMessage
-  // "participant-renamed"): the background upserts `fromId`'s source label
-  // onto the `toId` attendee, joining name and source on one roster row.
-  | { type: "renamed"; platform: Platform; fromId: string; toId: string }
+  // A confirmed identity for a captured source (see MainMessage
+  // "participant-identified"): the background upserts `captureId`'s source
+  // label onto the `participantId` attendee, joining name and source on one
+  // roster row.
+  | {
+      type: "identified";
+      platform: Platform;
+      participantId: string;
+      captureId: string;
+      displayName?: string;
+    }
   | { type: "left"; participantId: string }
   // A participant's capture died mid-call (see MainMessage "capture-failed").
   | { type: "capture-failed"; participantId: string; platform: Platform; reason: string }

@@ -239,8 +239,9 @@ export default defineBackground(() => {
         case "roster":
           sessions.rosterUpdate(portId, msg.platform, msg.entries);
           return;
-        case "renamed":
-          sessions.participantRenamed(portId, msg.platform, msg.fromId, msg.toId);
+        case "identified":
+          sessions.participantIdentified(
+            portId, msg.platform, msg.participantId, msg.captureId, msg.displayName);
           return;
         case "left":
           tracker.participantLeft(portId, msg.participantId);

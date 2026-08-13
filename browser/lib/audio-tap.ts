@@ -319,8 +319,15 @@ function handleLateIdentity(trackId: string, id: PlatformParticipantId): void {
   if (!isCurrentEpoch(cfg.epoch)) return;
   const from = participantsByTrackId.get(trackId);
   if (!from || from.id === id) return;
-  console.debug(`[ears][capture] late identity: track ${trackId} ${from.id} → ${id} — sending rename (track already ended)`);
-  postToIsolated({ kind: "participant-renamed", platform: cfg.platform, fromId: from.id, toId: id });
+  const displayName = cfg.adapter?.displayName?.(id);
+  console.debug(`[ears][capture] late identity: track ${trackId} ${from.id} → ${id} — sending identity link (track already ended)`);
+  postToIsolated({
+    kind: "participant-identified",
+    platform: cfg.platform,
+    participantId: id,
+    captureId: from.id,
+    ...(displayName ? { displayName } : {}),
+  });
 }
 
 /**
