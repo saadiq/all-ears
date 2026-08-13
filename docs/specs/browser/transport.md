@@ -32,17 +32,19 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 
 ```jsonc
 // text --> declare a per-participant stream (first PCM for a new participant).
-// `session` (optional) is the membership tag: the session identity (platform +
-// the platform's own meeting id) this source belongs to, when the background's
-// tracker knows it at open time. The daemon uses it to link the source into
-// the session server-side, keeping the ingest-idle grace sound across
-// service-worker respawns.
-{"cmd":"ingest.open","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"session":{"platform":"meet","external_id":"abc-defg-hij"}}
-// text <-- {"ok":true,"data":{"stream_id":"s7"}}
+// `id` (optional) is a correlation id, an opaque string the daemon echoes
+// verbatim on the reply — see "Correlation ids" below. `session` (optional) is
+// the membership tag: the session identity (platform + the platform's own
+// meeting id) this source belongs to, when the background's tracker knows it
+// at open time. The daemon uses it to link the source into the session
+// server-side, keeping the ingest-idle grace sound across service-worker
+// respawns.
+{"cmd":"ingest.open","id":"1","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"session":{"platform":"meet","external_id":"abc-defg-hij"}}
+// text <-- {"ok":true,"id":"1","data":{"stream_id":"s7"}}
 
 // text --> end the stream (participant left / track ended)
-{"cmd":"ingest.close","stream_id":"s7"}
-// text <-- {"ok":true,"data":{}}
+{"cmd":"ingest.close","id":"2","stream_id":"s7"}
+// text <-- {"ok":true,"id":"2","data":{}}
 
 // text --> a batch of attribution flight-recorder events. `events` is an array
 // of opaque, pre-encoded JSONL lines (browser/lib/attribution-log.ts, one
@@ -54,9 +56,17 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 // drops the batch with a daemon-side log line), and the extension never
 // retries — the in-page ring still holds the events for on-demand export
 // (window.__earsExportAttribution()).
-{"cmd":"ingest.attribution","session":{"platform":"meet","external_id":"abc-defg-hij"},"events":["{\"schema\":1,\"type\":\"dom-burst\",\"t\":1723500000000,\"deviceId\":\"spaces/x/devices/1\"}"]}
-// text <-- {"ok":true,"data":{}}
+{"cmd":"ingest.attribution","id":"3","session":{"platform":"meet","external_id":"abc-defg-hij"},"events":["{\"schema\":1,\"type\":\"dom-burst\",\"t\":1723500000000,\"deviceId\":\"spaces/x/devices/1\"}"]}
+// text <-- {"ok":true,"id":"3","data":{}}
 ```
+
+### Correlation ids
+
+Every command may carry an optional `id`: an opaque string, unique among the sender's in-flight requests (the extension stamps a per-socket counter on every `ingest.open`/`ingest.close`/`ingest.attribution`). The daemon echoes it verbatim at the top level of the reply, beside `ok`/`data`/`error`; a request without an `id` gets a reply without one, byte-identical to the pre-id shape.
+
+The field converts a protocol assumption into a checked contract. Without it, replies are matched to requests by arrival order, and one unsolicited, duplicated, or reordered daemon response desynchronises every subsequent open — handing each participant the previous participant's `stream_id` for the rest of the connection. With it, the extension matches a reply that echoes an `id` to exactly that request, and drops (with a log line) any response whose `id` matches nothing in flight.
+
+Both directions stay compatible across versions. An old daemon never echoes, so a new extension falls back to FIFO matching — exactly the pre-id behaviour. An old extension never sends ids, so a new daemon's replies carry none and the old FIFO matching is unperturbed. Mixing matched and FIFO responses on one connection cannot happen: a daemon either echoes ids (all replies to id-carrying requests have them) or predates the field (none do).
 
 Audio is one binary frame per PCM chunk, multiplexed by `stream_id`. Two shapes, discriminated by the first byte (a zero first byte is impossible in the legacy shape, since stream ids are never empty):
 
