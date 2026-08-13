@@ -44,6 +44,11 @@
 ///    upgrade, which resolve to a single speaker label downstream precisely
 ///    because they share a name.
 ///
+/// 3. **A source carries at most one name.** Competing claims on one source
+///    are resolved by roster order — the first claimant wins, identically on
+///    every re-run — and the losing claim is warned about rather than left
+///    to whichever entry a downstream dictionary happened to keep last.
+///
 /// With two or more remote attendees and an unresolved track, the counts
 /// force nothing, and this deliberately assigns nothing: an unlabelled turn
 /// is recoverable, a confidently mislabelled one is not.
@@ -165,7 +170,28 @@ public enum RosterReconciler {
           + "track bound to your own name could not be ruled out")
     }
 
-    var speakers = bound.map {
+    // ── One source carries at most one name ──────────────────────────────
+    // Two attendees claiming the same source used to yield two rows here,
+    // and the transcript's source→name dictionary silently kept whichever
+    // was inserted last. Roster order — the order the claims arrived —
+    // decides instead, identically on every re-run, and the losing claim is
+    // said out loud rather than shadowed. Two rows agreeing on a name (one
+    // human rejoining) are one claim, not a conflict.
+    var claimedNames: [SourceID: String] = [:]
+    var distinct: [(source: SourceID, name: String)] = []
+    for claim in bound {
+      guard let winner = claimedNames[claim.source] else {
+        claimedNames[claim.source] = claim.name
+        distinct.append(claim)
+        continue
+      }
+      guard winner != claim.name else { continue }
+      warnings.append(
+        "speaker attribution: \(claim.source.rawValue) was claimed by both \(winner) and "
+          + "\(claim.name) — keeping \(winner), the roster's first claimant")
+    }
+
+    var speakers = distinct.map {
       SessionSpeaker(source: $0.source, name: $0.name, confidence: .correlated)
     }
 

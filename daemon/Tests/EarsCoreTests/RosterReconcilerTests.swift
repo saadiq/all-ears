@@ -168,6 +168,50 @@ struct RosterReconcilerTests {
         localAttendeeID: "me") == nil)
   }
 
+  @Test("two attendees claiming one source keep the roster's first claimant, with a warning")
+  func duplicateSourceClaimsResolveDeterministically() {
+    // Both Ana and Ben claim browser:x:1. Before this invariant the map held
+    // two rows and transcribe's source→name dictionary silently kept
+    // whichever landed last; roster order (the order the claims arrived)
+    // decides the same way on every re-run.
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", joined: Self.at(1), isLocal: true),
+      SessionAttendee(
+        id: "a", displayName: "Ana", joined: Self.at(60), source: SourceID("browser:x:1")),
+      SessionAttendee(
+        id: "b", displayName: "Ben", joined: Self.at(70), source: SourceID("browser:x:1")),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:1"], sessionStart: Self.start)
+
+    #expect(outcome.speakers.filter { $0.source == SourceID("browser:x:1") }.map(\.name) == ["Ana"])
+    #expect(
+      outcome.warnings.contains {
+        $0.contains("claimed by") && $0.contains("Ana") && $0.contains("Ben")
+      })
+  }
+
+  @Test("one human claiming a source under two roster rows is one claim, not a conflict")
+  func duplicateClaimsSharingANameCoalesce() {
+    // A rejoin puts the same person on the roster twice, both rows bound to
+    // the surviving track. That is agreement — one speaker row, no warning.
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", joined: Self.at(1), isLocal: true),
+      SessionAttendee(
+        id: "a1", displayName: "Ana", joined: Self.at(60), source: SourceID("browser:x:1")),
+      SessionAttendee(
+        id: "a2", displayName: "Ana", joined: Self.at(90), source: SourceID("browser:x:1")),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:1"], sessionStart: Self.start)
+
+    #expect(
+      outcome.speakers == [
+        SessionSpeaker(source: SourceID("browser:x:1"), name: "Ana", confidence: .correlated)
+      ])
+    #expect(!outcome.warnings.contains { $0.contains("claimed by") })
+  }
+
   @Test("one participant seen under several ids is one participant")
   func dedupesByName() {
     // A rejoin, or an identity upgrade, puts the same human on the roster
