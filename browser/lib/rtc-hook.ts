@@ -13,6 +13,11 @@ import {
   registerTrackProvenance,
   registerWebAudioTrack,
 } from "./track-provenance";
+import {
+  installMeetEncodedAudioTee,
+  noteMeetAudioTrackLive,
+  teedStreamCount,
+} from "./meet-encoded-tee";
 
 // The RTCPeerConnection constructor hook — the singleton part of the capture
 // spine, installed exactly once per page realm (claimInstall guards it). On
@@ -27,7 +32,7 @@ import {
 //   __earsLiveTracks            our own registry of live remote audio tracks, so a new
 //                               epoch can replay them and take over without dropping audio
 //   __earsEncodedAudioListeners the current epoch's per-track Meet encoded-audio
-//                               listener (audio-tap installs it, Meet only)
+//                               listener (meet-encoded-tee.ts owns it, Meet only)
 //
 // We never enumerate getReceivers()/getTransceivers() (breaks when Zoom wraps
 // tracks) and never touch transceiver.direction or SDP (the crash class). The
@@ -39,18 +44,9 @@ export interface TrackRecord {
   stream: MediaStream;
 }
 
-/** The raw pre-decode RTP frame shape delivered by createEncodedStreams()'s readable. */
-export interface EncodedAudioFrameLike {
-  readonly data: ArrayBuffer;
-  readonly timestamp: number;
-}
-
-export type EncodedAudioListener = (frame: EncodedAudioFrameLike) => void;
-
 interface HookWindow extends Window {
   __earsOnTrack?: TrackSink;
   __earsLiveTracks?: Map<MediaStreamTrack, TrackRecord>;
-  __earsEncodedAudioListeners?: Map<MediaStreamTrack, EncodedAudioListener>;
   __earsLivePCs?: Set<RTCPeerConnection>;
   RTCPeerConnection: typeof RTCPeerConnection;
 }
@@ -372,78 +368,6 @@ function maybeAttachAudioprocessorTee(ch: RTCDataChannel): void {
   });
 }
 
-// ── Meet encoded-audio tee ───────────────────────────────────────────────
-//
-// Empirically confirmed (journal #28–#31): Meet's client calls
-// receiver.createEncodedStreams() on every audio receiver and decodes the RTP
-// itself, so no MediaStreamTrack-based mechanism ever receives a frame for a
-// Meet remote participant. The fix: intercept the same call, .tee() the
-// readable so Meet's own playback branch is untouched, and read our branch
-// independently.
-//
-// One persistent read loop per tee'd track, started here and never torn down
-// across epochs — a ReadableStream reader can't be handed off between epochs
-// without cancelling it, and cancelling a tee'd branch closes that branch
-// permanently (Meet calls createEncodedStreams() once per receiver, so a
-// closed branch would mean no audio for the rest of the call). Instead, raw
-// frames dispatch to whichever epoch's listener is currently registered —
-// exactly the same latest-wins handoff setTrackSink already uses for track
-// events. With no listener registered, frames are simply dropped, never
-// buffered.
-
-interface EncodedStreamsResult {
-  readable: ReadableStream<EncodedAudioFrameLike>;
-  writable: WritableStream<EncodedAudioFrameLike>;
-}
-
-interface EncodedStreamsReceiver {
-  readonly track: MediaStreamTrack | null;
-  createEncodedStreams(): EncodedStreamsResult;
-}
-
-function encodedAudioListeners(): Map<MediaStreamTrack, EncodedAudioListener> {
-  const g = hw();
-  if (!g.__earsEncodedAudioListeners) g.__earsEncodedAudioListeners = new Map();
-  return g.__earsEncodedAudioListeners;
-}
-
-/**
- * Meet only: (re)subscribe to raw pre-decode Opus frames for `track`. Pass
- * `null` to unsubscribe. Only the latest subscriber receives frames.
- */
-export function setEncodedAudioListener(
-  track: MediaStreamTrack,
-  listener: EncodedAudioListener | null,
-): void {
-  if (listener) encodedAudioListeners().set(track, listener);
-  else encodedAudioListeners().delete(track);
-}
-
-async function pumpEncodedAudio(
-  track: MediaStreamTrack,
-  readable: ReadableStream<EncodedAudioFrameLike>,
-): Promise<void> {
-  const reader = readable.getReader();
-  track.addEventListener("ended", () => void reader.cancel().catch(() => {}), { once: true });
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      encodedAudioListeners().get(track)?.(value);
-    }
-  } catch (err) {
-    console.error(`[ears][hook] encoded-audio tee read error for track ${track.id}:`, err);
-  }
-}
-
-// Diagnostic for the silent-capture failure (journal #72): count how many audio
-// receivers Meet actually routed through our createEncodedStreams wrap. If audio
-// tracks go live but this stays zero, Meet never called our hook and every
-// participant records silence for the whole call — surface it loudly, once.
-let teedAudioStreamCount = 0;
-let teeWatchdogArmed = false;
-const TEE_WATCHDOG_MS = 6_000;
-
 // WebAudio / decoded-output probe counters (journal #75) — where Meet's audio
 // actually surfaces once it bypasses every encoded-frame API.
 let probeAudioContextCount = 0;
@@ -475,7 +399,7 @@ export function hookDebugState(): {
   const graphCounts = graphRegistry?.counts() ?? { nodes: 0, edges: 0, overflow: 0 };
   return {
     liveTracks: liveTracks().size,
-    teedAudioStreamCount,
+    teedAudioStreamCount: teedStreamCount(),
     webaudio: {
       audioContexts: probeAudioContextCount,
       audioWorkletNodes: probeAudioWorkletNodeCount,
@@ -489,47 +413,6 @@ export function hookDebugState(): {
       bridgedNodes: bridgedNodeCount,
     },
   };
-}
-
-function noteMeetAudioTrackLive(): void {
-  if (teeWatchdogArmed) return;
-  teeWatchdogArmed = true;
-  setTimeout(() => {
-    if (teedAudioStreamCount > 0) return;
-    console.error(
-      "[ears][capture] ⚠ Meet audio capture is SILENT: audio tracks are live but Meet never called our " +
-        "createEncodedStreams hook (0 streams tee'd). Meet likely changed its audio pipeline " +
-        "(e.g. RTCRtpScriptTransform), or the receivers predate the hook. No participant audio " +
-        "will be captured this call — reload the tab to re-arm. (journal #72)",
-    );
-  }, TEE_WATCHDOG_MS);
-}
-
-function installMeetEncodedAudioTee(): void {
-  const proto = (window as unknown as { RTCRtpReceiver?: { prototype: EncodedStreamsReceiver } })
-    .RTCRtpReceiver?.prototype;
-  const native = proto?.createEncodedStreams;
-  if (!proto || typeof native !== "function") {
-    // MUST-NOT #13: surface this rather than silently reporting a working
-    // capture that will actually record zero audio for every participant.
-    console.error(
-      "[ears][hook] RTCRtpReceiver.createEncodedStreams unavailable on meet.google.com — Meet audio capture will not work",
-    );
-    return;
-  }
-
-  proto.createEncodedStreams = function (this: EncodedStreamsReceiver, ...args: unknown[]): EncodedStreamsResult {
-    const streams = (native as (...a: unknown[]) => EncodedStreamsResult).apply(this, args);
-    const track = this.track;
-    if (!track || track.kind !== "audio") return streams; // video: pass through untouched
-    const [ours, theirs] = streams.readable.tee();
-    teedAudioStreamCount += 1;
-    void pumpEncodedAudio(track, ours);
-    console.debug(`[ears][hook] tee'd encoded audio stream for track ${track.id} (${teedAudioStreamCount} total)`);
-    return { readable: theirs, writable: streams.writable };
-  };
-
-  console.debug("[ears][hook] RTCRtpReceiver.createEncodedStreams hook installed (meet.google.com)");
 }
 
 // WebAudio / decoded-output probe (journal #75). Meet uses no JS encoded-frame

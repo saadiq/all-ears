@@ -7,7 +7,7 @@ import {
   unwrapRedPayload,
   type MeetDecodeDeps,
 } from "./meet-decode";
-import type { EncodedAudioListener } from "./rtc-hook";
+import type { EncodedAudioListener } from "./meet-encoded-tee";
 
 // ── Meet decoder recovery (restart-in-place, bounded budget) ────────────────
 

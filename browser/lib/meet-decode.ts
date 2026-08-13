@@ -2,7 +2,7 @@ import {
   setEncodedAudioListener,
   type EncodedAudioFrameLike,
   type EncodedAudioListener,
-} from "./rtc-hook";
+} from "./meet-encoded-tee";
 import { captureMetrics, DEBUG_AUDIO_NOW } from "./capture-instrumentation";
 import { perfEnabled } from "./perf-main";
 import type { AudioDataLike, FrameSource, FrameSourceFactory } from "./frame-pipeline";
