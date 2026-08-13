@@ -633,6 +633,17 @@ struct TranscribePipelineTests {
       at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
     #expect(markdown.contains("] Jane Doe**"))
     #expect(!markdown.contains("] Tom Elliot**"))
+
+    // The sidecar records the map this run was actually labelled with — the
+    // re-derivation, not the stored map, which `session.toml` keeps untouched.
+    // That record is what lets an offline harness replay an archived session
+    // through the current reconciler and read the conclusion back off disk.
+    let sidecar = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).sidecar)
+    #expect(sidecar.contains("\"source\": \"browser:meet:speaker-1\""))
+    #expect(sidecar.contains("\"name\": \"Jane Doe\""))
+    #expect(sidecar.contains("\"confidence\": \"inferred\""))
+    #expect(!sidecar.contains("Tom Elliot"))
   }
 
   @Test("--session merges an optional vocab/<session-id>.txt into the transcribe context")

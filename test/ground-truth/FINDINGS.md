@@ -17,7 +17,9 @@ mode a ground-truth corpus exists to eliminate.
 | File-backed `CaptureEngineProvider` | **done** — 6 unit tests, wired, compile-time gate verified |
 | `s1-solo` daemon-only run | **done** — `mic` proven to carry `host.wav` |
 | Phase-1 runner | **built**; drives a call end to end, blocked below on live joins |
+| Signed-in-profile runs (`--profile`) | **built** (2026-08-11, after anonymous join was refused outright); documented in the README; not yet exercised on a live call |
 | Scorer | **built**; exercised against the daemon-only run, not yet against a full call |
+| Replay tier (`replay.py`) | **done** (2026-08-13) — an archived run re-reconciled through the real `transcribe --rereconcile` and re-scored offline; pinned end to end by `check_replay.py` over the committed `fixtures/replay-demo/` archive |
 | Tone-viability probe | **built, not yet answered** — blocked below |
 | Scenarios `s1`–`s4` over a live call | **not run** — blocked below |
 | Phase-2 containerised guests | **not started** |
@@ -254,3 +256,32 @@ One thing already measured that bears on the last: the fake mic **does** report 
 `groupId` (`getSettings()` above), so `looksLikeCaptureDevice` classifies the
 harness's own local track as a capture device exactly as it would a real mic.
 The harness does not perturb the provenance classifier it is meant to test.
+
+## Operator-owned next steps: the live tier
+
+The replay tier is done and self-checking; what remains needs a real Meet call
+and a human, and stays manual by design:
+
+1. **Sign in the participant profiles once** (README, "Signed-in profiles"):
+   `.profiles/host` for the instrumented participant, one more per guest the
+   scenario names. Anonymous join is no longer available on the calls under
+   test, so this is the only route into a room.
+2. **Run `s2-one-guest`, then `s3-three-guests` live** with `--profile` for
+   every participant. These are the runs that answer the open questions above
+   (neteq fan-out, remote `groupId`, the self-audio exclusion under known loud
+   local speech) — none of which a replay can answer, because the archived
+   evidence was recorded by the old capture path.
+3. **Archive each run's session tree** as `runs/<stamp>-<scenario>/session/`
+   (copy `~/Library/Application Support/ears/sessions/<uuid>/` — including
+   `sources/` if timing should stay re-scorable after retention evicts it).
+4. **Demonstrate the corpus promise**: some weeks later, or after the next
+   reconciler change, `uv run replay.py runs/<stamp>-<scenario>` — a run
+   recorded today, re-scored against a new algorithm, no call needed. The
+   fixture proves the machinery; a real multi-party run is what makes the
+   promise demonstrated rather than designed.
+
+Old archives degrade honestly rather than silently: a pre-schema-3 store
+cannot be replayed at all, and a session recorded before the attribution
+flight recorder existed has no binding evidence to replay — `replay.py`
+refuses both with the reason spelled out (`--roster-only` covers the second,
+re-reconciling from the roster alone), rather than mis-scoring them.

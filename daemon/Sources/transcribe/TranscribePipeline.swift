@@ -511,10 +511,10 @@ enum TranscribePipeline {
         "session \(sessionRecord.id): \(reason); reconciled the roster into "
           + "\(outcome.speakers.count) speaker(s) with \(outcome.warnings.count) warning(s)")
     }
-    var speakers: [String: String] = [:]
-    for speaker in reconciled?.speakers ?? sessionRecord?.speakers ?? [] {
-      speakers[speaker.source.rawValue] = speaker.name
-    }
+    // The full rows (name + confidence per source), not a flattened lookup:
+    // assembly labels turns from them *and* records them in the sidecar, the
+    // one durable trace of a re-derived map (`session.toml` never sees it).
+    let speakers = reconciled?.speakers ?? sessionRecord?.speakers ?? []
     // Everyone the roster named, whether or not any audio was matched to them
     // — the fact that survives a total attribution failure. The local
     // participant is marked the way the summarize prompt's own `speakers:`

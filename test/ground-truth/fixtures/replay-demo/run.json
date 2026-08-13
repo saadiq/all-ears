@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "scenario": "replay-demo",
+  "shape": "synthetic replay fixture: 1 local + 1 guest, bound by an attribution-log hint",
+  "corpus_fingerprint": "fixture-not-a-corpus-run-0000000000000000000000000000000000000000",
+  "participants": [
+    {
+      "label": "host",
+      "display_name": "GT-Host",
+      "role": "local",
+      "wav": "build/replay-demo/host.wav",
+      "turns": []
+    },
+    {
+      "label": "alpha",
+      "display_name": "GT-Alpha",
+      "role": "guest",
+      "wav": "build/replay-demo/alpha.wav",
+      "turns": []
+    }
+  ],
+  "run": {
+    "session_id": "11111111-2222-4333-8444-555555555555",
+    "observers": [],
+    "participants": {
+      "host": { "observed_display_name": "GT-Host" }
+    },
+    "notes": [
+      "Synthetic fixture, never a live call. The session store sits in ./session/ (the archived-copy convention); its audio is deliberately absent, exercising the evicted-audio path, and its stored [[speaker]] map is deliberately stale, so a correct replay MUST re-derive. The WAV paths above intentionally resolve to nothing."
+    ]
+  }
+}
