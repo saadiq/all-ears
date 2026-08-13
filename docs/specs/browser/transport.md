@@ -15,6 +15,7 @@ No native-messaging host manifest, no extension-id-coupled install, and PCM ship
 - Open one WebSocket to `ws://127.0.0.1:<port>/ingest`; reconnect with backoff on drop.
 - Lazily `ingest.open` a source on the first PCM for a new participant; stream binary frames; `ingest.close` on leave.
 - Maintain the participant → `stream_id` table; discard it on disconnect and re-open lazily as new frames arrive.
+- Ship attribution flight-recorder batches (`ingest.attribution`) when the session tag is known; drop them otherwise — the in-page ring keeps the events exportable.
 - Apply backpressure; never buffer unbounded.
 
 It does **not** capture, resample, or inspect audio (it receives finished 16 kHz `pcm_s16le`), and does **not** resolve identity (it receives an already-stable id).
@@ -41,6 +42,19 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 
 // text --> end the stream (participant left / track ended)
 {"cmd":"ingest.close","stream_id":"s7"}
+// text <-- {"ok":true,"data":{}}
+
+// text --> a batch of attribution flight-recorder events. `events` is an array
+// of opaque, pre-encoded JSONL lines (browser/lib/attribution-log.ts, one
+// schema-versioned JSON object each) the daemon appends VERBATIM to the tagged
+// session's attribution.jsonl beside events.jsonl — see docs/data-formats.md.
+// The session tag is mandatory here: a batch with no session has no directory
+// to land in, so the extension only sends once the tag is known. Best-effort
+// both ways: the daemon always acks {"ok":true} (a tag naming no live session
+// drops the batch with a daemon-side log line), and the extension never
+// retries — the in-page ring still holds the events for on-demand export
+// (window.__earsExportAttribution()).
+{"cmd":"ingest.attribution","session":{"platform":"meet","external_id":"abc-defg-hij"},"events":["{\"schema\":1,\"type\":\"dom-burst\",\"t\":1723500000000,\"deviceId\":\"spaces/x/devices/1\"}"]}
 // text <-- {"ok":true,"data":{}}
 ```
 
@@ -74,7 +88,7 @@ One participant → `browser:<platform>:<participant>` → one `stream_id` → o
 
 Both sides enforce the boundary; neither trusts the other to.
 
-**`earsd` (server):** binds `127.0.0.1` only; validates `Origin` against `[earsd.ingest_ws].allowed_origins` before completing the upgrade (empty allowlist rejects all — fail closed); accepts nothing but `ingest.open`/`ingest.close` and binary audio, so even an allowed origin cannot drive the daemon from this endpoint.
+**`earsd` (server):** binds `127.0.0.1` only; validates `Origin` against `[earsd.ingest_ws].allowed_origins` before completing the upgrade (empty allowlist rejects all — fail closed); accepts nothing but `ingest.open`/`ingest.close`/`ingest.attribution` and binary audio, so even an allowed origin cannot drive the daemon from this endpoint.
 
 **Extension (client):** connects to loopback only; the WebSocket lives in the background context, never the page realm, so no meeting-page CSP applies and no endpoint or state is exposed to page scripts.
 

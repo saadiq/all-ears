@@ -11,6 +11,8 @@ This document defines the on-disk contract. Because the storage layout *is* the 
       session.toml                   # session record (schema 3: identity, state, intervals,
                                      #   roster, sources); kept forever, never evicted
       events.jsonl                   # append-only session timeline; kept forever
+      attribution.jsonl              # browser attribution flight-recorder events
+                                     #   (browser-extension sessions only); kept forever
       transcript.md                  # RAW TRANSCRIPT (from `transcribe --session`) — an
       transcript.json                #   intermediate; kept forever, never swept
       mic.follow.transcript.md       # a `transcribe --follow` run's live transcript,
@@ -52,7 +54,7 @@ This document defines the on-disk contract. Because the storage layout *is* the 
 Audio is **session-scoped**: a source records only while a session names it, and everything it writes lands under that session's own `sources/` tree. Two consequences:
 
 - **Transcripts are never evicted**, in either tier. Raw transcripts in the data store are deliberately not swept: once the audio is gone they are the only route to re-running cleanup or summarize with a different prompt or model.
-- **Retention is a per-session delete.** Once an ended session's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the session has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `sessions/<uuid>/sources/` directory. `session.toml` and `events.jsonl` survive as the session's record. See `[earsd.retention]` in [configuration](./configuration.md).
+- **Retention is a per-session delete.** Once an ended session's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the session has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `sessions/<uuid>/sources/` directory. `session.toml`, `events.jsonl`, and `attribution.jsonl` survive as the session's record. See `[earsd.retention]` in [configuration](./configuration.md).
 
 The daemon enforces a **single-active-session invariant**: a `session.start` for a new identity (or a manual start) supersedes any session still live, running the old one through its full end pipeline first. At most one active session means exactly one legal directory for any capture actor at any moment, so a source's audio can never land in the wrong session's directory.
 
@@ -162,6 +164,20 @@ transcript's frontmatter and from there into the note itself.
 `events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
 Tools reject a `schema` other than 3 rather than guessing — which is exactly how the legacy schema-1 and schema-2 descriptors (above) stay inert on disk.
+
+### `attribution.jsonl` (attribution flight recorder)
+
+Every input the browser extension's speaker-attribution decision consumed, and every decision it took, as an append-only JSON Lines stream beside `events.jsonl` — present only on sessions fed by the browser extension, and only for the stretches a daemon session existed. The extension records events per call in a bounded in-page ring, ships them in batches over the ingest WebSocket (`ingest.attribution`, [transport](./specs/browser/transport.md#wire-protocol)), and the daemon appends the lines **verbatim** — what is on disk is byte-for-byte what the browser recorded, so the file replays against the same code that consumed the evidence live.
+
+The vocabulary is owned by the browser (`browser/lib/attribution-log.ts`), versioned by a per-line `schema` integer (currently 1). One JSON object per line, discriminated by `type`, with `t` = epoch ms at observation:
+
+- **track lifecycle** — `track-appeared` (track id, seam, muted-at-dispatch, provenance origin/root), `track-unmuted`, `track-muted`, `track-ended`
+- **admission decisions** — `admitted`, `deferred`, `adopted`, `retired`, `escalated`, each with the admission policy's reason
+- **identity evidence** — `collections-edge` (parsed device id and mic state plus the raw payload bytes, base64), `dom-burst` (tile speaking-ring onset per device), `audio-onset` (decoded-audio speaking edge per track)
+- **roster observations** — `roster-delta` (id → display name, with the `(You)`-marker evidence as `isLocal`)
+- **binding events** — `provisional-binding` (track ↔ device, which correlator, how many confirming turns, and the outcome — bound or refused and why)
+
+Best-effort by contract: batches arriving before the session is declared, or while the daemon is down, are dropped server-side or never sent — the in-page ring (exported on demand via `window.__earsExportAttribution()` in the meeting tab's console) is the recovery path. The daemon skips any line that would break JSONL framing; it never interprets the events. Like `events.jsonl`, the file survives audio retention. Contains device-id paths and display names — treat exports as private, and commit only sanitized/synthetic fixtures.
 
 ## Transcript format
 
