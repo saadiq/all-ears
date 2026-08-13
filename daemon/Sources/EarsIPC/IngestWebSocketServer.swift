@@ -20,12 +20,13 @@ import Foundation
 ///
 /// ## Ingest-only
 ///
-/// This WebSocket accepts only `ingest.open`/`ingest.close` text frames
-/// (the v1-era flat-`cmd` `IngestRequest`/`ControlResponse` shapes — the
-/// ingest contract is explicitly out of control protocol v2's scope and
-/// unchanged) and binary PCM frames. Every other `cmd` is rejected: the
-/// daemon's control plane lives on its own transports, so an allowed Origin
-/// still cannot drive the daemon from this endpoint.
+/// This WebSocket accepts only `ingest.open`/`ingest.close`/
+/// `ingest.attribution` text frames (the v1-era flat-`cmd`
+/// `IngestRequest`/`ControlResponse` shapes — the ingest contract is
+/// explicitly out of control protocol v2's scope) and binary PCM frames.
+/// Every other `cmd` is rejected: the daemon's control plane lives on its own
+/// transports, so an allowed Origin still cannot drive the daemon from this
+/// endpoint.
 ///
 /// ## Domain logic lives elsewhere
 ///
@@ -49,6 +50,11 @@ public actor IngestWebSocketServer {
   /// `ingest.close`, or implicit close on connection teardown for any
   /// stream this connection opened but never explicitly closed.
   public typealias CloseHandler = @Sendable (String) async -> Void
+  /// `ingest.attribution`: a batch of the extension's attribution
+  /// flight-recorder lines for the tagged session. Best-effort by contract —
+  /// the handler resolves the session and appends (or drops, logged); either
+  /// way the frame is acked `ok` so the client never blocks on evidence.
+  public typealias AttributionHandler = @Sendable (SessionIdentity, [String]) async -> Void
 
   private let listener: any SocketListener
   private let allowedOrigins: Set<String>
@@ -56,6 +62,7 @@ public actor IngestWebSocketServer {
   private let openHandler: OpenHandler
   private let pushHandler: PushHandler
   private let closeHandler: CloseHandler
+  private let attributionHandler: AttributionHandler
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
 
@@ -71,7 +78,8 @@ public actor IngestWebSocketServer {
     log: @escaping @Sendable (String) -> Void = { _ in },
     onOpen: @escaping OpenHandler,
     onPush: @escaping PushHandler,
-    onClose: @escaping CloseHandler
+    onClose: @escaping CloseHandler,
+    onAttribution: @escaping AttributionHandler = { _, _ in }
   ) {
     self.listener = listener
     self.allowedOrigins = Set(allowedOrigins)
@@ -79,6 +87,7 @@ public actor IngestWebSocketServer {
     self.openHandler = onOpen
     self.pushHandler = onPush
     self.closeHandler = onClose
+    self.attributionHandler = onAttribution
   }
 
   /// Accept connections until the listener closes.
@@ -234,6 +243,10 @@ public actor IngestWebSocketServer {
     case .close(let streamID):
       openStreams.removeValue(forKey: streamID)
       await closeHandler(streamID)
+      try? await socket.send(
+        WebSocketFrameWriter.text(replyText(ControlResponse<EmptyData>.success(EmptyData()))))
+    case .attribution(let session, let events):
+      await attributionHandler(session, events)
       try? await socket.send(
         WebSocketFrameWriter.text(replyText(ControlResponse<EmptyData>.success(EmptyData()))))
     }

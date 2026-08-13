@@ -574,6 +574,9 @@ public actor EarsDaemon {
       },
       onClose: { [weak self] streamID in
         await self?.closeIngestSource(streamID: streamID)
+      },
+      onAttribution: { [weak self] session, events in
+        await self?.appendAttributionEvents(session: session, events: events)
       })
     ingestWebSocketServer = ingestServer
     ingestServerRunTask = Task { await ingestServer.run() }
@@ -775,6 +778,35 @@ public actor EarsDaemon {
     // upserts never arrive.
     await sessionRegistry?.ingestStreamOpened(source: label, session: session)
     return streamID
+  }
+
+  /// `ingest.attribution`: append a batch of the extension's attribution
+  /// flight-recorder lines to the tagged session's `attribution.jsonl`
+  /// (``SessionAttributionLog``), beside its `events.jsonl`.
+  ///
+  /// Best-effort like the `events.jsonl` timeline — never load-bearing. A tag
+  /// that resolves to no live session drops the batch with a log line rather
+  /// than erroring: unlike `ingest.open`, there is no client retry loop here
+  /// (the extension's in-page ring keeps the events exportable), and evidence
+  /// arriving a beat before `session.start` is expected, not a fault.
+  public func appendAttributionEvents(session: SessionIdentity, events: [String]) async {
+    guard let sessionID = await sessionRegistry?.sessionID(for: session) else {
+      log(
+        "ingest.attribution dropped: no live session for \(session.platform)/\(session.externalID) "
+          + "(\(events.count) event(s))")
+      return
+    }
+    do {
+      let appended = try SessionAttributionLog.append(
+        lines: events, dataRoot: configuration.dataRoot, sessionID: sessionID)
+      if appended < events.count {
+        log(
+          "session \(sessionID): attribution append skipped \(events.count - appended) "
+            + "malformed line(s)")
+      }
+    } catch {
+      log("session \(sessionID): attribution.jsonl append failed: \(error)")
+    }
   }
 
   /// Routes one decoded PCM buffer to the `CaptureActor` behind `streamID`,

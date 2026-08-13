@@ -121,6 +121,12 @@ private actor RecordingIngestSink {
   func close(_ streamID: String) async {
     closed.append(streamID)
   }
+
+  private(set) var attributions: [(session: SessionIdentity, events: [String])] = []
+
+  func attribution(_ session: SessionIdentity, _ events: [String]) async {
+    attributions.append((session, events))
+  }
 }
 
 private enum TestIngestError: Error { case rejected }
@@ -140,7 +146,8 @@ struct IngestWebSocketServerTests {
       allowedOrigins: allowedOrigins,
       onOpen: { source, format, session in try await sink.open(source, format, session) },
       onPush: { streamID, samples, rate, _ in await sink.push(streamID, samples, rate) },
-      onClose: { streamID in await sink.close(streamID) })
+      onClose: { streamID in await sink.close(streamID) },
+      onAttribution: { session, events in await sink.attribution(session, events) })
     return (server, listener)
   }
 
@@ -197,6 +204,46 @@ struct IngestWebSocketServerTests {
 
     connection.feed(TestWebSocketClient.text(#"{"cmd":"ingest.close","stream_id":"s1"}"#))
     await wait { await sink.closed == ["s1"] }
+
+    await server.shutdown()
+    _ = await runner.value
+  }
+
+  @Test("ingest.attribution dispatches the batch with its session tag and acks ok")
+  func attributionBatchDispatched() async throws {
+    let sink = RecordingIngestSink()
+    let (server, listener) = makeServer(allowedOrigins: ["chrome-extension://abc"], sink: sink)
+    let runner = Task { await server.run() }
+    let connection = FakeSocketConnection()
+    listener.accept(connection)
+
+    connection.feed(TestWebSocketClient.upgradeRequest(origin: "chrome-extension://abc"))
+    _ = await firstChunk(connection)  // the 101 response
+
+    // Sanitized synthetic lines only, per the flight-recorder privacy rule.
+    let lines = [
+      #"{"schema":1,"type":"dom-burst","t":1000,"deviceId":"spaces/demo/devices/1"}"#,
+      #"{"schema":1,"type":"track-ended","t":1001,"trackId":"trk-1"}"#,
+    ]
+    let request = IngestRequest.attribution(
+      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"), events: lines)
+    connection.feed(
+      TestWebSocketClient.text(String(data: try JSONEncoder().encode(request), encoding: .utf8)!))
+
+    guard let replyBytes = await firstChunk(connection), let frame = decodeServerFrame(replyBytes)
+    else {
+      Issue.record("no ingest.attribution reply")
+      return
+    }
+    let reply = try JSONDecoder().decode(ControlResponse<EmptyData>.self, from: Data(frame.payload))
+    guard case .success = reply else {
+      Issue.record("expected ingest.attribution success")
+      return
+    }
+    let recorded = await sink.attributions
+    #expect(recorded.count == 1)
+    #expect(recorded[0].session == SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
+    #expect(recorded[0].events == lines)
 
     await server.shutdown()
     _ = await runner.value
