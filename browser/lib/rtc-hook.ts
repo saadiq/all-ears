@@ -169,7 +169,6 @@ export function installHook(): void {
   // Applying the tee on other platforms would double-capture where the
   // standard MediaStreamTrackProcessor path already works.
   if (location.host === "meet.google.com") installMeetEncodedAudioTee();
-  if (location.host === "meet.google.com") installMeetTransformProbe();
   if (location.host === "meet.google.com") installMeetWebAudioProbe();
   // Meet-only like the probes above: the webaudio-track seam is the sole
   // consumer (seamOrderFor), and Zoom's own track wrapping is exactly the
@@ -446,13 +445,6 @@ let teedAudioStreamCount = 0;
 let teeWatchdogArmed = false;
 const TEE_WATCHDOG_MS = 6_000;
 
-// Probe findings (set by installMeetTransformProbe), surfaced in the tee
-// watchdog so a single guaranteed-visible `[ears][hook]` line names the encoded-frame
-// API Meet actually used this call — no separate probe line to hunt for.
-let probeScriptTransformApiPresent = false;
-let probeCreateEncodedStreamsPresent = false;
-let probeScriptTransformCtorCount = 0;
-let probeAudioTransformSetCount = 0;
 // WebAudio / decoded-output probe counters (journal #75) — where Meet's audio
 // actually surfaces once it bypasses every encoded-frame API.
 let probeAudioContextCount = 0;
@@ -466,12 +458,6 @@ let probeMediaElementSrcObjectCount = 0;
 export function hookDebugState(): {
   liveTracks: number;
   teedAudioStreamCount: number;
-  probe: {
-    createEncodedStreamsPresent: boolean;
-    scriptTransformApiPresent: boolean;
-    scriptTransformCtorCount: number;
-    audioTransformSetCount: number;
-  };
   webaudio: {
     audioContexts: number;
     audioWorkletNodes: number;
@@ -491,12 +477,6 @@ export function hookDebugState(): {
   return {
     liveTracks: liveTracks().size,
     teedAudioStreamCount,
-    probe: {
-      createEncodedStreamsPresent: probeCreateEncodedStreamsPresent,
-      scriptTransformApiPresent: probeScriptTransformApiPresent,
-      scriptTransformCtorCount: probeScriptTransformCtorCount,
-      audioTransformSetCount: probeAudioTransformSetCount,
-    },
     webaudio: {
       audioContexts: probeAudioContextCount,
       audioWorkletNodes: probeAudioWorkletNodeCount,
@@ -522,13 +502,6 @@ function noteMeetAudioTrackLive(): void {
         "createEncodedStreams hook (0 streams tee'd). Meet likely changed its audio pipeline " +
         "(e.g. RTCRtpScriptTransform), or the receivers predate the hook. No participant audio " +
         "will be captured this call — reload the tab to re-arm. (journal #72)",
-    );
-    console.error(
-      `[ears][probe] Meet audio API probe — createEncodedStreams:${probeCreateEncodedStreamsPresent ? "present" : "absent"}` +
-        ` RTCRtpScriptTransform:${probeScriptTransformApiPresent ? "present" : "absent"}` +
-        ` · scriptTransform ctor×${probeScriptTransformCtorCount}` +
-        ` · audio receiver.transform set×${probeAudioTransformSetCount}` +
-        " — the fix hooks whichever Meet actually used (journal #73)",
     );
   }, TEE_WATCHDOG_MS);
 }
@@ -558,73 +531,6 @@ function installMeetEncodedAudioTee(): void {
   };
 
   console.debug("[ears][hook] RTCRtpReceiver.createEncodedStreams hook installed (meet.google.com)");
-}
-
-// Temporary diagnostic (journal #73): Meet stopped calling createEncodedStreams,
-// and the loaded modules (loadNetEqSabWrapper — SharedArrayBuffer WASM NetEQ)
-// point at RTCRtpScriptTransform, the worker-based successor. This probe reports
-// which encoded-frame API Meet actually uses on this build and logs where it
-// routes audio — WITHOUT changing behaviour (every wrap passes straight through)
-// so the real capture fix knows exactly what to hook. Remove once the fix lands.
-function installMeetTransformProbe(): void {
-  try {
-    const w = window as unknown as {
-      RTCRtpScriptTransform?: new (...a: unknown[]) => object;
-      RTCRtpReceiver?: { prototype: object };
-    };
-    const proto = w.RTCRtpReceiver?.prototype;
-    const hasScriptTransform = typeof w.RTCRtpScriptTransform === "function";
-    const hasCreateEncodedStreams =
-      !!proto && typeof (proto as { createEncodedStreams?: unknown }).createEncodedStreams === "function";
-    const hasTransformAccessor = !!proto && !!Object.getOwnPropertyDescriptor(proto, "transform")?.set;
-    probeScriptTransformApiPresent = hasScriptTransform;
-    probeCreateEncodedStreamsPresent = hasCreateEncodedStreams;
-    // Bracket-tree tag: filter `[ears][probe]` for just this, `[ears]` for all.
-    console.debug(
-      `[ears][probe] Meet audio APIs on this build — RTCRtpScriptTransform:${hasScriptTransform} ` +
-        `receiver.transform:${hasTransformAccessor} createEncodedStreams:${hasCreateEncodedStreams}`,
-    );
-
-    // Log every RTCRtpScriptTransform construction — the options name Meet's
-    // decode topology (which worker, what role). Pass-through constructor.
-    if (hasScriptTransform) {
-      const Native = w.RTCRtpScriptTransform!;
-      const Wrapped = function (this: unknown, ...args: unknown[]): object {
-        probeScriptTransformCtorCount += 1;
-        console.debug("[ears][probe] new RTCRtpScriptTransform — options:", args[1]);
-        return new Native(...args);
-      } as unknown as new (...a: unknown[]) => object;
-      Wrapped.prototype = Native.prototype;
-      Object.setPrototypeOf(Wrapped, Native);
-      w.RTCRtpScriptTransform = Wrapped;
-    }
-
-    // Log when Meet assigns a transform to an audio receiver — the exact seam
-    // the real fix will tee encoded Opus from. Pass-through setter.
-    if (proto) {
-      const desc = Object.getOwnPropertyDescriptor(proto, "transform");
-      if (desc?.set && desc.get) {
-        const nativeSet = desc.set;
-        const nativeGet = desc.get;
-        Object.defineProperty(proto, "transform", {
-          configurable: true,
-          enumerable: desc.enumerable ?? true,
-          get(): unknown {
-            return nativeGet.call(this);
-          },
-          set(value: unknown): void {
-            const kind = (this as { track?: MediaStreamTrack }).track?.kind ?? "?";
-            if (kind === "audio") probeAudioTransformSetCount += 1;
-            const name = (value as { constructor?: { name?: string } })?.constructor?.name ?? String(value);
-            console.debug(`[ears][probe] receiver.transform set on a ${kind} receiver → ${name}`);
-            nativeSet.call(this, value);
-          },
-        });
-      }
-    }
-  } catch (err) {
-    console.debug("[ears][probe] transform probe failed to install (non-fatal):", err);
-  }
 }
 
 // WebAudio / decoded-output probe (journal #75). Meet uses no JS encoded-frame
