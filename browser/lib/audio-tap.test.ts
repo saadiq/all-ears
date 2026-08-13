@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { initCapture } from "./audio-tap";
+import { CaptureOrchestrator, initCapture, type CaptureDeps } from "./audio-tap";
 import { claimEpoch } from "./epoch";
 import type { PlatformAdapter } from "./identity/adapter";
-import { liveTracks } from "./rtc-hook";
+import { liveTracks, type TrackProvenanceRecord, type TrackRecord, type TrackSink } from "./rtc-hook";
+import { SEAM_ESCALATION_GRACE_MS, SeamArbiter, seamOrderFor } from "./capture-seams";
+import type { FrameSourceFactory } from "./frame-pipeline";
+import type { Platform } from "./protocol";
 
 // ── Track-scoped source handles (R3) ────────────────────────────────────────
 //
@@ -28,6 +31,9 @@ class FakeMediaTrack {
   }
   removeEventListener(kind: string, fn: () => void): void {
     this.listeners.get(kind)?.delete(fn);
+  }
+  dispatch(kind: string): void {
+    for (const fn of [...(this.listeners.get(kind) ?? [])]) fn();
   }
 }
 
@@ -280,5 +286,386 @@ describe("initCapture epoch teardown", () => {
     expect(() =>
       (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.(),
     ).not.toThrow();
+  });
+});
+
+// ── CaptureOrchestrator with fakes (R7) ─────────────────────────────────────
+//
+// The admission/orchestration layer, constructed directly with fake deps —
+// the scenarios below were previously only exercised by real calls (plan
+// finding F1). Fakes everywhere: poster, flight recorder, clock, epoch check,
+// hook registries, frame sources. The arbiter is the REAL SeamArbiter (pure,
+// clock-injected) so escalation runs the production state machine.
+
+/** A track whose clone/stop the seam-adoption path drives. */
+class FakeSeamTrack extends FakeMediaTrack {
+  stopped = false;
+  lastClone?: FakeSeamTrack;
+  clone(): FakeSeamTrack {
+    this.lastClone = new FakeSeamTrack(`${this.id}-clone`);
+    return this.lastClone;
+  }
+  stop(): void {
+    this.stopped = true;
+  }
+  dispatchTo(kind: "unmute" | "ended" | "mute"): void {
+    this.dispatch(kind);
+  }
+}
+
+interface FakeSourceRecord {
+  onFrame: (frame: unknown) => void;
+  onFatal: (reason: string) => void;
+  started: boolean;
+  stopped: boolean;
+}
+
+function makeHarness(opts?: {
+  platform?: Platform;
+  seams?: string[];
+  adapter?: Partial<PlatformAdapter> | null;
+}) {
+  const platform = opts?.platform ?? "meet";
+  const posted: Array<{ kind: string } & Record<string, unknown>> = [];
+  const recorded: Array<{ type: string } & Record<string, unknown>> = [];
+  const live = new Map<MediaStreamTrack, TrackRecord>();
+  const webTracks: FakeSeamTrack[] = [];
+  const provenance = new Map<string, TrackProvenanceRecord>();
+  const frameSources = new Map<string, FakeSourceRecord>();
+  const flush = vi.fn();
+  let sink: TrackSink | undefined;
+  const clock = { now: 0 };
+  const epoch = { current: 1 };
+
+  const fakeSourceFactory = (track: MediaStreamTrack): FrameSourceFactory => {
+    return (onFrame, onFatal) => {
+      const rec: FakeSourceRecord = {
+        onFrame: onFrame as (frame: unknown) => void,
+        onFatal,
+        started: false,
+        stopped: false,
+      };
+      frameSources.set(track.id, rec);
+      return {
+        start: () => {
+          rec.started = true;
+        },
+        stop: () => {
+          rec.stopped = true;
+        },
+      };
+    };
+  };
+
+  const deps: CaptureDeps = {
+    post: (msg) => posted.push(msg as { kind: string } & Record<string, unknown>),
+    record: (event) => recorded.push(event as { type: string } & Record<string, unknown>),
+    flush,
+    now: () => clock.now,
+    isCurrentEpoch: (e) => e === epoch.current,
+    setTrackSink: (s) => {
+      sink = s;
+    },
+    liveTracks: () => live,
+    webAudioTracks: () => webTracks as unknown as MediaStreamTrack[],
+    trackProvenance: (id) => provenance.get(id),
+    makeArbiter: () => new SeamArbiter(opts?.seams ?? seamOrderFor(platform)),
+    meetDecodeSource: fakeSourceFactory,
+    trackProcessorSource: fakeSourceFactory,
+  };
+  const orchestrator = new CaptureOrchestrator(deps);
+  const adapter =
+    opts?.adapter === null
+      ? null
+      : ({ platform, identify: () => null, ...opts?.adapter } as unknown as PlatformAdapter);
+
+  return {
+    orchestrator,
+    posted,
+    recorded,
+    live,
+    webTracks,
+    provenance,
+    frameSources,
+    flush,
+    clock,
+    epoch,
+    adapter,
+    platform,
+    sink: (track: FakeSeamTrack, streamId = `stream-${track.id}`) =>
+      sink!(track as unknown as MediaStreamTrack, { id: streamId } as unknown as MediaStream),
+    init: () => orchestrator.initCapture({ epoch: epoch.current, platform, adapter }),
+    ofKind: (kind: string) => posted.filter((m) => m.kind === kind),
+    ofType: (type: string) => recorded.filter((e) => e.type === type),
+    registerLive: (track: FakeSeamTrack) =>
+      live.set(track as unknown as MediaStreamTrack, {
+        stream: { id: `stream-${track.id}` } as unknown as MediaStream,
+      }),
+    /** Push one decoded frame through the real TrackCapture consume path. */
+    pushFrame: (trackId: string) => frameSources.get(trackId)!.onFrame(decodedFrame()),
+  };
+}
+
+describe("CaptureOrchestrator admission (fakes)", () => {
+  beforeEach(() => {
+    (globalThis as { window?: unknown }).window = {};
+  });
+
+  afterEach(() => {
+    (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.();
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("starts a pipeline for an unmuted receiver track and admits it exactly once", () => {
+    const h = makeHarness();
+    const track = new FakeSeamTrack("r1");
+    h.registerLive(track);
+    h.init();
+
+    expect(h.ofKind("participant-joined")).toHaveLength(1);
+    expect(h.frameSources.get("r1")?.started).toBe(true);
+    expect(h.ofType("admitted")).toHaveLength(1);
+
+    // The hook re-dispatching the same track (or the reconcile sweep) is a skip.
+    h.sink(track);
+    h.orchestrator.reconcile();
+    expect(h.ofKind("participant-joined")).toHaveLength(1);
+    // Appearance is news once, however often the sweep re-offers the track.
+    expect(h.ofType("track-appeared")).toHaveLength(1);
+  });
+
+  it("defers a receiver track muted at dispatch: no attendee until its first unmute", () => {
+    const h = makeHarness();
+    const track = new FakeSeamTrack("muted-1");
+    track.muted = true;
+    h.registerLive(track);
+    h.init();
+
+    // Deferred, with the reason recorded — nothing joined, no pipeline built.
+    expect(h.ofKind("participant-joined")).toHaveLength(0);
+    expect(h.ofType("deferred")).toMatchObject([{ trackId: "muted-1" }]);
+    expect(h.frameSources.has("muted-1")).toBe(false);
+
+    // First unmute re-runs admission and starts the pipeline.
+    track.muted = false;
+    track.dispatchTo("unmute");
+    expect(h.ofKind("participant-joined")).toHaveLength(1);
+    expect(h.frameSources.get("muted-1")?.started).toBe(true);
+    expect(h.ofType("track-unmuted").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a muted track that ends without unmuting never becomes an attendee (journal #165)", () => {
+    const h = makeHarness();
+    const track = new FakeSeamTrack("phantom");
+    track.muted = true;
+    h.registerLive(track);
+    h.init();
+
+    track.dispatchTo("ended");
+    expect(h.ofKind("participant-joined")).toHaveLength(0);
+    expect(h.ofType("track-ended")).toMatchObject([{ trackId: "phantom" }]);
+
+    // A later (impossible in the DOM, defensive here) unmute changes nothing:
+    // the deferral cleaned itself up.
+    track.muted = false;
+    track.dispatchTo("unmute");
+    expect(h.ofKind("participant-joined")).toHaveLength(0);
+  });
+
+  it("a deferred track whose epoch was superseded before unmute never starts", () => {
+    const h = makeHarness();
+    const track = new FakeSeamTrack("stale");
+    track.muted = true;
+    h.registerLive(track);
+    h.init();
+
+    h.epoch.current = 2; // a newer epoch owns capture now
+    track.muted = false;
+    track.dispatchTo("unmute");
+    expect(h.ofKind("participant-joined")).toHaveLength(0);
+  });
+});
+
+describe("CaptureOrchestrator escalation and adoption (fakes)", () => {
+  beforeEach(() => {
+    (globalThis as { window?: unknown }).window = {};
+  });
+
+  afterEach(() => {
+    (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.();
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("escalates off a frameless seam after the unmute grace and adopts the webaudio tracks", () => {
+    const h = makeHarness();
+    const receiver = new FakeSeamTrack("r1");
+    h.registerLive(receiver);
+    const web = new FakeSeamTrack("wa1");
+    h.webTracks.push(web);
+    h.init();
+    expect(h.ofKind("participant-joined")).toHaveLength(1);
+    const receiverHandle = (h.ofKind("participant-joined")[0]!.participant as { id: string }).id;
+
+    // The platform claims audio is flowing…
+    receiver.dispatchTo("unmute");
+    // …but no frame decodes within the grace window.
+    h.clock.now = SEAM_ESCALATION_GRACE_MS;
+    h.orchestrator.reconcile();
+
+    expect(h.ofType("escalated")).toMatchObject([{ from: "receiver-track", to: "webaudio-track" }]);
+    // The receiver pipeline went down with the ordinary participant-left shape…
+    expect(h.ofKind("participant-left")).toMatchObject([{ participantId: receiverHandle }]);
+    // …and the webaudio track came up as a fresh source on a CLONE.
+    const joined = h.ofKind("participant-joined");
+    expect(joined).toHaveLength(2);
+    expect(h.ofType("adopted")).toMatchObject([{ trackId: "wa1" }]);
+    expect(h.frameSources.get("wa1-clone")?.started).toBe(true);
+    expect(h.orchestrator.debugState().seam?.active).toBe("webaudio-track");
+  });
+
+  it("a decoded frame proves the seam: the same grace elapsing later never escalates", () => {
+    const h = makeHarness();
+    const receiver = new FakeSeamTrack("r1");
+    h.registerLive(receiver);
+    h.init();
+
+    receiver.dispatchTo("unmute");
+    h.pushFrame("r1"); // capture confirmed live on this seam
+
+    h.clock.now = SEAM_ESCALATION_GRACE_MS * 3;
+    h.orchestrator.reconcile();
+    expect(h.ofType("escalated")).toHaveLength(0);
+    expect(h.orchestrator.debugState().seam).toMatchObject({ active: "receiver-track", proven: true });
+    expect(h.ofKind("pcm").length).toBeGreaterThan(0); // frames flowed end to end
+  });
+
+  it("webaudio adoption skips local-provenance tracks and takes one track per lineage root", () => {
+    const h = makeHarness({ seams: ["webaudio-track"] });
+    const mic = new FakeSeamTrack("mic");
+    const remoteA = new FakeSeamTrack("root-a");
+    const remoteAClone = new FakeSeamTrack("root-a-dup");
+    h.provenance.set("mic", { origin: "local", via: "gum", rootId: "mic", seq: 1 });
+    h.provenance.set("root-a", { origin: "remote", via: "ontrack", rootId: "root-a", seq: 2 });
+    h.provenance.set("root-a-dup", { origin: "remote", via: "clone", rootId: "root-a", seq: 3 });
+    h.webTracks.push(mic, remoteA, remoteAClone);
+    h.init();
+
+    h.orchestrator.reconcile();
+
+    expect(h.ofType("adopted")).toMatchObject([{ trackId: "root-a" }]);
+    expect(h.ofKind("participant-joined")).toHaveLength(1);
+    expect(mic.lastClone).toBeUndefined(); // the local mic was never even cloned
+  });
+
+  it("adopt/retire race: a track classified local AFTER adoption is retired on the next sweep and never re-adopted", () => {
+    const h = makeHarness({ seams: ["webaudio-track"] });
+    const track = new FakeSeamTrack("late-local");
+    h.webTracks.push(track);
+    h.init();
+
+    // Unknown provenance adopts (fail-safe: a dropped remote track is data loss).
+    h.orchestrator.reconcile();
+    expect(h.ofType("adopted")).toMatchObject([{ trackId: "late-local" }]);
+    const handle = (h.ofKind("participant-joined")[0]!.participant as { id: string }).id;
+
+    // The page hands the track to a sender: provenance improves to `local`.
+    h.provenance.set("late-local", { origin: "local", via: "sender", rootId: "late-local", seq: 1 });
+    h.orchestrator.reconcile();
+
+    expect(h.ofType("retired")).toMatchObject([{ trackId: "late-local" }]);
+    expect(h.ofKind("participant-left")).toMatchObject([{ participantId: handle }]);
+    expect(track.lastClone?.stopped).toBe(true); // our clone released the source
+
+    // Later sweeps neither re-adopt nor re-retire it.
+    h.orchestrator.reconcile();
+    expect(h.ofType("adopted")).toHaveLength(1);
+    expect(h.ofType("retired")).toHaveLength(1);
+  });
+});
+
+describe("CaptureOrchestrator reconcile sweep and handles (fakes)", () => {
+  beforeEach(() => {
+    (globalThis as { window?: unknown }).window = {};
+  });
+
+  afterEach(() => {
+    (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.();
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("adopts a live track that appeared after init, polls identities, and flushes the flight recorder", () => {
+    const polls = vi.fn();
+    const h = makeHarness({ adapter: { pollIdentities: polls } });
+    h.init();
+    expect(h.ofKind("participant-joined")).toHaveLength(0);
+
+    const late = new FakeSeamTrack("late-1");
+    h.registerLive(late); // dispatchTrack landed between sweeps
+    h.orchestrator.reconcile();
+
+    expect(h.ofKind("participant-joined")).toHaveLength(1);
+    expect(polls).toHaveBeenCalledTimes(1);
+    expect(h.flush).toHaveBeenCalled();
+  });
+
+  it("does nothing once a newer epoch owns capture", () => {
+    const h = makeHarness();
+    const track = new FakeSeamTrack("r1");
+    h.init();
+    h.epoch.current = 2;
+    h.registerLive(track);
+    h.orchestrator.reconcile();
+    expect(h.ofKind("participant-joined")).toHaveLength(0);
+  });
+
+  it("mints one stable opaque handle per track: distinct across tracks, kept across re-admission", () => {
+    const h = makeHarness();
+    const a = new FakeSeamTrack("track-a");
+    const b = new FakeSeamTrack("track-b");
+    h.registerLive(a);
+    h.registerLive(b);
+    h.init();
+
+    const joined = h.ofKind("participant-joined");
+    const ids = joined.map((m) => (m.participant as { id: string }).id);
+    expect(ids).toHaveLength(2);
+    for (const id of ids) expect(id).toMatch(/^t\d+$/);
+    expect(new Set(ids).size).toBe(2);
+    const handleA = (joined.find((m) => (m.generation as number) >= 1)!.participant as { id: string }).id;
+
+    // Track A's pipeline dies (track ended) but the track is re-offered — the
+    // decoder-restart / registry-replay shape. Same handle, next generation.
+    a.dispatchTo("ended");
+    expect(h.ofKind("participant-left")).toHaveLength(1);
+    h.orchestrator.reconcile();
+    const rejoined = h.ofKind("participant-joined");
+    expect(rejoined).toHaveLength(3);
+    expect((rejoined[2]!.participant as { id: string }).id).toBe(handleA);
+    expect(rejoined[2]!.generation).toBe(2);
+  });
+
+  it("routes a mid-call identity to the handle whose audio is on disk, without touching the pipeline", () => {
+    let identityCb: ((trackId: string, id: string) => void) | undefined;
+    const h = makeHarness({
+      adapter: {
+        onIdentity: (cb) => {
+          identityCb = cb;
+        },
+        displayName: (id: string) => (id === "spaces/x/devices/3" ? "Ada" : undefined),
+      },
+    });
+    const track = new FakeSeamTrack("r1");
+    h.registerLive(track);
+    h.init();
+    const handle = (h.ofKind("participant-joined")[0]!.participant as { id: string }).id;
+
+    identityCb!("r1", "spaces/x/devices/3");
+
+    expect(h.ofKind("participant-identified")).toMatchObject([
+      { participantId: "spaces/x/devices/3", captureId: handle, displayName: "Ada" },
+    ]);
+    expect(h.ofType("identity-link")).toMatchObject([{ trackId: "r1", captureId: handle }]);
+    expect(h.ofKind("participant-left")).toHaveLength(0); // no restart, ever
+    expect(h.frameSources.get("r1")?.stopped).toBe(false);
   });
 });
