@@ -62,7 +62,7 @@
           "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "id": "spaces/x/devices/y",
           "display_name": "Jane Doe",
-          "source": "browser:meet:jane-a1b2",
+          "source": "browser:meet:t3",
           "origin": "platform"
         }
       }
@@ -74,8 +74,8 @@
         "method": "session.attendee",
         "params": {
           "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
-          "id": "speaker-1",
-          "source": "browser:meet:speaker-1",
+          "id": "t3",
+          "source": "browser:meet:t3",
           "origin": "synthetic"
         }
       }
@@ -132,7 +132,7 @@
               "id": "spaces/x/devices/y",
               "display_name": "Jane Doe",
               "joined": "2026-07-19T10:00:12.000Z",
-              "source": "browser:meet:jane-a1b2",
+              "source": "browser:meet:t3",
               "origin": "platform"
             },
             {
@@ -144,13 +144,13 @@
           ],
           "speakers": [
             {
-              "source": "browser:meet:jane-a1b2",
+              "source": "browser:meet:t3",
               "name": "Jane Doe",
               "confidence": "correlated"
             }
           ],
           "warnings": [],
-          "sources": ["mic", "browser:meet:jane-a1b2"],
+          "sources": ["mic", "browser:meet:t3"],
           "trigger": "browser-extension",
           "rev": 43
         }
@@ -207,7 +207,7 @@
             "attendees": [],
             "speakers": [],
             "warnings": [],
-            "sources": ["browser:meet:jane-a1b2"],
+            "sources": ["browser:meet:t3"],
             "trigger": "browser-extension",
             "rev": 43
           }

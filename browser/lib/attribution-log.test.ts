@@ -85,6 +85,13 @@ const fixtures: AttributionEvent[] = [
     confirmations: 2,
     outcome: "bound",
   },
+  {
+    type: "identity-link",
+    t: T0 + 14,
+    trackId: "trk-1",
+    captureId: "t3",
+    participantId: "spaces/demo/devices/1",
+  },
 ];
 
 describe("encodeAttributionEvent / decodeAttributionLine", () => {
