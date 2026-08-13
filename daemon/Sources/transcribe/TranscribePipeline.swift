@@ -136,6 +136,11 @@ enum TranscribePipeline {
     var session: String? = nil
     var sourceIDs: [String]
     var out: String?
+    /// `--rereconcile`: re-derive the session's speaker map from its roster
+    /// with the current ``RosterReconciler``, ignoring the stored
+    /// `[[speaker]]` map even when its `reconciler_version` is current.
+    /// Only meaningful with `session` — `Transcribe` validates that.
+    var rereconcile: Bool = false
   }
 
   /// Entry point. `socketPath` (when resolvable) lets a `--session` run
@@ -479,7 +484,7 @@ enum TranscribePipeline {
     // record of what its own reconciliation concluded.
     var reconciled: RosterReconciler.Outcome? = nil
     if let sessionRecord, !sessionRecord.attendees.isEmpty,
-      sessionRecord.speakers.isEmpty
+      inputs.rereconcile || sessionRecord.speakers.isEmpty
         || sessionRecord.reconcilerVersion < RosterReconciler.version
     {
       let outcome = RosterReconciler.reconcile(
@@ -487,10 +492,12 @@ enum TranscribePipeline {
         sessionStart: sessionRecord.started)
       reconciled = outcome
       let reason =
-        sessionRecord.speakers.isEmpty
-        ? "no stored speaker map"
-        : "stored speaker map is reconciler v\(sessionRecord.reconcilerVersion), "
-          + "current is v\(RosterReconciler.version)"
+        inputs.rereconcile
+        ? "re-reconciliation requested (--rereconcile)"
+        : sessionRecord.speakers.isEmpty
+          ? "no stored speaker map"
+          : "stored speaker map is reconciler v\(sessionRecord.reconcilerVersion), "
+            + "current is v\(RosterReconciler.version)"
       dependencies.log(
         "session \(sessionRecord.id): \(reason); reconciled the roster into "
           + "\(outcome.speakers.count) speaker(s) with \(outcome.warnings.count) warning(s)")

@@ -525,6 +525,45 @@ struct TranscribePipelineTests {
     #expect(!markdown.contains("] Jane Doe**"))
   }
 
+  @Test("--rereconcile re-derives even a map at the current reconciler version")
+  func rereconcileForcesRederivation() async throws {
+    let dataRoot = makeTempDirectory("rereconcile")
+    let sessionID = "rereconcile-session"
+    // The same map "--session trusts a stored speaker map…" leaves standing:
+    // only the explicit flag overrides a current-version map.
+    try writeStaleMapSession(
+      sessionID: sessionID, dataRoot: dataRoot, reconcilerVersion: RosterReconciler.version)
+
+    try await writeFixtureSource(
+      sourceID: "browser:meet:speaker-1",
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from the remote track")]
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil, rereconcile: true),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let markdown = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
+    #expect(markdown.contains("] Jane Doe**"))
+    #expect(!markdown.contains("] Tom Elliot**"))
+  }
+
   @Test("--session merges an optional vocab/<session-id>.txt into the transcribe context")
   func sessionVocabKeyedBySessionID() async throws {
     let dataRoot = makeTempDirectory("session-vocab")
