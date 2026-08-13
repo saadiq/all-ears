@@ -468,20 +468,31 @@ enum TranscribePipeline {
     // and intended — turns group by resolved label, so a participant split
     // across an identity upgrade reassembles into one speaker.
     //
-    // A session with no map is reconciled here instead. That covers every
-    // session captured before reconciliation existed — re-transcribing one
-    // now applies the same invariants and repairs its labels retroactively —
-    // and it is only possible because the derivation is a pure function of
-    // the roster, so running it late gives the same answer as running it at
-    // session end.
+    // A session with no map — or one whose map an *older* reconciler wrote —
+    // is reconciled here instead. That covers every session captured before
+    // reconciliation existed, and every session reconciled before the latest
+    // fix: re-transcribing one applies the current invariants and repairs its
+    // labels retroactively. It is only possible because the derivation is a
+    // pure function of the roster, so running it late gives the same answer
+    // as running it at session end would today. The re-derived map is used
+    // for this run, never written back — `session.toml` stays the daemon's
+    // record of what its own reconciliation concluded.
     var reconciled: RosterReconciler.Outcome? = nil
-    if let sessionRecord, sessionRecord.speakers.isEmpty, !sessionRecord.attendees.isEmpty {
+    if let sessionRecord, !sessionRecord.attendees.isEmpty,
+      sessionRecord.speakers.isEmpty
+        || sessionRecord.reconcilerVersion < RosterReconciler.version
+    {
       let outcome = RosterReconciler.reconcile(
         attendees: sessionRecord.attendees, sources: sessionRecord.sources,
         sessionStart: sessionRecord.started)
       reconciled = outcome
+      let reason =
+        sessionRecord.speakers.isEmpty
+        ? "no stored speaker map"
+        : "stored speaker map is reconciler v\(sessionRecord.reconcilerVersion), "
+          + "current is v\(RosterReconciler.version)"
       dependencies.log(
-        "session \(sessionRecord.id): no stored speaker map; reconciled the roster into "
+        "session \(sessionRecord.id): \(reason); reconciled the roster into "
           + "\(outcome.speakers.count) speaker(s) with \(outcome.warnings.count) warning(s)")
     }
     var speakers: [String: String] = [:]
