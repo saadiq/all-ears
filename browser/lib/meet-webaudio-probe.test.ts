@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hookDebugState, installHook } from "./rtc-hook";
 import {
   __resetMeetGraphProbe,
   GRAPH_BRIDGE_MAX_NODES,
-  hookDebugState,
-  installHook,
   setMeetGraphSinks,
   stopMeetGraphProbe,
-} from "./rtc-hook";
+} from "./meet-webaudio-probe";
 
 // The Meet audio-graph probe's DOM-facing half: the pass-through wraps on
 // AudioNode.connect/disconnect and the AudioWorkletNode constructor, plus the
@@ -157,7 +156,7 @@ function newWorklet(
   return new Ctor(h.ctx, processor);
 }
 
-describe("Meet audio-graph probe (rtc-hook.ts)", () => {
+describe("Meet audio-graph probe (meet-webaudio-probe.ts)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });

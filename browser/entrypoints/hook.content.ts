@@ -1,12 +1,7 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import {
-  installHook,
-  hookDebugState,
-  livePeerConnections,
-  setMeetGraphSinks,
-  stopMeetGraphProbe,
-} from "../lib/rtc-hook";
+import { installHook, hookDebugState, livePeerConnections } from "../lib/rtc-hook";
+import { setMeetGraphSinks, stopMeetGraphProbe } from "../lib/meet-webaudio-probe";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
 import {
   attributionDebugState,
