@@ -50,9 +50,6 @@ export default defineContentScript({
   main() {
     console.debug("[ears][relay] content relay loaded on", location.host);
 
-    // Hand the worklet URL to the MAIN world (it has no chrome.runtime).
-    document.documentElement.dataset.earsWorklet = browser.runtime.getURL("/pcm-worklet.js");
-
     // Mirror the persisted capture toggle into the MAIN world, now and on
     // every change. postMessage delivery is async, so even though both content
     // scripts run at document_start, the hook's listener is registered by the

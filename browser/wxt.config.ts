@@ -27,13 +27,5 @@ export default defineConfig({
       "http://127.0.0.1/*",
       ...devHosts,
     ],
-    web_accessible_resources: [
-      {
-        // The MAIN-world hook ships as a content script (see hook.content.ts),
-        // not a web-accessible asset. Only the AudioWorklet needs a public URL.
-        resources: ["pcm-worklet.js"],
-        matches: ["<all_urls>"],
-      },
-    ],
   }),
 });
