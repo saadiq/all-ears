@@ -20,6 +20,7 @@ import {
   type SeamId,
 } from "./capture-seams";
 import type { PlatformAdapter } from "./identity/adapter";
+import { recordAttribution } from "./attribution-recorder";
 import { postToIsolated, type ParticipantId, type Platform } from "./protocol";
 import { mainPerf, perfDetailEnabled, perfEnabled } from "./perf-main";
 import type { Counter, Gauge, Histogram } from "./perf";
@@ -340,6 +341,7 @@ function deferUntilUnmuted(
   };
   function onUnmute(): void {
     cleanup();
+    recordAttribution({ type: "track-unmuted", t: Date.now(), trackId: track.id });
     // Re-run the same admission check sink ran: an epoch handoff, a seam
     // escalation, or another path adopting this track may all have happened
     // while we waited. `muted` is false by definition on this edge.
@@ -350,6 +352,7 @@ function deferUntilUnmuted(
   }
   function onEnded(): void {
     cleanup();
+    recordAttribution({ type: "track-ended", t: Date.now(), trackId: track.id });
     console.debug(
       `[ears][capture] muted receiver track ${track.id} ended without ever unmuting` +
         ` — no attendee was created (pre-allocated transceiver, journal #165)`,
@@ -358,12 +361,20 @@ function deferUntilUnmuted(
   track.addEventListener("unmute", onUnmute);
   track.addEventListener("ended", onEnded);
   deferredMutedTracks.set(track, cleanup);
+  recordAttribution({
+    type: "deferred",
+    t: Date.now(),
+    trackId: track.id,
+    seam: activeSeam(),
+    reason: "muted at dispatch — waiting for first unmute (journal #165)",
+  });
   console.debug(`[ears][capture] deferring muted receiver track ${track.id} until it unmutes`);
 }
 
 const sink: TrackSink = (track, stream, transceiver) => {
   if (!isCurrentEpoch(cfg.epoch)) return; // a newer epoch owns capture
   const seam = activeSeam();
+  noteTrackAppeared(track, seam);
   switch (admitReceiverTrack(seam, { muted: track.muted, alreadyCapturing: pipelines.has(track) })) {
     case "skip":
       return;
@@ -373,6 +384,24 @@ const sink: TrackSink = (track, stream, transceiver) => {
       return startPipeline(track, { seam, rtc: { stream, transceiver } });
   }
 };
+
+/** Track ids already recorded as `track-appeared` (flight recorder) — the
+ * reconcile sweep re-runs sink/adoption every 3s, and appearance is news once. */
+const appearedTracks = new Set<string>();
+
+function noteTrackAppeared(track: MediaStreamTrack, seam: SeamId): void {
+  if (appearedTracks.has(track.id)) return;
+  appearedTracks.add(track.id);
+  const prov = trackProvenance(track.id);
+  recordAttribution({
+    type: "track-appeared",
+    t: Date.now(),
+    trackId: track.id,
+    seam,
+    muted: track.muted,
+    ...(prov ? { origin: prov.origin, rootId: prov.rootId } : {}),
+  });
+}
 
 function activeSeam(): SeamId {
   return (arbiter?.active ?? "receiver-track") as SeamId;
@@ -433,10 +462,10 @@ function adoptSeamTracks(): void {
       continue;
     }
     const record = provenance.get(source.id);
-    console.debug(
-      `[ears][capture] adopt webaudio track ${source.id} ` +
-        `(${record ? `${record.origin} via=${record.via}` : "unknown provenance"})`,
-    );
+    const provDesc = record ? `${record.origin} via=${record.via}` : "unknown provenance";
+    console.debug(`[ears][capture] adopt webaudio track ${source.id} (${provDesc})`);
+    noteTrackAppeared(source, seam);
+    recordAttribution({ type: "adopted", t: Date.now(), trackId: source.id, seam, reason: provDesc });
     adoptedSeamTracks.set(source.id, clone);
     startPipeline(clone, { seam, sourceTrackId: source.id });
   }
@@ -455,6 +484,12 @@ function adoptSeamTracks(): void {
 function retireSeamTrack(id: string, record?: TrackProvenanceRecord): void {
   const clone = adoptedSeamTracks.get(id);
   adoptedSeamTracks.delete(id);
+  recordAttribution({
+    type: "retired",
+    t: Date.now(),
+    trackId: id,
+    reason: `local via=${record?.via ?? "?"} root=${record?.rootId ?? id}`,
+  });
   console.debug(
     `[ears][capture] retire webaudio track ${id}: ` +
       `local via=${record?.via ?? "?"} root=${record?.rootId ?? id} ` +
@@ -480,6 +515,13 @@ function retireSeamTrack(id: string, record?: TrackProvenanceRecord): void {
  * reconnect or an identity upgrade.
  */
 function escalateSeam(from: SeamId, to: SeamId): void {
+  recordAttribution({
+    type: "escalated",
+    t: Date.now(),
+    from,
+    to,
+    reason: "no frame decoded within the unmute grace window",
+  });
   console.warn(
     `[ears][capture] no audio decoded on seam "${from}" — escalating to "${to}". ` +
       "See capture-seams.ts / journal #103-#105.",
@@ -530,6 +572,14 @@ function startPipeline(
   pipelines.set(track, pipeline);
   capture.start();
 
+  recordAttribution({
+    type: "admitted",
+    t: Date.now(),
+    trackId: track.id,
+    seam: origin.seam,
+    participantId,
+    generation,
+  });
   postToIsolated({ kind: "participant-joined", platform: cfg.platform, participantId, generation, displayName });
   console.debug(
     `[ears][capture] +track → ${participantId} (gen ${generation})` +
@@ -538,10 +588,17 @@ function startPipeline(
 
   // Lifecycle. Delete from the map *before* stop() so a late frame can't
   // resurrect a dead entry.
-  const end = () => stopPipeline(track);
+  const end = () => {
+    recordAttribution({ type: "track-ended", t: Date.now(), trackId: track.id });
+    stopPipeline(track);
+  };
   track.addEventListener("ended", end);
-  track.addEventListener("mute", () => console.debug(`[ears][capture] mute → ${participantId}`));
+  track.addEventListener("mute", () => {
+    recordAttribution({ type: "track-muted", t: Date.now(), trackId: track.id });
+    console.debug(`[ears][capture] mute → ${participantId}`);
+  });
   track.addEventListener("unmute", () => {
+    recordAttribution({ type: "track-unmuted", t: Date.now(), trackId: track.id });
     console.debug(`[ears][capture] unmute → ${participantId}`);
     // Meet identity: an unmute pairs with the collections channel's per-device
     // mic-open edge (the only per-device event that channel still carries).
@@ -1016,6 +1073,17 @@ class TrackCapture {
     if (isSpeaking === this.speaking) return;
     this.speaking = isSpeaking;
     cfg.adapter?.onTrackSpeaking?.(this.track, isSpeaking);
+    // Always recorded (unlike the debug log below): these onsets are the audio
+    // half of every speaking-onset correlation, so a recorded call can replay
+    // the exact evidence the correlators saw.
+    recordAttribution({
+      type: "audio-onset",
+      t: Date.now(),
+      participantId: this.participantId,
+      trackId: this.trackId,
+      state: isSpeaking ? "start" : "stop",
+      framePeak: Number(framePeak.toFixed(4)),
+    });
 
     if (DEBUG_AUDIO_NOW()) {
       const t = Date.now();

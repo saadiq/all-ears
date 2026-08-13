@@ -1,4 +1,6 @@
 import { claimInstall } from "./epoch";
+import { bytesToBase64 } from "./attribution-log";
+import { recordAttribution } from "./attribution-recorder";
 import {
   inflateGzip,
   parseCollectionsMessage,
@@ -240,13 +242,22 @@ function attachCollectionsLogger(ch: RTCDataChannel): void {
     if (!bufPromise) return;
     collectionsSeen++;
     void bufPromise
-      .then((buf) => parseCollectionsMessage(buf))
-      .then((parsed) => {
+      .then(async (buf) => [buf, await parseCollectionsMessage(buf)] as const)
+      .then(([buf, parsed]) => {
         if (!parsed) {
           maybeWarnCollectionsSchema();
           return;
         }
         collectionsParsed++;
+        // Flight recorder: the parsed fields AND the raw payload bytes (still
+        // gzip-compressed), so a wire-format drift can be re-parsed offline.
+        recordAttribution({
+          type: "collections-edge",
+          t: Date.now(),
+          deviceId: parsed.deviceId,
+          micOpen: parsed.micOpen,
+          rawB64: bytesToBase64(new Uint8Array(buf)),
+        });
         (window as unknown as CollectionsWindow).__earsCollectionsListener?.(parsed);
       })
       .catch(() => {

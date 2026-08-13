@@ -1,4 +1,6 @@
 import { registerAdapter, type PlatformAdapter } from "./adapter";
+import type { BindingOutcome, CorrelatorId } from "../attribution-log";
+import { recordAttribution } from "../attribution-recorder";
 import type { ParticipantId, RosterEntry } from "../protocol";
 import { setCollectionsListener } from "../rtc-hook";
 import type { CollectionsMuteEvent } from "./meet-collections";
@@ -521,8 +523,8 @@ export class MeetAdapter implements PlatformAdapter {
       this.liveTracksById.set(track.id, track);
       if (!speaking) return; // only onsets feed the correlator (see meet-correlator.ts)
       const now = Date.now();
-      this.applyMatch(this.correlator.recordAudioOnset(track.id, now));
-      this.applyMatch(this.domCorrelator.recordAudioOnset(track.id, now));
+      this.applyMatch(this.correlator.recordAudioOnset(track.id, now), "collections", now);
+      this.applyMatch(this.domCorrelator.recordAudioOnset(track.id, now), "dom", now);
     } catch {
       // best-effort — a broken correlation must never affect capture
     }
@@ -533,8 +535,12 @@ export class MeetAdapter implements PlatformAdapter {
   onDeviceSpeaking(deviceId: ParticipantId, at: number): void {
     if (this.disposed) return;
     try {
+      // Recorded before the local-device filter on purpose: the flight
+      // recorder wants the evidence as observed, and roster-delta's isLocal
+      // is what lets a replay re-derive the exclusion.
+      recordAttribution({ type: "dom-burst", t: at, deviceId });
       if (this.isLocalDevice(deviceId)) return; // never correlate the user to a remote track
-      this.applyMatch(this.domCorrelator.recordDeviceOnset(deviceId, at));
+      this.applyMatch(this.domCorrelator.recordDeviceOnset(deviceId, at), "dom", at);
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
@@ -570,7 +576,8 @@ export class MeetAdapter implements PlatformAdapter {
     if (this.disposed) return;
     try {
       this.liveTracksById.set(track.id, track);
-      this.applyMatch(this.unmuteCorrelator.recordAudioOnset(track.id, Date.now()));
+      const now = Date.now();
+      this.applyMatch(this.unmuteCorrelator.recordAudioOnset(track.id, now), "unmute", now);
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
@@ -583,18 +590,32 @@ export class MeetAdapter implements PlatformAdapter {
       this.deviceState.set(event.deviceId, { micOpen: event.micOpen, lastSeen: now });
       if (!event.micOpen) return; // only the mic-open edge is a correlatable onset
       if (this.isLocalDevice(event.deviceId)) return; // the user's own mic toggle, not a remote's
-      this.applyMatch(this.correlator.recordDeviceOnset(event.deviceId, now));
-      this.applyMatch(this.unmuteCorrelator.recordDeviceOnset(event.deviceId, now));
+      this.applyMatch(this.correlator.recordDeviceOnset(event.deviceId, now), "collections", now);
+      this.applyMatch(this.unmuteCorrelator.recordDeviceOnset(event.deviceId, now), "unmute", now);
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
   }
 
-  private applyMatch(match: CorrelatorMatch | null): void {
+  private applyMatch(match: CorrelatorMatch | null, correlator: CorrelatorId, at: number): void {
     if (!match || match.confirmations < CONFIRM_THRESHOLD) return;
+    // Every confirmed match records what was decided about it, with its cause
+    // (which correlator, how many confirming turns) — the flight recorder's
+    // `provisional-binding` event.
+    const recordBinding = (outcome: BindingOutcome): void =>
+      recordAttribution({
+        type: "provisional-binding",
+        t: at,
+        trackId: match.trackKey,
+        deviceId: match.deviceId,
+        correlator,
+        confirmations: match.confirmations,
+        outcome,
+      });
     if (this.isLocalDevice(match.deviceId)) {
       // Belt and braces: the onset filters should mean this never fires, but a
       // pairing confirmed before the marker was first read could still arrive.
+      recordBinding("refused-local-device");
       console.debug(
         `[ears][identity] Meet identity match refused: ${match.deviceId} is the local participant, ` +
           `so track ${match.trackKey} cannot be it (journal #158)`,
@@ -604,6 +625,7 @@ export class MeetAdapter implements PlatformAdapter {
     const bound = this.upgradedTracks.get(match.trackKey);
     if (bound !== undefined) {
       if (bound !== match.deviceId) {
+        recordBinding("refused-rebind");
         console.debug(
           `[ears][identity] Meet identity rebind refused: track ${match.trackKey} is already ` +
             `${bound}, so a ${match.confirmations}-turn match on ${match.deviceId} is a ` +
@@ -613,6 +635,7 @@ export class MeetAdapter implements PlatformAdapter {
       return; // already pushed, or a rebind — either way, nothing to push
     }
     if (this.deviceClaimed(match.deviceId, match.trackKey)) {
+      recordBinding("refused-device-claimed");
       console.debug(
         `[ears][identity] Meet identity claim refused: device ${match.deviceId} is already ` +
           `carried by live track ${this.deviceOwners.get(match.deviceId)}, so track ` +
@@ -629,6 +652,7 @@ export class MeetAdapter implements PlatformAdapter {
       // Etel case — a track that died to the AudioDecoder bug before its
       // upgrade could land, journal #45).
       this.bind(match.trackKey, match.deviceId);
+      recordBinding("bound-late-rename");
       console.debug(
         `[ears][identity] Meet late join: no live track for device ${match.deviceId} ` +
           `(track ${match.trackKey} ended before ${match.confirmations}-turn confirmation landed)` +
@@ -638,6 +662,7 @@ export class MeetAdapter implements PlatformAdapter {
       return;
     }
     this.bind(match.trackKey, match.deviceId);
+    recordBinding("bound");
     const name = this.names.get(match.deviceId);
     console.debug(
       `[ears][identity] Meet identity join: track ${match.trackKey} → ${match.deviceId}` +
@@ -790,6 +815,18 @@ export class MeetAdapter implements PlatformAdapter {
           (entry.isLocal ? " (you)" : ""),
       );
     }
+    // Flight recorder: the roster delta as observed, including the
+    // "(You)"-marker evidence — the isLocal flag a replay needs to re-derive
+    // the local-device exclusion.
+    recordAttribution({
+      type: "roster-delta",
+      t: Date.now(),
+      entries: fresh.map((e) => ({
+        participantId: e.participantId,
+        displayName: e.displayName,
+        ...(e.isLocal ? { isLocal: true } : {}),
+      })),
+    });
     this.rosterCb?.(fresh);
   }
 

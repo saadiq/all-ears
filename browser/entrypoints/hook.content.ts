@@ -8,6 +8,7 @@ import {
   stopMeetGraphProbe,
 } from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
+import { attributionDebugState, exportAttributionLog } from "../lib/attribution-recorder";
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
@@ -96,10 +97,16 @@ export default defineContentScript({
         meetingId: lastMeetingId,
         ...hookDebugState(),
         capture: captureDebugState(),
+        attribution: attributionDebugState(),
       };
       console.debug("[ears][debug][state]", snapshot);
     };
     (window as unknown as { __earsReportState?: () => void }).__earsReportState = reportDebugState;
+    // On-demand export of the attribution flight recorder's per-call ring as
+    // JSONL — call from this tab's DevTools console mid- or post-call:
+    //   copy(__earsExportAttribution())
+    (window as unknown as { __earsExportAttribution?: () => string }).__earsExportAttribution =
+      exportAttributionLog;
 
     // Debug logging: tap the console and forward entries to the isolated relay
     // (which ships them to the background store). This realm is the page's own,
