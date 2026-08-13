@@ -286,9 +286,12 @@ identity guesses:
   their confidence causes) instead of only the roster's single `source` link
   per attendee. `sanitizeLabel`/`sourceLabel` (`protocol.ts:223-230`) change;
   `docs/specs/browser/transport.md:60` ("Source labeling") and
-  `docs/data-formats.md` update; `test/ground-truth/score.py`'s roster check
-  (which asserts `browser:<platform>:<participant>` shapes) updates to score
-  via `[[speaker]]` instead — which is truer to what it should measure anyway.
+  `docs/data-formats.md` update; the ground-truth harness's assumption that
+  source ids embed the participant (its `score.py` docstring, the manifests'
+  `expected_source_id`, and `sessions.py`'s `browser:` source filter —
+  `score_roster` itself checks source *presence* per attendee and
+  provisional-id shapes, not the full label shape) updates to score via
+  `[[speaker]]` instead — which is truer to what it should measure anyway.
 
 **Why cheaper.** This is the item that makes the recurring bug class
 *structurally* cheaper rather than better-instrumented: name↔track binding
@@ -381,9 +384,11 @@ fixture store with a stale wrong map.
   — no adapter uses it.
 - `data-initial-participant-id` (`meet.ts:148-149`) and `ZoomAdapter`'s
   `track.id` MSID fallback (`zoom.ts:57`) — confirmed-gone attribute;
-  practically-unreachable branch.
+  practically-unreachable branch. Note: the meet.ts comment records a
+  deliberate *keep* ("costs nothing"), so deleting it overrides a recorded
+  decision — flagged rather than assumed.
 - Stale cross-references: three comments cite "rtc-hook.ts:654" for the
-  ids-never-match finding (`capture-seams.ts:15,97`, `audio-tap.ts:610`) — the
+  ids-never-match finding (`capture-seams.ts:15,96`, `audio-tap.ts:608`) — the
   text has moved; cite the function name, not a line.
 - Spec drift: `extension.md:83` still describes the collections flag as
   per-turn speaking (re-interpreted 2026-07-24 as a mute edge,
@@ -560,7 +565,7 @@ proposal directly; items note which refactor makes each cheap.
 | B12 | Meet confirmation is single-point-of-failure on the DOM speaking ring (thresholds make collections-only confirmation unreachable) | `meet.ts:53-60, 388-391`; `meet-collections-drift.md` finding 1 | R1/R2 (drift visible in replays) |
 | B13 | `ingestStreamClosed` grace not identity-scoped (open side was fixed for #24; close side relies on single-active-session) | `SessionRegistry.swift:582-587` vs `:547-553` | small daemon fix |
 | B14 | FIFO response matching on the ingest socket desyncs on any reorder | `transport.ts:16-17, 327` | R10 |
-| B15 | Graph-bridge sources bypass pipeline lifecycle; daemon-side streams never closed | `audio-tap.ts:1595-1604` | R6/R7 (debug isolation) |
+| B15 | Graph-bridge sources bypass pipeline lifecycle; daemon-side streams never closed | `audio-tap.ts:1595-1604`, wired at `hook.content.ts:72` | R6/R7 (debug isolation) |
 | B16 | Session identity TOML with one of platform/external_id silently decodes to nil identity | `SessionDescriptorTOML.swift:110-117` | small fix + test |
 | B17 | Default-title detection by string equality; manual sessions all "unnamed" | `Session.swift:110-112` | small fix |
 | B18 | Unparseable `session.toml` at boot strands audio outside retention | `SessionRegistry.swift:187-189` | small fix |
