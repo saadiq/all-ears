@@ -143,7 +143,8 @@ describe("seamUsesReceiverTracks", () => {
 
   it("excludes the WebAudio seam — its ids never match a hooked receiver", () => {
     // So it must start under a provisional id rather than inherit a
-    // neighbouring participant's name (rtc-hook.ts:654).
+    // neighbouring participant's name (rtc-hook.ts's installMeetWebAudioProbe,
+    // the ids-never-match finding).
     expect(seamUsesReceiverTracks("webaudio-track")).toBe(false);
   });
 });

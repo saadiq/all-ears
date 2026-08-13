@@ -160,8 +160,12 @@ let cfg: CaptureConfig;
 // per-track silent warning: Meet legitimately delivers no audio for an unmuted
 // but silent participant (DTX / noise suppression), so "unmuted + no frames" is
 // not on its own proof of breakage. Only escalate to a loud "SILENT" warning
-// when nothing has decoded anywhere on the call (see silentReport). Not reset on
-// epoch handoff — a mid-call re-inject must not forget that audio once flowed.
+// when nothing has decoded anywhere on the call (see silentReport). Not reset
+// by initCapture, so it survives same-module epoch handoffs (a capture toggle
+// off/on mid-call must not forget that audio once flowed). It does NOT survive
+// a genuine re-injection: each injected epoch loads a fresh module instance
+// (see rtc-hook.ts's header), so the flag starts false there and the silent
+// warning is merely re-armed — a false negative it may repeat, never suppress.
 let anyAudioDecodedThisCall = false;
 
 // Low-frequency safety net: sweep liveTracks() for any track this epoch owns

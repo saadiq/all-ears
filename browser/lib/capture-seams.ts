@@ -12,7 +12,9 @@
 //
 // The arbitration is deliberately per-CALL rather than per-track. A per-track
 // choice would need to know which WebAudio track belongs to which receiver
-// track, and rtc-hook.ts:654 records that those ids never match. Per-call
+// track, and rtc-hook.ts's installMeetWebAudioProbe (the ids-never-match
+// finding at its createMediaStreamSource wrap) records that those ids never
+// match. Per-call
 // sidesteps that entirely and matches the observed failure mode: when Meet
 // migrates, it migrates the whole call's audio at once.
 //
