@@ -24,7 +24,7 @@
 // events.
 
 import type { BindingOutcome, CorrelatorId } from "../attribution-log";
-import type { ParticipantId } from "../protocol";
+import type { ParticipantId, RosterEntry } from "../protocol";
 import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 
 // Consecutive confirming turns (SpeakingCorrelator) required before a match
@@ -86,7 +86,37 @@ export type MeetIdentityDecision =
   | MeetBindingDecision
   /** The "(You)" marker resolved: `deviceId` is the local participant, now
    * excluded from all correlation for the life of the engine. */
-  | { kind: "local-resolved"; t: number; deviceId: ParticipantId };
+  | { kind: "local-resolved"; t: number; deviceId: ParticipantId }
+  /** Newly-resolved or changed (id → name) pairs since the last roster
+   * decision — the delta the shell forwards via onRoster, with `isLocal`
+   * marked on the local participant's row. */
+  | { kind: "roster"; t: number; entries: RosterEntry[] }
+  /** A roster exists but no row carries the "(You)" marker — a build or
+   * locale that never renders it must not look like working code (MUST-NOT
+   * #13). Decided at most once per engine. */
+  | { kind: "no-self-marker"; t: number; namedCount: number };
+
+/**
+ * The newly-resolved or changed (id → name) pairs in `names` that `emitted`
+ * hasn't seen yet, as roster entries — and mutates `emitted` to record them.
+ * Pure and side-effect-scoped to `emitted`: the engine calls it on every
+ * roster observation and decides only the delta, so a participant's name
+ * reaches the daemon once (not once per 3s poll) and a corrected name (Meet
+ * swaps a placeholder for the real one) re-emits. Empty names are already
+ * excluded upstream (only truthy names enter `names`).
+ */
+export function rosterDelta(
+  names: ReadonlyMap<ParticipantId, string>,
+  emitted: Map<ParticipantId, string>,
+): RosterEntry[] {
+  const fresh: RosterEntry[] = [];
+  for (const [id, name] of names) {
+    if (emitted.get(id) === name) continue;
+    emitted.set(id, name);
+    fresh.push({ participantId: id, displayName: name });
+  }
+  return fresh;
+}
 
 /**
  * Holds all Meet binding state — the three SpeakingCorrelator instances, the
@@ -124,6 +154,13 @@ export class MeetIdentityEngine {
    * change for the life of a call. undefined means "not established", which
    * excludes nobody (the pre-#158 behaviour, wrong in a bounded way). */
   private localDeviceId: ParticipantId | undefined;
+  /** id → last-known display name. Kept for the engine's life (leave/rejoin
+   * gets a fresh identify() anyway). */
+  private readonly names = new Map<ParticipantId, string>();
+  /** id → name already decided into a roster delta, so each observation
+   * decides only what is new (see rosterDelta). */
+  private readonly emittedNames = new Map<ParticipantId, string>();
+  private warnedNoSelfMarker = false;
 
   constructor(private readonly tracks: TrackPresence) {}
 
@@ -182,15 +219,62 @@ export class MeetIdentityEngine {
   }
 
   /**
-   * The shell's roster scan established `deviceId` as the local participant
-   * (the "(You)" marker, findLocalDeviceId). Latched rather than re-read
-   * because the answer cannot change within a call and re-reading could only
-   * ever lose it. A repeat observation decides nothing.
+   * One roster observation: the named tiles a scan found, plus the device id
+   * carrying the "(You)" marker when the scan could establish it beyond doubt
+   * (findLocalDeviceId; undefined otherwise). Decides, in order:
+   *
+   *  - `local-resolved`, the first time a marker arrives. Latched rather than
+   *    re-read because the answer cannot change within a call and re-reading
+   *    could only ever lose it. The marker routinely resolves *after* that
+   *    device's name was already decided into a delta, so its emitted record
+   *    is dropped and the same decision's roster delta re-sends it, now
+   *    carrying `isLocal` — without that the daemon never learns which roster
+   *    row is the user and falls back to inferring it.
+   *  - `no-self-marker`, at most once, when names exist but no marker has ever
+   *    been seen (an empty roster early in a call is normal and decides
+   *    nothing).
+   *  - `roster`, when the observation added or changed any (id → name) pair.
    */
-  localDeviceObserved(deviceId: ParticipantId, at: number): MeetIdentityDecision[] {
-    if (this.localDeviceId !== undefined) return [];
-    this.localDeviceId = deviceId;
-    return [{ kind: "local-resolved", t: at, deviceId }];
+  rosterObserved(
+    named: ReadonlyArray<{ deviceId: ParticipantId; displayName: string }>,
+    localDeviceId: ParticipantId | undefined,
+    at: number,
+  ): MeetIdentityDecision[] {
+    for (const { deviceId, displayName } of named) this.names.set(deviceId, displayName);
+    const out: MeetIdentityDecision[] = [];
+    if (this.localDeviceId === undefined) {
+      if (localDeviceId !== undefined) {
+        this.localDeviceId = localDeviceId;
+        this.emittedNames.delete(localDeviceId);
+        out.push({ kind: "local-resolved", t: at, deviceId: localDeviceId });
+      } else if (!this.warnedNoSelfMarker && this.names.size > 0) {
+        this.warnedNoSelfMarker = true;
+        out.push({ kind: "no-self-marker", t: at, namedCount: this.names.size });
+      }
+    }
+    const fresh = rosterDelta(this.names, this.emittedNames);
+    if (fresh.length > 0) {
+      for (const entry of fresh) {
+        if (this.localDeviceId !== undefined && entry.participantId === this.localDeviceId) {
+          entry.isLocal = true;
+        }
+      }
+      out.push({ kind: "roster", t: at, entries: fresh });
+    }
+    return out;
+  }
+
+  /** A single tile correlation resolved a name outside a full roster scan
+   * (identify()'s path). Recorded for displayName and for the next roster
+   * observation's delta; decides nothing by itself, same as today. */
+  nameObserved(deviceId: ParticipantId, displayName: string): void {
+    this.names.set(deviceId, displayName);
+  }
+
+  /** Last-known display name for a device id, if any roster observation or
+   * tile correlation has resolved one. */
+  displayName(deviceId: ParticipantId): string | undefined {
+    return this.names.get(deviceId);
   }
 
   private isLocalDevice(deviceId: ParticipantId): boolean {

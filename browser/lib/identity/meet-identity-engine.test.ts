@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   CONFIRM_THRESHOLD,
   MeetIdentityEngine,
+  rosterDelta,
   type MeetBindingDecision,
   type MeetIdentityDecision,
   type TrackPresence,
@@ -186,12 +187,12 @@ describe("MeetIdentityEngine local-participant exclusion", () => {
 
   it("latches the local device once and reports it", () => {
     expect(engine.localDevice).toBeUndefined();
-    decisions.push(...engine.localDeviceObserved("devices/107", clock));
+    decisions.push(...engine.rosterObserved([], "devices/107", clock));
     expect(engine.localDevice).toBe("devices/107");
     expect(decisions).toEqual([{ kind: "local-resolved", t: clock, deviceId: "devices/107" }]);
     // Latched — a repeat observation (even of a different id) decides nothing.
-    expect(engine.localDeviceObserved("devices/107", clock + 1)).toEqual([]);
-    expect(engine.localDeviceObserved("devices/999", clock + 2)).toEqual([]);
+    expect(engine.rosterObserved([], "devices/107", clock + 1)).toEqual([]);
+    expect(engine.rosterObserved([], "devices/999", clock + 2)).toEqual([]);
     expect(engine.localDevice).toBe("devices/107");
   });
 
@@ -199,7 +200,7 @@ describe("MeetIdentityEngine local-participant exclusion", () => {
     // The journal #172 failure: the user backchannels over the remote's turn,
     // their ring burst lands in the remote track's window, and the pairing
     // confirms — titling the remote's whole call with the local user's name.
-    engine.localDeviceObserved("devices/107", clock);
+    engine.rosterObserved([], "devices/107", clock);
 
     for (let i = 0; i < 6; i++) turn("track-remote", "devices/107");
 
@@ -207,7 +208,7 @@ describe("MeetIdentityEngine local-participant exclusion", () => {
   });
 
   it("still binds the REMOTE device on the same track", () => {
-    engine.localDeviceObserved("devices/107", clock);
+    engine.rosterObserved([], "devices/107", clock);
 
     for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn("track-remote", "devices/108");
 
@@ -227,7 +228,7 @@ describe("MeetIdentityEngine local-participant exclusion", () => {
   });
 
   it("ignores the local device's collections mic-open edge too", () => {
-    engine.localDeviceObserved("devices/107", clock);
+    engine.rosterObserved([], "devices/107", clock);
 
     for (let i = 0; i < 6; i++) {
       clock += 5000;
@@ -262,7 +263,7 @@ describe("MeetIdentityEngine local-participant exclusion", () => {
     clock += 5000;
     decisions.push(...engine.deviceSpeaking("devices/107", clock));
     // …then the marker resolves…
-    decisions.push(...engine.localDeviceObserved("devices/107", clock + 10));
+    decisions.push(...engine.rosterObserved([], "devices/107", clock + 10));
     // …and the audio onset completes the second confirming pair.
     decisions.push(...engine.trackSpeaking("track-remote", true, clock + 50));
 
@@ -271,5 +272,121 @@ describe("MeetIdentityEngine local-participant exclusion", () => {
       { kind: "binding", outcome: "refused-local-device", trackId: "track-remote", deviceId: "devices/107" },
     ]);
     expect(engine.bindings().size).toBe(0);
+  });
+});
+
+// ── Roster observations (issue #23) ─────────────────────────────────────────
+
+describe("rosterDelta", () => {
+  it("emits every (id → name) pair on first sight and records them as emitted", () => {
+    const names = new Map([
+      ["spaces/s/devices/445", "Tom Elliot"],
+      ["spaces/s/devices/446", "Tom E"],
+    ]);
+    const emitted = new Map<string, string>();
+
+    const fresh = rosterDelta(names, emitted);
+
+    expect(fresh).toEqual([
+      { participantId: "spaces/s/devices/445", displayName: "Tom Elliot" },
+      { participantId: "spaces/s/devices/446", displayName: "Tom E" },
+    ]);
+    // Recorded, so a second identical scan is a no-op.
+    expect(rosterDelta(names, emitted)).toEqual([]);
+  });
+
+  it("re-emits only when a name changes (Meet swaps a placeholder for the real one)", () => {
+    const emitted = new Map<string, string>();
+    rosterDelta(new Map([["spaces/s/devices/445", "Guest"]]), emitted);
+
+    const fresh = rosterDelta(new Map([["spaces/s/devices/445", "Tom Elliot"]]), emitted);
+
+    expect(fresh).toEqual([{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
+    expect(emitted.get("spaces/s/devices/445")).toBe("Tom Elliot");
+  });
+});
+
+describe("MeetIdentityEngine.rosterObserved", () => {
+  let engine: MeetIdentityEngine;
+
+  beforeEach(() => {
+    engine = new MeetIdentityEngine({ hasTrack: () => true, isTrackLive: () => true });
+  });
+
+  it("decides a roster delta on first sight, and nothing on an identical re-scan", () => {
+    const named = [
+      { deviceId: "spaces/s/devices/445", displayName: "Priya Raman" },
+      { deviceId: "spaces/s/devices/446", displayName: "Marcus Webb" },
+    ];
+
+    expect(engine.rosterObserved(named, undefined, 1000)).toMatchObject([
+      { kind: "no-self-marker", namedCount: 2 },
+      {
+        kind: "roster",
+        t: 1000,
+        entries: [
+          { participantId: "spaces/s/devices/445", displayName: "Priya Raman" },
+          { participantId: "spaces/s/devices/446", displayName: "Marcus Webb" },
+        ],
+      },
+    ]);
+    // A second identical scan decides nothing (and never re-warns).
+    expect(engine.rosterObserved(named, undefined, 4000)).toEqual([]);
+  });
+
+  it("marks the local participant's row when the marker resolved first", () => {
+    engine.rosterObserved([], "spaces/s/devices/107", 1000);
+
+    const decisions = engine.rosterObserved(
+      [
+        { deviceId: "spaces/s/devices/107", displayName: "Tom Elliot" },
+        { deviceId: "spaces/s/devices/108", displayName: "Priya Raman" },
+      ],
+      undefined,
+      4000,
+    );
+
+    expect(decisions).toEqual([
+      {
+        kind: "roster",
+        t: 4000,
+        entries: [
+          { participantId: "spaces/s/devices/107", displayName: "Tom Elliot", isLocal: true },
+          { participantId: "spaces/s/devices/108", displayName: "Priya Raman" },
+        ],
+      },
+    ]);
+  });
+
+  it("re-sends the local device's row when the marker resolves after its name already went out", () => {
+    engine.rosterObserved([{ deviceId: "spaces/s/devices/107", displayName: "Tom Elliot" }], undefined, 1000);
+
+    const decisions = engine.rosterObserved([], "spaces/s/devices/107", 4000);
+
+    // Without the re-send the daemon never learns which roster row is the user.
+    expect(decisions).toEqual([
+      { kind: "local-resolved", t: 4000, deviceId: "spaces/s/devices/107" },
+      {
+        kind: "roster",
+        t: 4000,
+        entries: [{ participantId: "spaces/s/devices/107", displayName: "Tom Elliot", isLocal: true }],
+      },
+    ]);
+  });
+
+  it("stays silent about a missing marker while the roster is still empty", () => {
+    // An empty tile set early in a call is normal and means nothing.
+    expect(engine.rosterObserved([], undefined, 1000)).toEqual([]);
+  });
+
+  it("records names from single-tile correlations for later deltas and displayName", () => {
+    engine.nameObserved("spaces/s/devices/445", "Priya Raman");
+    expect(engine.displayName("spaces/s/devices/445")).toBe("Priya Raman");
+    // The next roster observation carries it out, even when the scan itself
+    // resolved nothing new.
+    expect(engine.rosterObserved([], "spaces/s/devices/107", 4000)).toMatchObject([
+      { kind: "local-resolved" },
+      { kind: "roster", entries: [{ participantId: "spaces/s/devices/445", displayName: "Priya Raman" }] },
+    ]);
   });
 });

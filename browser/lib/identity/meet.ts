@@ -326,28 +326,6 @@ function clean(value: string | null | undefined): string | undefined {
 }
 
 /**
- * The newly-resolved or changed (id → name) pairs in `names` that `emitted`
- * hasn't seen yet, as roster entries — and mutates `emitted` to record them.
- * Pure and side-effect-scoped to `emitted` so it unit-tests without a DOM: the
- * adapter calls it on every tile re-scan and forwards only the delta, so a
- * participant's name reaches the daemon once (not once per 3s poll) and a
- * corrected name (Meet swaps a placeholder for the real one) re-emits. Empty
- * names are already excluded upstream (only truthy names enter `names`).
- */
-export function rosterDelta(
-  names: ReadonlyMap<ParticipantId, string>,
-  emitted: Map<ParticipantId, string>,
-): RosterEntry[] {
-  const fresh: RosterEntry[] = [];
-  for (const [id, name] of names) {
-    if (emitted.get(id) === name) continue;
-    emitted.set(id, name);
-    fresh.push({ participantId: id, displayName: name });
-  }
-  return fresh;
-}
-
-/**
  * Find the media element rendering `track`. Strongest signal first: an element
  * whose srcObject contains the track itself (by identity, then id). Falls back
  * to an element rendering the same MediaStream — Meet bundles a participant's
@@ -387,9 +365,6 @@ function mediaStreamOf(el: MediaElementLike): StreamRef | null {
 export class MeetAdapter implements PlatformAdapter {
   readonly platform = "meet" as const;
 
-  /** id → last-known display name. Kept after a tile unmounts (leave/rejoin
-   * gets a fresh identify() anyway); cleared only by dispose(). */
-  private readonly names = new Map<ParticipantId, string>();
   private observer: MutationObserver | null = null;
   private tilesDirty = true;
   private warnedMissingIds = false;
@@ -413,13 +388,9 @@ export class MeetAdapter implements PlatformAdapter {
    * (bounded by the small number of tracks live in a call, and dispose()
    * clears it). Also the backing store for the engine's TrackPresence. */
   private readonly liveTracksById = new Map<string, MediaStreamTrack>();
-  private warnedNoSelfMarker = false;
   private identifyCb: ((track: MediaStreamTrack, id: ParticipantId) => void) | null = null;
   private renameCb: ((trackId: string, id: ParticipantId) => void) | null = null;
   private rosterCb: ((entries: RosterEntry[]) => void) | null = null;
-  /** id → name already emitted via onRoster, so each tile re-scan pushes only
-   * the delta (see rosterDelta). */
-  private readonly emittedNames = new Map<ParticipantId, string>();
 
   constructor() {
     // Latest-registration-wins, same handoff pattern as rtc-hook.ts's own
@@ -444,7 +415,7 @@ export class MeetAdapter implements PlatformAdapter {
     } catch {
       // stale cache is fine
     }
-    return this.names.get(id);
+    return this.engine.displayName(id);
   }
 
   onIdentify(cb: (track: MediaStreamTrack, id: ParticipantId) => void): void {
@@ -537,17 +508,62 @@ export class MeetAdapter implements PlatformAdapter {
   }
 
   /** Translate the engine's decisions into effects: flight-recorder events,
-   * debug logs, and the onIdentify/onRename callbacks. */
+   * debug logs, and the onIdentify/onRename/onRoster callbacks. */
   private dispatch(decisions: MeetIdentityDecision[]): void {
     for (const decision of decisions) {
-      if (decision.kind === "binding") {
-        this.applyBinding(decision);
-      } else if (decision.kind === "local-resolved") {
-        console.debug(
-          `[ears][identity] Meet local participant resolved: ${decision.deviceId} — excluded from identity correlation`,
-        );
+      switch (decision.kind) {
+        case "binding":
+          this.applyBinding(decision);
+          break;
+        case "local-resolved":
+          console.debug(
+            `[ears][identity] Meet local participant resolved: ${decision.deviceId} — excluded from identity correlation`,
+          );
+          break;
+        case "roster":
+          this.emitRoster(decision.t, decision.entries);
+          break;
+        case "no-self-marker":
+          // MUST-NOT #13: a build or locale that never renders the marker must
+          // not look like working code.
+          console.warn(
+            `[ears][identity] Meet roster has ${decision.namedCount} named participant(s) but no "(You)" marker on any tile — ` +
+              `the local participant cannot be identified, so identity correlation may attribute a remote track to the local user ` +
+              `(journal #158). Most likely a non-English Meet UI; see lib/identity/meet.ts SELF_MARKER.`,
+          );
+          break;
       }
     }
+  }
+
+  /** Forward a decided roster delta to the roster callback. Logs every
+   * resolution (device id → display name) per issue #23's debug-logging
+   * requirement. The engine already marked the local participant's row — the
+   * roster is the only channel that reaches the daemon carrying identity
+   * alone, so it is where "which of these is me" belongs, and the daemon
+   * needs it to enforce the no-remote-track-is-you invariant on durable
+   * state, where this build's missing "(You)" marker cannot silently disable
+   * the check. */
+  private emitRoster(at: number, fresh: RosterEntry[]): void {
+    for (const entry of fresh) {
+      console.debug(
+        `[ears][identity] Meet roster resolved: ${entry.participantId} → "${entry.displayName}"` +
+          (entry.isLocal ? " (you)" : ""),
+      );
+    }
+    // Flight recorder: the roster delta as observed, including the
+    // "(You)"-marker evidence — the isLocal flag a replay needs to re-derive
+    // the local-device exclusion.
+    recordAttribution({
+      type: "roster-delta",
+      t: at,
+      entries: fresh.map((e) => ({
+        participantId: e.participantId,
+        displayName: e.displayName,
+        ...(e.isLocal ? { isLocal: true } : {}),
+      })),
+    });
+    this.rosterCb?.(fresh);
   }
 
   /** Every confirmed match records what was decided about it, with its cause
@@ -593,7 +609,7 @@ export class MeetAdapter implements PlatformAdapter {
         this.renameCb?.(d.trackId, d.deviceId);
         return;
       case "bound": {
-        const name = this.names.get(d.deviceId);
+        const name = this.engine.displayName(d.deviceId);
         console.debug(
           `[ears][identity] Meet identity join: track ${d.trackId} → ${d.deviceId}` +
             `${name ? ` "${name}"` : " (name not yet resolved from tiles)"} ` +
@@ -620,7 +636,8 @@ export class MeetAdapter implements PlatformAdapter {
     this.disposed = true;
     this.observer?.disconnect();
     this.observer = null;
-    this.names.clear();
+    this.liveTracksById.clear();
+    this.deviceState.clear();
   }
 
   private correlate(track: MediaStreamTrack, stream: MediaStream): ParticipantId | null {
@@ -638,7 +655,7 @@ export class MeetAdapter implements PlatformAdapter {
     }
     const id = extractParticipantId(tile)!;
     const name = extractDisplayName(tile);
-    if (name) this.names.set(id, name);
+    if (name) this.engine.nameObserved(id, name);
     return id;
   }
 
@@ -664,87 +681,24 @@ export class MeetAdapter implements PlatformAdapter {
     });
   }
 
+  /** Scan the tiles and hand the engine one roster observation: every named
+   * tile, plus the "(You)"-marked device id when a scan can establish it
+   * beyond doubt (``findLocalDeviceId``). The marker scan is skipped once the
+   * engine has latched the answer — it cannot change within a call, and a
+   * mid-call DOM churn that briefly empties the tile set must not clear an
+   * exclusion already relied on. */
   private refreshNamesIfDirty(at: number = Date.now()): void {
     if (!this.tilesDirty || this.disposed || typeof document === "undefined") return;
     this.tilesDirty = false;
+    const named: Array<{ deviceId: ParticipantId; displayName: string }> = [];
     for (const tile of document.querySelectorAll(TILE_SELECTOR)) {
       const id = extractParticipantId(tile);
       if (!id) continue;
       const name = extractDisplayName(tile);
-      if (name) this.names.set(id, name);
+      if (name) named.push({ deviceId: id, displayName: name });
     }
-    this.resolveLocalDevice(at);
-    this.emitRoster(at);
-  }
-
-  /**
-   * Latch the local participant's device id on the first scan that can see it.
-   *
-   * Latched rather than re-read because the answer cannot change within a call
-   * and re-reading could only ever lose it — the People row is present from the
-   * moment the roster populates, but a mid-call DOM churn that briefly empties
-   * the tile set would otherwise clear an exclusion we already rely on.
-   */
-  private resolveLocalDevice(at: number): void {
-    if (this.engine.localDevice !== undefined) return;
-    const found = findLocalDeviceId(document);
-    if (found) {
-      this.dispatch(this.engine.localDeviceObserved(found, at));
-      // The marker routinely resolves *after* this device's name was already
-      // forwarded, and the roster feed is a delta keyed on the name. Drop the
-      // emitted record for this one id so the next emitRoster re-sends it,
-      // now carrying `isLocal` — without it the daemon never learns which
-      // roster row is the user and falls back to inferring it.
-      this.emittedNames.delete(found);
-      this.emitRoster(at);
-      return;
-    }
-    // MUST-NOT #13: a build or locale that never renders the marker must not
-    // look like working code. Warn once, only once a roster actually exists
-    // (an empty tile set early in a call is normal and means nothing).
-    if (this.warnedNoSelfMarker || this.names.size === 0) return;
-    this.warnedNoSelfMarker = true;
-    console.warn(
-      `[ears][identity] Meet roster has ${this.names.size} named participant(s) but no "(You)" marker on any tile — ` +
-        `the local participant cannot be identified, so identity correlation may attribute a remote track to the local user ` +
-        `(journal #158). Most likely a non-English Meet UI; see lib/identity/meet.ts SELF_MARKER.`,
-    );
-  }
-
-  /** Forward newly-resolved (id → name) pairs to the roster callback, once
-   * each. Logs every resolution (device id → display name) per issue #23's
-   * debug-logging requirement. */
-  private emitRoster(at: number): void {
-    const fresh = rosterDelta(this.names, this.emittedNames);
-    if (fresh.length === 0) return;
-    // Mark the local participant on the way out. The roster is the only
-    // channel that reaches the daemon carrying identity alone, so it is where
-    // "which of these is me" belongs — and the daemon needs it to enforce the
-    // no-remote-track-is-you invariant on durable state, where this build's
-    // missing "(You)" marker cannot silently disable the check.
-    const localDevice = this.engine.localDevice;
-    for (const entry of fresh) {
-      if (localDevice !== undefined && entry.participantId === localDevice) {
-        entry.isLocal = true;
-      }
-      console.debug(
-        `[ears][identity] Meet roster resolved: ${entry.participantId} → "${entry.displayName}"` +
-          (entry.isLocal ? " (you)" : ""),
-      );
-    }
-    // Flight recorder: the roster delta as observed, including the
-    // "(You)"-marker evidence — the isLocal flag a replay needs to re-derive
-    // the local-device exclusion.
-    recordAttribution({
-      type: "roster-delta",
-      t: at,
-      entries: fresh.map((e) => ({
-        participantId: e.participantId,
-        displayName: e.displayName,
-        ...(e.isLocal ? { isLocal: true } : {}),
-      })),
-    });
-    this.rosterCb?.(fresh);
+    const local = this.engine.localDevice === undefined ? findLocalDeviceId(document) : undefined;
+    this.dispatch(this.engine.rosterObserved(named, local, at));
   }
 
   // MUST-NOT #13 (no swallowing structural failures): a Meet build whose tiles
