@@ -1,13 +1,10 @@
 import { isCurrentEpoch } from "./epoch";
+import { liveTracks, setTrackSink, type TrackRecord, type TrackSink } from "./rtc-hook";
 import {
-  liveTracks,
-  setTrackSink,
   trackProvenance,
   webAudioTracks,
   type TrackProvenanceRecord,
-  type TrackRecord,
-  type TrackSink,
-} from "./rtc-hook";
+} from "./track-provenance";
 import { meetDecodeSource } from "./meet-decode";
 import {
   SeamArbiter,
