@@ -67,8 +67,11 @@ public enum RosterReconciler {
   ///
   /// History: 1 — first versioned derivation (duplicate-source and revisable
   /// `isLocal` invariants); 2 — synthetic-origin rows excluded from the
-  /// named-remote count and the derived title (bug B7).
-  public static let version = 2
+  /// named-remote count and the derived title (bug B7); 3 — attribution-log
+  /// binding hints consumed beside the roster's source links (R3: source ids
+  /// are opaque track handles, so one attendee's several sources, and
+  /// identities that confirmed late, arrive as hints).
+  public static let version = 3
 
   /// How far after a session's start an attendee may join and still be taken
   /// for the local participant by ``inferLocalAttendee(_:sessionStart:)``.
@@ -138,8 +141,17 @@ public enum RosterReconciler {
   ///     audio that no single attendee owns.
   ///   - sessionStart: when the session began, for the local-participant
   ///     inference.
+  ///   - hints: bindings recovered from the session's attribution log
+  ///     (``AttributionBindingHints``), applied as claims *after* the
+  ///     roster's own source links and under the same invariants. They cover
+  ///     what the roster's single `source` field per attendee cannot: one
+  ///     attendee owning several track-handle sources across a call, and an
+  ///     identity that confirmed after the roster row's link was overwritten.
+  ///     Empty for sessions with no attribution log — old sessions reconcile
+  ///     exactly as before.
   public static func reconcile(
-    attendees: [SessionAttendee], sources: [SourceID], sessionStart: Instant
+    attendees: [SessionAttendee], sources: [SourceID], sessionStart: Instant,
+    hints: [AttributionBindingHint] = []
   ) -> Outcome {
     var warnings: [String] = []
 
@@ -204,6 +216,35 @@ public enum RosterReconciler {
           + "track bound to your own name could not be ruled out")
     }
 
+    // ── Binding hints from the attribution log ───────────────────────────
+    // Applied after the roster's claims — a hint supplements the roster, it
+    // never outranks it (the dedupe below keeps the first claimant) — in the
+    // order the browser forwarded them, and under the same invariant 1.
+    if !hints.isEmpty {
+      var browserSourcesBySuffix: [String: SourceID] = [:]
+      for source in sources where source.sourceClass == .browser {
+        if let suffix = source.rawValue.split(separator: ":").last {
+          browserSourcesBySuffix[String(suffix)] = source
+        }
+      }
+      for hint in hints.sorted(by: { $0.t < $1.t }) {
+        // The hint's capture id is the label suffix; older logs can carry it
+        // in its natural (unsanitised) form.
+        guard let source = browserSourcesBySuffix[sanitizedLabelComponent(hint.captureId)]
+        else { continue }
+        guard let attendee = attendees.first(where: { $0.id == hint.attendeeID }),
+          let name = attendee.displayName, !name.isEmpty
+        else { continue }
+        if attendee.id == localID {
+          warnings.append(
+            "speaker attribution: dropped a binding hint of remote audio (\(source.rawValue)) "
+              + "to you (\(name)) — browser capture only ever records other participants")
+          continue
+        }
+        bound.append((source, name))
+      }
+    }
+
     // ── One source carries at most one name ──────────────────────────────
     // Two attendees claiming the same source used to yield two rows here,
     // and the transcript's source→name dictionary silently kept whichever
@@ -222,7 +263,7 @@ public enum RosterReconciler {
       guard winner != claim.name else { continue }
       warnings.append(
         "speaker attribution: \(claim.source.rawValue) was claimed by both \(winner) and "
-          + "\(claim.name) — keeping \(winner), the roster's first claimant")
+          + "\(claim.name) — keeping \(winner), the first claimant")
     }
 
     var speakers = distinct.map {
@@ -353,6 +394,33 @@ public enum RosterReconciler {
     else { return nil }
     return candidate.id
   }
+}
+
+/// Mirror of the browser's `sanitizeLabel` (browser/lib/protocol.ts): the
+/// spelling a capture id takes inside an earsd source label
+/// (`[A-Za-z0-9._-]`, runs of other characters collapsed to one `-`). Track
+/// handles (`t3`) pass through unchanged; the mapping matters for hints in
+/// older logs whose capture ids carried platform-id shapes (`spaces/x/…`).
+private func sanitizedLabelComponent(_ id: String) -> String {
+  var collapsed = ""
+  var previousWasDash = false
+  for character in id {
+    let allowed =
+      character.isASCII
+      && (character.isLetter || character.isNumber || character == "." || character == "_"
+        || character == "-")
+    let next: Character = allowed ? character : "-"
+    if next == "-" {
+      if !previousWasDash { collapsed.append(next) }
+      previousWasDash = true
+    } else {
+      collapsed.append(next)
+      previousWasDash = false
+    }
+  }
+  while collapsed.hasPrefix("-") { collapsed.removeFirst() }
+  while collapsed.hasSuffix("-") { collapsed.removeLast() }
+  return collapsed.isEmpty ? "unknown" : collapsed
 }
 
 /// One entry of a session's reconciled speaker map: which display name a

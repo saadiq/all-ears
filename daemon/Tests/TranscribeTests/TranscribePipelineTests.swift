@@ -417,6 +417,77 @@ struct TranscribePipelineTests {
     #expect(markdown.contains("hello from jane"))
   }
 
+  @Test(
+    "--session names track-scoped sources from the attribution log's binding hints (R3)"
+  )
+  func sessionAttributionHintsDriveSpeakerNames() async throws {
+    let dataRoot = makeTempDirectory("session-hints")
+    let sessionID = "hints-session"
+
+    // Track-handle sources carry no identity, the roster rows carry no
+    // source links, and with two named remotes counting can force nothing —
+    // only the attribution log's identity links can name the sources.
+    var local = SessionAttendee(id: "devices/1", joined: now.advanced(by: -20))
+    local.displayName = "Tom Elliot"
+    local.isLocal = true
+    var ana = SessionAttendee(id: "devices/2", joined: now.advanced(by: -15))
+    ana.displayName = "Ana Flores"
+    var bram = SessionAttendee(id: "devices/3", joined: now.advanced(by: -14))
+    bram.displayName = "Bram Okafor"
+    let session = Session(
+      id: sessionID,
+      title: "call",
+      state: .ended,
+      started: now.advanced(by: -20),
+      ended: now,
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
+      attendees: [local, ana, bram],
+      sources: ["browser:meet:t1", "browser:meet:t2"])
+    try SessionStore.write(session, dataRoot: dataRoot)
+    try SessionAttributionLog.append(
+      lines: [
+        #"{"schema":1,"type":"provisional-binding","t":1723500000100,"trackId":"trk-1","deviceId":"devices/2","correlator":"dom","confirmations":2,"outcome":"bound"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000200,"trackId":"trk-1","captureId":"t1","participantId":"devices/2"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000300,"trackId":"trk-2","captureId":"t2","participantId":"devices/3"}"#,
+      ], dataRoot: dataRoot, sessionID: sessionID)
+
+    for sourceID: SourceID in ["browser:meet:t1", "browser:meet:t2"] {
+      try await writeFixtureSource(
+        sourceID: sourceID,
+        dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+        chunkStart: now.advanced(by: -20), chunkDuration: 20,
+        vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+    }
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from ana")],
+      [Segment(start: 4, end: 6, text: "hello from bram")],
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let markdown = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
+    // Turns render under the hinted names — the opaque source ids appear
+    // nowhere as speaker labels.
+    #expect(markdown.contains("] Ana Flores**"))
+    #expect(markdown.contains("] Bram Okafor**"))
+    #expect(!markdown.contains("] browser:meet:t1**"))
+    #expect(!markdown.contains("] browser:meet:t2**"))
+  }
+
   /// A session whose stored `[[speaker]]` map was written by an older
   /// reconciler and carries the wrong conclusion: the local participant's
   /// name on the one remote track, with the actual remote attendee unheard.

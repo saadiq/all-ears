@@ -487,9 +487,18 @@ enum TranscribePipeline {
       inputs.rereconcile || sessionRecord.speakers.isEmpty
         || sessionRecord.reconcilerVersion < RosterReconciler.version
     {
+      // The attribution log's binding hints feed the re-derivation exactly as
+      // they feed the daemon's own session.end reconciliation: sources are
+      // opaque track handles, and the log carries links the roster's single
+      // `source` field per attendee lost. Best-effort — no log, no hints.
+      let attributionURL = SessionAttributionLog.fileURL(
+        dataRoot: dataRoot, sessionID: sessionRecord.id)
+      let hints =
+        (try? String(contentsOf: attributionURL, encoding: .utf8))
+        .map { AttributionBindingHints.parse(jsonl: $0) } ?? []
       let outcome = RosterReconciler.reconcile(
         attendees: sessionRecord.attendees, sources: sessionRecord.sources,
-        sessionStart: sessionRecord.started)
+        sessionStart: sessionRecord.started, hints: hints)
       reconciled = outcome
       let reason =
         inputs.rereconcile

@@ -1000,6 +1000,62 @@ struct SessionRegistryReconciliationTests {
     #expect(ended.title == "Matt / Tom weekly 1:1")
   }
 
+  @Test("session.end consumes the attribution log's binding hints for track-handle sources")
+  func consumesAttributionHints() async throws {
+    // Track-scoped sources (R3) with THREE people on the call: counting can
+    // force nothing, so only the attribution log's identity links can name
+    // the sources.
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let registry = makeRegistry(clock, dataRoot: dataRoot)
+    let identity = SessionIdentity(platform: "meet", externalID: "wUE9lE2sg5YB")
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "wUE9lE2sg5YB", trigger: .browserExtension))
+    clock.advance(by: 3)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404", displayName: "Tom Elliot",
+        joined: clock.now(), origin: .platform, isLocal: true))
+    clock.advance(by: 50)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/403", displayName: "Ana Flores",
+        joined: clock.now(), origin: .platform))
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/402", displayName: "Bram Okafor",
+        joined: clock.now(), origin: .platform))
+    // The capture layer's track-handle rows and their sources.
+    for handle in ["t1", "t2"] {
+      _ = try await registry.upsertAttendee(
+        SessionAttendeeParams(
+          session: session.id, id: handle, joined: clock.now(), origin: .synthetic))
+      await registry.ingestStreamOpened(
+        source: SourceID("browser:meet:\(handle)"), session: identity)
+    }
+    // The flight recorder's identity links, as the browser shipped them.
+    try SessionAttributionLog.append(
+      lines: [
+        #"{"schema":1,"type":"provisional-binding","t":1723500000100,"trackId":"trk-1","deviceId":"devices/403","correlator":"dom","confirmations":2,"outcome":"bound"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000200,"trackId":"trk-1","captureId":"t1","participantId":"devices/403"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000300,"trackId":"trk-2","captureId":"t2","participantId":"devices/402"}"#,
+      ], dataRoot: dataRoot, sessionID: session.id)
+    clock.advance(by: 2000)
+    let ended = try await registry.end(id: session.id)
+
+    #expect(
+      ended.speakers.contains {
+        $0.source == SourceID("browser:meet:t1") && $0.name == "Ana Flores"
+          && $0.confidence == .correlated
+      })
+    #expect(
+      ended.speakers.contains {
+        $0.source == SourceID("browser:meet:t2") && $0.name == "Bram Okafor"
+      })
+  }
+
   @Test("the reconciled session round-trips through session.toml")
   func persistsAcrossReload() async throws {
     let dataRoot = try makeDataRoot()

@@ -137,7 +137,7 @@ trigger = "browser-extension"           # manual | browser-extension
 sources = ["mic", "browser:meet:t3"]    # source ids are opaque handles: a browser
                                         #   source names a captured track, never a
                                         #   person (see "Roster and speaker map")
-reconciler_version = 2                  # which reconciler derived [[speaker]] below;
+reconciler_version = 3                  # which reconciler derived [[speaker]] below;
                                         #   absent = 0 (a file from before versioning,
                                         #   or a session never reconciled) — see
                                         #   "Roster and speaker map"
@@ -299,7 +299,9 @@ At `session.end` the daemon reconciles one into the other, applying invariants a
 
 1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool. When that `self` flag is itself contradicted on both fronts — the flagged attendee is bound to remote audio *and* join order singles out a different attendee as the one whose arrival started the session — the flag is revised rather than the binding dropped, and the evidence for the revision is recorded in `warnings`.
 2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label). Only rows the platform itself named can be people: a named attendee whose `origin` is `"synthetic"` is a stand-in for a track and never counts as a remote participant (or appears in the derived title), so a junk synthetic row cannot block this inference. Rows with unknown origin (old files) count exactly as they did before the field existed.
-3. **A source carries at most one name.** Two attendees claiming the same source resolve by roster order — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
+3. **A source carries at most one name.** Competing claims on one source resolve deterministically — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
+
+Beside the roster's own `source` links, reconciliation consumes the **binding hints** in the session's `attribution.jsonl` (the `identity-link` events, each joined to the `provisional-binding` decision that caused it): a hint claims a source for a named attendee under the same invariants, after the roster's claims. Hints cover what the roster's single `source` field per attendee cannot — one participant owning several track-handle sources across a call (a rejoin, a seam swap), and an identity confirmed after the row's link was overwritten. A session with no attribution log reconciles from the roster alone, exactly as before.
 
 With two or more remote participants and an unresolved track, nothing is forced and nothing is assigned: an unlabelled turn is recoverable, a confidently mislabelled one is not. Each entry records `confidence` — `correlated` (the client's binding, having survived the invariants) or `inferred` (assigned by elimination).
 

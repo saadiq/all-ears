@@ -776,6 +776,17 @@ public actor SessionRegistry {
     try SessionStore.write(session, dataRoot: dataRoot)
   }
 
+  /// Binding hints recovered from the session's attribution flight-recorder
+  /// log (`attribution.jsonl`), for reconciliation. Best-effort by contract:
+  /// a session with no log — or an unreadable one — reconciles from the
+  /// roster alone, exactly as before hints existed; nothing here may block
+  /// `session.end`.
+  private func attributionHints(sessionID: String) -> [AttributionBindingHint] {
+    let url = SessionAttributionLog.fileURL(dataRoot: dataRoot, sessionID: sessionID)
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+    return AttributionBindingHints.parse(jsonl: text)
+  }
+
   /// Publishes the session as a revision-tagged state event, stamping the
   /// assigned revision into the object itself (result and notification carry
   /// the same `rev`).
@@ -831,7 +842,8 @@ public actor SessionRegistry {
   /// away from it. The roster is the last resort before an opaque meeting id.
   private func reconcileRoster(_ session: inout Session) {
     let outcome = RosterReconciler.reconcile(
-      attendees: session.attendees, sources: session.sources, sessionStart: session.started)
+      attendees: session.attendees, sources: session.sources, sessionStart: session.started,
+      hints: attributionHints(sessionID: session.id))
     session.speakers = outcome.speakers
     session.warnings = outcome.warnings
     // Stamp which derivation produced this map, so `transcribe` can tell a

@@ -337,4 +337,140 @@ struct RosterReconcilerTests {
 
     #expect(outcome.speakers.map(\.name) == ["Ana"])
   }
+
+  // ── Attribution-log binding hints (R3: track-scoped sources) ────────────
+
+  /// Three-person call with track-handle sources: counting can force nothing,
+  /// so every assignment below is the hints' doing.
+  private static func trackScopedCall() -> (attendees: [SessionAttendee], sources: [SourceID]) {
+    let attendees = [
+      SessionAttendee(
+        id: "devices/1", displayName: "Tom Elliot", joined: Self.at(2), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/2", displayName: "Ana Flores", joined: Self.at(40), origin: .platform),
+      SessionAttendee(
+        id: "devices/3", displayName: "Bram Okafor", joined: Self.at(45), origin: .platform),
+      SessionAttendee(id: "t1", joined: Self.at(41), origin: .synthetic),
+      SessionAttendee(id: "t2", joined: Self.at(46), origin: .synthetic),
+    ]
+    let sources: [SourceID] = ["mic", "browser:meet:t1", "browser:meet:t2"]
+    return (attendees, sources)
+  }
+
+  private static func hint(
+    _ captureId: String, _ attendeeID: String, t: Double, correlator: String? = "dom"
+  ) -> AttributionBindingHint {
+    AttributionBindingHint(
+      captureId: captureId, attendeeID: attendeeID, trackId: "trk-\(captureId)", t: t,
+      correlator: correlator, confirmations: correlator == nil ? nil : 2)
+  }
+
+  @Test("binding hints name track-handle sources the roster's links never carried")
+  func hintsNameSources() {
+    let (attendees, sources) = Self.trackScopedCall()
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: sources, sessionStart: Self.start,
+      hints: [
+        Self.hint("t1", "devices/2", t: 1000),
+        Self.hint("t2", "devices/3", t: 2000),
+      ])
+
+    #expect(
+      outcome.speakers.map { "\($0.source.rawValue)→\($0.name)" } == [
+        "browser:meet:t1→Ana Flores", "browser:meet:t2→Bram Okafor",
+      ])
+    #expect(outcome.speakers.allSatisfy { $0.confidence == .correlated })
+  }
+
+  @Test(
+    "multiple hints can name several sources for one attendee — the rejoin the roster link loses")
+  func multipleHintsPerAttendee() {
+    var (attendees, sources) = Self.trackScopedCall()
+    sources.append("browser:meet:t3")
+    attendees.append(SessionAttendee(id: "t3", joined: Self.at(300), origin: .synthetic))
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: sources, sessionStart: Self.start,
+      hints: [
+        Self.hint("t1", "devices/2", t: 1000),
+        Self.hint("t2", "devices/3", t: 2000),
+        // Ana rejoined on a fresh track; the roster's single source field
+        // would have kept only this last link.
+        Self.hint("t3", "devices/2", t: 3000),
+      ])
+
+    #expect(
+      Set(outcome.speakers.filter { $0.name == "Ana Flores" }.map(\.source.rawValue)) == [
+        "browser:meet:t1", "browser:meet:t3",
+      ])
+  }
+
+  @Test("a hint binding remote audio to the local participant is dropped (invariant 1)")
+  func hintsToLocalAreDropped() {
+    let (attendees, sources) = Self.trackScopedCall()
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: sources, sessionStart: Self.start,
+      hints: [Self.hint("t1", "devices/1", t: 1000)])
+
+    #expect(!outcome.speakers.contains { $0.name == "Tom Elliot" })
+    #expect(outcome.warnings.contains { $0.contains("browser capture only ever records") })
+  }
+
+  @Test("a hint never outranks the roster's own claim on a source (invariant 3)")
+  func rosterClaimBeatsHint() {
+    var (attendees, sources) = Self.trackScopedCall()
+    // The roster's own link says t1 is Ana; a stray hint claims Bram.
+    attendees[1].source = SourceID("browser:meet:t1")
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: sources, sessionStart: Self.start,
+      hints: [Self.hint("t1", "devices/3", t: 1000)])
+
+    #expect(
+      outcome.speakers.contains {
+        $0.source == SourceID("browser:meet:t1") && $0.name == "Ana Flores"
+      })
+    #expect(
+      !outcome.speakers.contains {
+        $0.source == SourceID("browser:meet:t1") && $0.name == "Bram Okafor"
+      })
+    #expect(outcome.warnings.contains { $0.contains("claimed by both") })
+  }
+
+  @Test("a hint naming an attendee the roster never named contributes nothing")
+  func hintsToNamelessAttendeesAreIgnored() {
+    let (attendees, sources) = Self.trackScopedCall()
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: sources, sessionStart: Self.start,
+      hints: [Self.hint("t1", "devices/99", t: 1000)])
+
+    #expect(outcome.speakers.isEmpty)
+  }
+
+  @Test("hints match sources whose label suffix needed sanitising (older capture ids)")
+  func hintsMatchSanitisedSuffixes() {
+    // Pre-R3 logs can carry capture ids in their natural form while the
+    // label holds the sanitised spelling.
+    let attendees = [
+      SessionAttendee(
+        id: "devices/1", displayName: "Tom Elliot", joined: Self.at(2), isLocal: true),
+      SessionAttendee(id: "devices/2", displayName: "Ana Flores", joined: Self.at(40)),
+      SessionAttendee(id: "devices/3", displayName: "Bram Okafor", joined: Self.at(41)),
+    ]
+    let sources: [SourceID] = ["mic", "browser:meet:spaces-s-devices-2"]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: sources, sessionStart: Self.start,
+      hints: [Self.hint("spaces/s/devices/2", "devices/2", t: 1000)])
+
+    #expect(
+      outcome.speakers.contains {
+        $0.source == SourceID("browser:meet:spaces-s-devices-2") && $0.name == "Ana Flores"
+      })
+  }
+
+  @Test("consuming hints is a new derivation — the version says so")
+  func hintConsumptionBumpedTheVersion() {
+    // The same roster with a hints-bearing attribution log can now produce a
+    // different map, so stored v2 maps must re-derive on next transcription.
+    #expect(RosterReconciler.version >= 3)
+  }
 }
