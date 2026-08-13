@@ -52,9 +52,9 @@ export function parseZoomMeetingId(pathname: string | null | undefined): string 
 class ZoomAdapter implements PlatformAdapter {
   readonly platform = "zoom" as const;
 
-  identify(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
-    // The MSID rides the stream id; fall back to the track's own id.
-    return parseZoomParticipantId(stream.id) ?? parseZoomParticipantId(track.id);
+  identify(_track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
+    // The MSID rides the stream id.
+    return parseZoomParticipantId(stream.id);
   }
 }
 

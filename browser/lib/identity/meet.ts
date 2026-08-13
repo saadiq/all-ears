@@ -156,7 +156,8 @@ import {
 // `spaces/<space>/devices/<n>`-shaped and mapping cleanly to both call
 // participants; the production roster path resolved names off those tiles the
 // same day ("Meet roster resolved" debug-log lines). `data-initial-participant-
-// id` is still gone (kept in PARTICIPANT_ID_ATTRIBUTES — costs nothing);
+// id` is still gone — no longer probed (the "costs nothing" keep was
+// overridden by the R6 sweep, docs/plans/attribution-refactor.md);
 // a new opaque `data-tile-media-id` appeared (unused). `media.srcObject`
 // assignments were also observed again on the same build, so
 // findMediaElementForTrack() may resolve too. The attributes vanished once
@@ -177,7 +178,6 @@ import {
 export const PARTICIPANT_ID_ATTRIBUTES = [
   "data-participant-id",
   "data-requested-participant-id",
-  "data-initial-participant-id",
 ] as const;
 
 const TILE_SELECTOR = PARTICIPANT_ID_ATTRIBUTES.map((a) => `[${a}]`).join(",");
