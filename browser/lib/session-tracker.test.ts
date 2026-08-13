@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SessionTracker, type SessionControl, type SessionState } from "./session-tracker";
-import type { AttendeeUpsert, SessionWire, SnapshotWire } from "./protocol";
+import {
+  platformParticipant,
+  syntheticParticipant,
+  type AttendeeUpsert,
+  type SessionWire,
+  type SnapshotWire,
+} from "./protocol";
 
 // The tracker is a signal forwarder in v2: the daemon owns the session state
 // machine, so these tests assert exactly which session verbs each DOM signal
@@ -285,7 +291,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     const { tracker } = makeTracker(control);
 
     tracker.meetingStarted("p1", "meet", "abc");
-    tracker.participantJoined("p1", "meet", "jane", "Jane Doe");
+    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane Doe");
     tracker.streamOpened("p1", "meet", "jane");
     expect(control.ofVerb("attendee")).toHaveLength(0); // still queued
 
@@ -310,7 +316,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
-    tracker.participantJoined("p1", "meet", "jane", "Jane Doe");
+    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane Doe");
     tracker.streamOpened("p1", "meet", "jane");
     expect(control.ofVerb("attendee")).toHaveLength(0); // no record yet — buffered
 
@@ -328,7 +334,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
-    tracker.participantJoined("p1", "meet", "jane", "Jane Doe");
+    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane Doe");
     tracker.portDisconnected("p1");
 
     // A later session on the same port id must not resurrect the dropped signal.
@@ -343,8 +349,8 @@ describe("SessionTracker (v2 signal forwarder)", () => {
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
-    tracker.participantJoined("p1", "meet", "jane", "Jane");
-    tracker.participantJoined("p1", "meet", "marcus", "Marcus");
+    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane");
+    tracker.participantJoined("p1", "meet", platformParticipant("marcus"), "Marcus");
     await flush();
 
     tracker.participantLeft("p1", "jane");
@@ -369,7 +375,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     expect(tracker.sessionActive).toBe(true);
 
     // The new seam's tracks re-join the same live session.
-    tracker.participantJoined("p1", "meet", "webaudio-track-1");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("webaudio-track-1"));
     await flush();
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
@@ -403,7 +409,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     // One real capture participant plus a roster name for someone never captured.
-    tracker.participantJoined("p1", "meet", "speaker-1");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("speaker-1"));
     tracker.rosterUpdate("p1", "meet", [{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
     await flush();
     const upsertsBefore = control.ofVerb("attendee").length;
@@ -467,7 +473,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
-    tracker.participantJoined("p1", "meet", "speaker-1");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("speaker-1"));
     tracker.participantRenamed("p1", "meet", "speaker-1", "spaces/s/devices/183");
     await flush();
     const upsertsBefore = control.ofVerb("attendee").length;

@@ -2,7 +2,6 @@ import {
   encodeBinaryFrame,
   INGEST_FORMAT,
   sourceLabel,
-  type ParticipantId,
   type Platform,
 } from "./protocol";
 
@@ -45,7 +44,7 @@ const OPEN_RETRY_MS = 1_000; // floor between same-tag retries (PCM arrives ~10 
 const OPEN_HOLD_LIMIT_MS = 60_000;
 
 type PendingRequest =
-  | { kind: "open"; id: string; participantId: ParticipantId }
+  | { kind: "open"; id: string; participantId: string }
   | { kind: "close"; id: string }
   | { kind: "attribution"; id: string };
 
@@ -106,7 +105,7 @@ export class EarsSocket {
   /** Invoked when an ingest.open succeeds — the moment a participant's source
    * actually exists on earsd (session-tracker.ts listens to attach the
    * source to its session). */
-  onStreamOpened?: (participantId: ParticipantId, platform: Platform) => void;
+  onStreamOpened?: (participantId: string, platform: Platform) => void;
 
   /** Optional perf sink; unset in tests and when perf collection is off. */
   perf?: TransportPerf;
@@ -117,7 +116,7 @@ export class EarsSocket {
   private backoff = BASE_BACKOFF_MS;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
 
-  private readonly participants = new Map<ParticipantId, ParticipantState>();
+  private readonly participants = new Map<string, ParticipantState>();
   private readonly pending: PendingRequest[] = []; // id-matched; FIFO for daemons that don't echo
   /** Correlation ids, unique per socket lifetime (uniqueness per connection is
    * all the protocol needs — pending is cleared on reconnect). */
@@ -200,7 +199,7 @@ export class EarsSocket {
   // ── PCM in ────────────────────────────────────────────────────────────────
 
   sendPcm(
-    participantId: ParticipantId,
+    participantId: string,
     platform: Platform,
     pcm: Uint8Array,
     meetingExternalId?: string,
@@ -256,7 +255,7 @@ export class EarsSocket {
    * Nothing here is timer-driven — a participant that has stopped sending PCM
    * has nothing left to rescue.
    */
-  private maybeOpen(participantId: ParticipantId, st: ParticipantState): void {
+  private maybeOpen(participantId: string, st: ParticipantState): void {
     if (st.opening) return;
     if (st.attempts === 0) {
       this.openStream(participantId, st);
@@ -280,7 +279,7 @@ export class EarsSocket {
     }
   }
 
-  private openStream(participantId: ParticipantId, st: ParticipantState): void {
+  private openStream(participantId: string, st: ParticipantState): void {
     st.opening = true;
     st.attempts++;
     st.attemptedWith = st.meetingExternalId;
@@ -342,7 +341,7 @@ export class EarsSocket {
     });
   }
 
-  participantLeft(participantId: ParticipantId): void {
+  participantLeft(participantId: string): void {
     const st = this.participants.get(participantId);
     this.participants.delete(participantId);
     if (!st || this.status !== "connected") return;
@@ -427,7 +426,7 @@ export class EarsSocket {
    * mode this guards is a recording that looks complete and is missing a
    * person. A silent drop here is indistinguishable from someone not speaking.
    */
-  private giveUp(participantId: ParticipantId, st: ParticipantState): void {
+  private giveUp(participantId: string, st: ParticipantState): void {
     st.gaveUp = true;
     const held = st.queue.length;
     st.queue = [];

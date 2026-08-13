@@ -21,7 +21,15 @@ import {
 } from "./capture-seams";
 import type { PlatformAdapter } from "./identity/adapter";
 import { flushAttribution, recordAttribution } from "./attribution-recorder";
-import { postToIsolated, type ParticipantId, type Platform } from "./protocol";
+import {
+  platformParticipant,
+  postToIsolated,
+  syntheticParticipant,
+  type ParticipantOrigin,
+  type ParticipantRef,
+  type Platform,
+} from "./protocol";
+import type { PlatformParticipantId } from "./identity/adapter";
 import { mainPerf, perfDetailEnabled, perfEnabled } from "./perf-main";
 import type { Counter, Gauge, Histogram } from "./perf";
 
@@ -54,7 +62,7 @@ interface PipelineOrigin {
 }
 
 interface Pipeline {
-  participantId: ParticipantId;
+  participant: ParticipantRef;
   generation: number;
   origin: PipelineOrigin;
   stop(): void;
@@ -130,16 +138,16 @@ let arbiter: SeamArbiter | undefined;
 // clone's own id differs and is what reaches `pipelines`.
 const adoptedSeamTracks = new Map<string, MediaStreamTrack>();
 let provisionalCounter = 0;
-const generations = new Map<ParticipantId, number>(); // participantId → segment counter
-// Fallback speaker ids are keyed to the track so a re-adopted track (epoch
+const generations = new Map<string, number>(); // participant id → segment counter
+// Fallback speaker refs are keyed to the track so a re-adopted track (epoch
 // handoff) keeps its id. WeakMap: entries vanish when the track is GC'd.
-const fallbackIds = new WeakMap<MediaStreamTrack, ParticipantId>();
-// track.id → the participant id its pipeline last captured under. Unlike
+const fallbackIds = new WeakMap<MediaStreamTrack, ParticipantRef>();
+// track.id → the participant its pipeline last captured under. Unlike
 // `fallbackIds` this is keyed by the *string* id and survives the track object,
 // so a late identity for an already-dead track (adapter onRename) can still be
 // translated back to the id whose audio is on disk. Bounded by the number of
 // tracks seen in the page's life; never cleared mid-call on purpose.
-const participantIdsByTrackId = new Map<string, ParticipantId>();
+const participantsByTrackId = new Map<string, ParticipantRef>();
 let speakerCounter = 0;
 let cfg: CaptureConfig;
 
@@ -223,7 +231,8 @@ export function captureDebugState(): {
    * when a call records silence (journal #100-#106). */
   seam: { active: string; proven: boolean; exhausted: boolean } | undefined;
   participants: Array<{
-    id: ParticipantId;
+    id: string;
+    origin: ParticipantOrigin;
     generation: number;
     receiving: boolean;
     seam: SeamId;
@@ -239,7 +248,8 @@ export function captureDebugState(): {
       ? { active: arbiter.active, proven: arbiter.proven, exhausted: arbiter.exhausted }
       : undefined,
     participants: [...pipelines.values()].map((p) => ({
-      id: p.participantId,
+      id: p.participant.id,
+      origin: p.participant.kind,
       generation: p.generation,
       receiving: p.receiving(),
       seam: p.origin.seam,
@@ -271,10 +281,10 @@ export function captureDebugState(): {
  * "participant-renamed" message, which joins the already-recorded audio's
  * source to the named attendee daemon-side instead of relabeling anything.
  */
-function handleIdentityUpgrade(track: MediaStreamTrack, id: ParticipantId): void {
+function handleIdentityUpgrade(track: MediaStreamTrack, id: PlatformParticipantId): void {
   if (!isCurrentEpoch(cfg.epoch)) return;
   const pipeline = pipelines.get(track);
-  if (!pipeline || pipeline.participantId === id) return;
+  if (!pipeline || pipeline.participant.id === id) return;
   if (!seamUsesReceiverTracks(pipeline.origin.seam)) {
     // Non-receiver seams capture a clone, and a track accepts only one
     // MediaStreamTrackProcessor in its lifetime — restarting would need a
@@ -282,7 +292,7 @@ function handleIdentityUpgrade(track: MediaStreamTrack, id: ParticipantId): void
     // side instead: the recorded source keeps its provisional id and the
     // attendee's real name is joined to it, which is exactly what this path
     // already does for a track that ended before its confirmation landed.
-    console.debug(`[ears][capture] identity upgrade on seam ${pipeline.origin.seam}: ${pipeline.participantId} → ${id} — renaming in place`);
+    console.debug(`[ears][capture] identity upgrade on seam ${pipeline.origin.seam}: ${pipeline.participant.id} → ${id} — renaming in place`);
     handleLateIdentity(track.id, id);
     return;
   }
@@ -293,9 +303,9 @@ function handleIdentityUpgrade(track: MediaStreamTrack, id: ParticipantId): void
     handleLateIdentity(track.id, id);
     return;
   }
-  console.debug(`[ears][capture] identity upgrade: track ${track.id} ${pipeline.participantId} → ${id} — restarting as a new segment`);
+  console.debug(`[ears][capture] identity upgrade: track ${track.id} ${pipeline.participant.id} → ${id} — restarting as a new segment`);
   stopPipeline(track);
-  startPipeline(track, { seam: pipeline.origin.seam, rtc: { stream: rec.stream, transceiver: rec.transceiver } }, id);
+  startPipeline(track, { seam: pipeline.origin.seam, rtc: { stream: rec.stream, transceiver: rec.transceiver } }, platformParticipant(id));
 }
 
 /**
@@ -305,12 +315,12 @@ function handleIdentityUpgrade(track: MediaStreamTrack, id: ParticipantId): void
  * source; tell the daemon the two ids are the same person so the transcript
  * still labels that source by the attendee's name.
  */
-function handleLateIdentity(trackId: string, id: ParticipantId): void {
+function handleLateIdentity(trackId: string, id: PlatformParticipantId): void {
   if (!isCurrentEpoch(cfg.epoch)) return;
-  const fromId = participantIdsByTrackId.get(trackId);
-  if (!fromId || fromId === id) return;
-  console.debug(`[ears][capture] late identity: track ${trackId} ${fromId} → ${id} — sending rename (track already ended)`);
-  postToIsolated({ kind: "participant-renamed", platform: cfg.platform, fromId, toId: id });
+  const from = participantsByTrackId.get(trackId);
+  if (!from || from.id === id) return;
+  console.debug(`[ears][capture] late identity: track ${trackId} ${from.id} → ${id} — sending rename (track already ended)`);
+  postToIsolated({ kind: "participant-renamed", platform: cfg.platform, fromId: from.id, toId: id });
 }
 
 /**
@@ -559,14 +569,14 @@ function escalateSeam(from: SeamId, to: SeamId): void {
 function startPipeline(
   track: MediaStreamTrack,
   origin: PipelineOrigin,
-  forcedId?: ParticipantId,
+  forced?: ParticipantRef,
 ): void {
-  const participantId = forcedId ?? identityFor(track, origin);
-  participantIdsByTrackId.set(track.id, participantId);
-  const generation = (generations.get(participantId) ?? 0) + 1;
-  generations.set(participantId, generation);
+  const participant = forced ?? identityFor(track, origin);
+  participantsByTrackId.set(track.id, participant);
+  const generation = (generations.get(participant.id) ?? 0) + 1;
+  generations.set(participant.id, generation);
 
-  const displayName = cfg.adapter?.displayName?.(participantId);
+  const displayName = cfg.adapter?.displayName?.(participant.id);
 
   // The active seam selects the frame source. Every track-shaped seam shares
   // the one MediaStreamTrackProcessor implementation — only Meet's encoded tee
@@ -574,9 +584,9 @@ function startPipeline(
   // a track. See capture-seams.ts for why the seam is chosen at runtime.
   const makeSource =
     origin.seam === "meet-encoded-tee" ? meetDecodeSource(track) : trackProcessorSource(track);
-  const capture = new TrackCapture(participantId, () => pipeline.generation, makeSource, () => stopPipeline(track), track, origin.seam);
+  const capture = new TrackCapture(participant.id, () => pipeline.generation, makeSource, () => stopPipeline(track), track, origin.seam);
   const pipeline: Pipeline = {
-    participantId,
+    participant,
     generation,
     origin,
     stop() {
@@ -592,12 +602,13 @@ function startPipeline(
     t: Date.now(),
     trackId: track.id,
     seam: origin.seam,
-    participantId,
+    participantId: participant.id,
+    participantOrigin: participant.kind,
     generation,
   });
-  postToIsolated({ kind: "participant-joined", platform: cfg.platform, participantId, generation, displayName });
+  postToIsolated({ kind: "participant-joined", platform: cfg.platform, participant, generation, displayName });
   console.debug(
-    `[ears][capture] +track → ${participantId} (gen ${generation})` +
+    `[ears][capture] +track → ${participant.id} (gen ${generation})` +
       `${displayName ? ` "${displayName}"` : ""} — ${pipelines.size} live`,
   );
 
@@ -610,11 +621,11 @@ function startPipeline(
   track.addEventListener("ended", end);
   track.addEventListener("mute", () => {
     recordAttribution({ type: "track-muted", t: Date.now(), trackId: track.id });
-    console.debug(`[ears][capture] mute → ${participantId}`);
+    console.debug(`[ears][capture] mute → ${participant.id}`);
   });
   track.addEventListener("unmute", () => {
     recordAttribution({ type: "track-unmuted", t: Date.now(), trackId: track.id });
-    console.debug(`[ears][capture] unmute → ${participantId}`);
+    console.debug(`[ears][capture] unmute → ${participant.id}`);
     // Meet identity: an unmute pairs with the collections channel's per-device
     // mic-open edge (the only per-device event that channel still carries).
     try {
@@ -630,8 +641,8 @@ function stopPipeline(track: MediaStreamTrack): void {
   if (!pipeline) return;
   pipelines.delete(track);
   pipeline.stop();
-  postToIsolated({ kind: "participant-left", participantId: pipeline.participantId, generation: pipeline.generation });
-  console.debug(`[ears][capture] -track → ${pipeline.participantId} (gen ${pipeline.generation}) — ${pipelines.size} live`);
+  postToIsolated({ kind: "participant-left", participantId: pipeline.participant.id, generation: pipeline.generation });
+  console.debug(`[ears][capture] -track → ${pipeline.participant.id} (gen ${pipeline.generation}) — ${pipelines.size} live`);
 }
 
 function teardownAll(): void {
@@ -688,31 +699,32 @@ function reconcile(): void {
  * speaking-onset correlation once the participant talks — the same late-naming
  * path that already upgrades speaker-<n> ids (see handleIdentityUpgrade).
  */
-function identityFor(track: MediaStreamTrack, origin: PipelineOrigin): ParticipantId {
+function identityFor(track: MediaStreamTrack, origin: PipelineOrigin): ParticipantRef {
   if (origin.rtc && seamUsesReceiverTracks(origin.seam)) {
     return resolveIdentity(track, origin.rtc.stream, origin.rtc.transceiver);
   }
   const existing = fallbackIds.get(track);
   if (existing) return existing;
   provisionalCounter += 1;
-  const assigned = `${origin.seam}-${provisionalCounter}`;
+  const assigned = syntheticParticipant(`${origin.seam}-${provisionalCounter}`);
   fallbackIds.set(track, assigned);
   return assigned;
 }
 
-/** Adapter identity, else a stable speaker-<n> so audio never blocks. */
+/** Adapter (platform) identity, else a stable synthetic speaker-<n> so audio
+ * never blocks. */
 function resolveIdentity(
   track: MediaStreamTrack,
   stream: MediaStream,
   transceiver: RTCRtpTransceiver,
-): ParticipantId {
+): ParticipantRef {
   const id = cfg.adapter?.identify(track, stream, transceiver) ?? null;
-  if (id) return id;
+  if (id) return platformParticipant(id);
   // Stable per-track fallback: same track → same speaker-<n> across re-adoption.
   const existing = fallbackIds.get(track);
   if (existing) return existing;
   speakerCounter += 1;
-  const assigned = `speaker-${speakerCounter}`;
+  const assigned = syntheticParticipant(`speaker-${speakerCounter}`);
   fallbackIds.set(track, assigned);
   return assigned;
 }
@@ -752,7 +764,7 @@ const SPEAK_THRESHOLD = 0.005; // matches the existing periodic AUDIO/silent cut
 interface AudioLogEntry {
   t: number;
   iso: string;
-  participantId: ParticipantId;
+  participantId: string;
   trackId: string;
   state: "start" | "stop";
   framePeak: number;
@@ -807,7 +819,7 @@ export const SILENT_CAPTURE_GRACE_MS = 4_000;
  * quiet: a benign info note, never a scary ⚠ (journal #67: quiet ≠ broken).
  */
 export function silentReport(
-  participantId: ParticipantId,
+  participantId: string,
   platform: Platform | undefined,
   anyAudioThisCall: boolean,
   graceMs: number,
@@ -901,7 +913,7 @@ class TrackCapture {
   private seq = 0;
 
   constructor(
-    private readonly participantId: ParticipantId,
+    private readonly participantId: string,
     private readonly currentGeneration: () => number,
     private readonly makeSource: FrameSourceFactory,
     private readonly onFatal: () => void,
@@ -1682,12 +1694,14 @@ export class LinearResampler {
  */
 export function __devCaptureStream(
   stream: MediaStream,
-  participantId: ParticipantId,
+  participantId: string,
   seam: SeamId = "receiver-track",
 ): void {
   const track = stream.getAudioTracks()[0];
   if (!track) return;
-  postToIsolated({ kind: "participant-joined", platform: cfg?.platform ?? "meet", participantId, generation: 1 });
+  // Dev/graph-bridge ids (`graphtap-<n>`, harness labels) are ours, never the
+  // platform's — declare them synthetic.
+  postToIsolated({ kind: "participant-joined", platform: cfg?.platform ?? "meet", participant: syntheticParticipant(participantId), generation: 1 });
   new TrackCapture(participantId, () => 1, trackProcessorSource(track), () => {}, track, seam).start();
 }
 

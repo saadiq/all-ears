@@ -3,7 +3,8 @@ import {
   type AttendeeUpsert,
   type EventFrame,
   type SessionWire,
-  type ParticipantId,
+  type ParticipantOrigin,
+  type ParticipantRef,
   type Platform,
   type RosterEntry,
   type SnapshotWire,
@@ -66,10 +67,10 @@ export interface SessionControl {
  * browser:* source, so the daemon never classified it as a browser session).
  */
 type PendingPortEvent =
-  | { kind: "joined"; platform: Platform; participantId: ParticipantId; displayName?: string }
-  | { kind: "stream"; platform: Platform; participantId: ParticipantId }
+  | { kind: "joined"; platform: Platform; participant: ParticipantRef; displayName?: string }
+  | { kind: "stream"; platform: Platform; participantId: string }
   | { kind: "roster"; platform: Platform; entries: RosterEntry[] }
-  | { kind: "renamed"; platform: Platform; fromId: ParticipantId; toId: ParticipantId };
+  | { kind: "renamed"; platform: Platform; fromId: string; toId: string };
 
 // Guard against unbounded growth if a port never declares a session (e.g. a
 // non-meeting tab that still opens a pcm port). Far above any real pre-declare
@@ -104,7 +105,11 @@ interface SessionRecord {
   ended: boolean;
   /** Attendee upserts observed before the session id was known. */
   pendingAttendees: AttendeeUpsert[];
-  participants: Set<ParticipantId>;
+  /** Capture participants by id → the ref's provenance kind, when known.
+   * Membership drives the `left` stamping; the kind lets a later stream-opened
+   * upsert carry the same origin the join declared. `undefined` kind means the
+   * id arrived on a path that never declared provenance (stream before join). */
+  participants: Map<string, ParticipantOrigin | undefined>;
 }
 
 export class SessionTracker {
@@ -179,7 +184,7 @@ export class SessionTracker {
       paused: false,
       ended: false,
       pendingAttendees: [],
-      participants: new Set(),
+      participants: new Map(),
       renamesSent: new Set(),
       ...(title ? { title } : {}),
     };
@@ -236,15 +241,15 @@ export class SessionTracker {
   participantJoined(
     portId: string,
     platform: Platform,
-    participantId: ParticipantId,
+    participant: ParticipantRef,
     displayName?: string,
   ): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
-      this.enqueuePending(portId, { kind: "joined", platform, participantId, displayName });
+      this.enqueuePending(portId, { kind: "joined", platform, participant, displayName });
       return;
     }
-    this.applyJoined(record, participantId, displayName);
+    this.applyJoined(record, participant, displayName);
   }
 
   /**
@@ -276,8 +281,8 @@ export class SessionTracker {
   participantRenamed(
     portId: string,
     platform: Platform,
-    fromId: ParticipantId,
-    toId: ParticipantId,
+    fromId: string,
+    toId: string,
   ): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
@@ -290,7 +295,7 @@ export class SessionTracker {
   /** An ingest stream for this participant is confirmed open on earsd — link
    * the attendee to their per-participant source (which downstream feeds the
    * transcript's speaker-name map). */
-  streamOpened(portId: string, platform: Platform, participantId: ParticipantId): void {
+  streamOpened(portId: string, platform: Platform, participantId: string): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
       this.enqueuePending(portId, { kind: "stream", platform, participantId });
@@ -299,16 +304,16 @@ export class SessionTracker {
     this.applyStream(record, platform, participantId);
   }
 
-  private applyJoined(record: SessionRecord, participantId: ParticipantId, displayName?: string): void {
-    record.participants.add(participantId);
+  private applyJoined(record: SessionRecord, participant: ParticipantRef, displayName?: string): void {
+    record.participants.set(participant.id, participant.kind);
     this.upsertAttendee(record, {
-      id: participantId,
+      id: participant.id,
       ...(displayName ? { display_name: displayName } : {}),
     });
   }
 
-  private applyStream(record: SessionRecord, platform: Platform, participantId: ParticipantId): void {
-    record.participants.add(participantId);
+  private applyStream(record: SessionRecord, platform: Platform, participantId: string): void {
+    if (!record.participants.has(participantId)) record.participants.set(participantId, undefined);
     this.upsertAttendee(record, {
       id: participantId,
       source: sourceLabel(platform, participantId),
@@ -318,8 +323,8 @@ export class SessionTracker {
   private applyRename(
     record: SessionRecord,
     platform: Platform,
-    fromId: ParticipantId,
-    toId: ParticipantId,
+    fromId: string,
+    toId: string,
   ): void {
     this.upsertAttendee(record, {
       id: toId,
@@ -355,7 +360,7 @@ export class SessionTracker {
     this.pendingByPort.delete(portId);
     for (const event of queue) {
       if (event.platform !== record.platform) continue; // different platform on the same port — not this session
-      if (event.kind === "joined") this.applyJoined(record, event.participantId, event.displayName);
+      if (event.kind === "joined") this.applyJoined(record, event.participant, event.displayName);
       else if (event.kind === "roster") this.applyRoster(record, event.entries);
       else if (event.kind === "renamed") this.applyRename(record, event.platform, event.fromId, event.toId);
       else this.applyStream(record, event.platform, event.participantId);
@@ -369,7 +374,7 @@ export class SessionTracker {
    * killed a live session 17s in and lost the rest of the meeting. Real ends
    * come from meeting-ended, the port disconnect (Meet's post-call redirect),
    * and the daemon's ingest-idle / superseded nets. */
-  participantLeft(portId: string, participantId: ParticipantId): void {
+  participantLeft(portId: string, participantId: string): void {
     for (const record of this.sessions.values()) {
       if (!record.portIds.has(portId) || record.ended) continue;
       if (!record.participants.delete(participantId)) continue;

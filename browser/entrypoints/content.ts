@@ -17,6 +17,7 @@ import {
   isMainEnvelope,
   postToMain,
   type MainMessage,
+  type ParticipantOrigin,
   type Platform,
   type RosterEntry,
 } from "../lib/protocol";
@@ -162,7 +163,7 @@ export default defineContentScript({
         for (const [participantId, p] of state.participants) {
           post({
             type: "joined",
-            participantId,
+            participant: { kind: p.kind, id: participantId },
             platform: p.platform,
             ...(p.displayName ? { displayName: p.displayName } : {}),
           });
@@ -208,10 +209,12 @@ interface RelayMetrics {
 }
 
 interface RelayState {
-  // participantId → identity, learned from participant-joined (which precedes
+  // participant id → identity, learned from participant-joined (which precedes
   // the participant's first PCM), so PCM frames can carry their platform and
-  // reconnect replays can re-teach the roster.
-  participants: Map<string, { platform: Platform; displayName?: string }>;
+  // reconnect replays can re-teach the roster. `kind` is the ref's provenance
+  // (platform-minted vs synthetic), replayed so a respawned worker still
+  // stamps the attendee's origin correctly.
+  participants: Map<string, { platform: Platform; kind: ParticipantOrigin; displayName?: string }>;
   // participantId → resolved roster name, accumulated from participant-roster
   // (identity only, no capture pipeline). Replayed in full on worker respawn
   // because the MAIN world only ever sends deltas (#23).
@@ -251,19 +254,20 @@ function relay(
   switch (msg.kind) {
     case "participant-joined":
       perf.tag("platform", msg.platform);
-      state.participants.set(msg.participantId, {
+      state.participants.set(msg.participant.id, {
         platform: msg.platform,
+        kind: msg.participant.kind,
         ...(msg.displayName ? { displayName: msg.displayName } : {}),
       });
       // Forward identity (display name included) so the background can
       // upsert the daemon session's attendee roster.
       port.post({
         type: "joined",
-        participantId: msg.participantId,
+        participant: msg.participant,
         platform: msg.platform,
         ...(msg.displayName ? { displayName: msg.displayName } : {}),
       });
-      console.debug(`[ears][relay] joined ${msg.participantId} gen${msg.generation} (${msg.platform})`);
+      console.debug(`[ears][relay] joined ${msg.participant.id} gen${msg.generation} (${msg.platform})`);
       break;
     case "participant-left":
       state.participants.delete(msg.participantId);

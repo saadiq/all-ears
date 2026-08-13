@@ -12,6 +12,7 @@
 // daemon) lives in attribution-recorder.ts.
 
 import type { SeamId } from "./capture-seams";
+import type { ParticipantOrigin } from "./protocol";
 
 /** Bump when an event's shape changes incompatibly. Carried on every encoded
  * line so a log sliced out of context still identifies itself. */
@@ -69,12 +70,16 @@ export type AttributionEvent =
   // ── Admission decisions ────────────────────────────────────────────────────
   // A pipeline started for the track under `participantId` (generation is the
   // per-participant segment counter — an identity-upgrade restart re-admits).
+  // `participantOrigin` says whether that id is the platform's own or a
+  // synthetic stand-in (protocol.ts ParticipantRef); optional because schema-1
+  // lines recorded before R4 predate it.
   | {
       type: "admitted";
       t: number;
       trackId: string;
       seam: SeamId;
       participantId: string;
+      participantOrigin?: ParticipantOrigin;
       generation: number;
     }
   // Admission waited (muted receiver track — journal #165's phantom guard).

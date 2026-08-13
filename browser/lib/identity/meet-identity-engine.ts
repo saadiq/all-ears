@@ -24,7 +24,8 @@
 // events.
 
 import type { BindingOutcome, CorrelatorId } from "../attribution-log";
-import type { ParticipantId, RosterEntry } from "../protocol";
+import type { RosterEntry } from "../protocol";
+import type { PlatformParticipantId } from "./adapter";
 import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 
 // Consecutive confirming turns (SpeakingCorrelator) required before a match
@@ -72,12 +73,12 @@ export interface MeetBindingDecision {
   kind: "binding";
   t: number;
   trackId: string;
-  deviceId: ParticipantId;
+  deviceId: PlatformParticipantId;
   correlator: CorrelatorId;
   confirmations: number;
   outcome: BindingOutcome;
   /** On "refused-rebind": the device the track already carries. */
-  boundDeviceId?: ParticipantId;
+  boundDeviceId?: PlatformParticipantId;
   /** On "refused-device-claimed": the live track already carrying the device. */
   owningTrackId?: string;
 }
@@ -86,7 +87,7 @@ export type MeetIdentityDecision =
   | MeetBindingDecision
   /** The "(You)" marker resolved: `deviceId` is the local participant, now
    * excluded from all correlation for the life of the engine. */
-  | { kind: "local-resolved"; t: number; deviceId: ParticipantId }
+  | { kind: "local-resolved"; t: number; deviceId: PlatformParticipantId }
   /** Newly-resolved or changed (id → name) pairs since the last roster
    * decision — the delta the shell forwards via onRoster, with `isLocal`
    * marked on the local participant's row. */
@@ -106,8 +107,8 @@ export type MeetIdentityDecision =
  * excluded upstream (only truthy names enter `names`).
  */
 export function rosterDelta(
-  names: ReadonlyMap<ParticipantId, string>,
-  emitted: Map<ParticipantId, string>,
+  names: ReadonlyMap<PlatformParticipantId, string>,
+  emitted: Map<PlatformParticipantId, string>,
 ): RosterEntry[] {
   const fresh: RosterEntry[] = [];
   for (const [id, name] of names) {
@@ -145,32 +146,32 @@ export class MeetIdentityEngine {
    * ambiguity rule is what should stop the oscillation upstream; this bounds
    * the damage of any that gets through to one wrong name instead of a
    * 30-minute flip-flop. */
-  private readonly upgradedTracks = new Map<string, ParticipantId>();
+  private readonly upgradedTracks = new Map<string, PlatformParticipantId>();
   /** deviceId → the track.id currently bound to it, so one participant can't
    * own two live tracks at once. A device whose owning track has ended stops
    * blocking — that's a genuine rejoin, not a competing claim. */
-  private readonly deviceOwners = new Map<ParticipantId, string>();
+  private readonly deviceOwners = new Map<PlatformParticipantId, string>();
   /** The local participant's own device id, latched once observed — it cannot
    * change for the life of a call. undefined means "not established", which
    * excludes nobody (the pre-#158 behaviour, wrong in a bounded way). */
-  private localDeviceId: ParticipantId | undefined;
+  private localDeviceId: PlatformParticipantId | undefined;
   /** id → last-known display name. Kept for the engine's life (leave/rejoin
    * gets a fresh identify() anyway). */
-  private readonly names = new Map<ParticipantId, string>();
+  private readonly names = new Map<PlatformParticipantId, string>();
   /** id → name already decided into a roster delta, so each observation
    * decides only what is new (see rosterDelta). */
-  private readonly emittedNames = new Map<ParticipantId, string>();
+  private readonly emittedNames = new Map<PlatformParticipantId, string>();
   private warnedNoSelfMarker = false;
 
   constructor(private readonly tracks: TrackPresence) {}
 
   /** The latched local device id, or undefined while unestablished. */
-  get localDevice(): ParticipantId | undefined {
+  get localDevice(): PlatformParticipantId | undefined {
     return this.localDeviceId;
   }
 
   /** Snapshot of the track → device bindings decided so far. */
-  bindings(): ReadonlyMap<string, ParticipantId> {
+  bindings(): ReadonlyMap<string, PlatformParticipantId> {
     return new Map(this.upgradedTracks);
   }
 
@@ -199,7 +200,7 @@ export class MeetIdentityEngine {
    * turn are what land inside a remote track's onset window and confirm a
    * wrong pairing. The correlator's ambiguity rules can only make that pairing
    * *harder* to reach; they cannot know it is nonsense. */
-  deviceSpeaking(deviceId: ParticipantId, at: number): MeetIdentityDecision[] {
+  deviceSpeaking(deviceId: PlatformParticipantId, at: number): MeetIdentityDecision[] {
     if (this.isLocalDevice(deviceId)) return [];
     const out: MeetIdentityDecision[] = [];
     this.applyMatch(out, this.domCorrelator.recordDeviceOnset(deviceId, at), "dom", at);
@@ -209,7 +210,7 @@ export class MeetIdentityEngine {
   /** A parsed collections-datachannel mute edge. Only the mic-open edge is a
    * correlatable onset, and the local participant's own toggle is excluded for
    * the same reason as deviceSpeaking. */
-  collectionsEdge(deviceId: ParticipantId, micOpen: boolean, at: number): MeetIdentityDecision[] {
+  collectionsEdge(deviceId: PlatformParticipantId, micOpen: boolean, at: number): MeetIdentityDecision[] {
     if (!micOpen) return [];
     if (this.isLocalDevice(deviceId)) return [];
     const out: MeetIdentityDecision[] = [];
@@ -236,8 +237,8 @@ export class MeetIdentityEngine {
    *  - `roster`, when the observation added or changed any (id → name) pair.
    */
   rosterObserved(
-    named: ReadonlyArray<{ deviceId: ParticipantId; displayName: string }>,
-    localDeviceId: ParticipantId | undefined,
+    named: ReadonlyArray<{ deviceId: PlatformParticipantId; displayName: string }>,
+    localDeviceId: PlatformParticipantId | undefined,
     at: number,
   ): MeetIdentityDecision[] {
     for (const { deviceId, displayName } of named) this.names.set(deviceId, displayName);
@@ -267,17 +268,17 @@ export class MeetIdentityEngine {
   /** A single tile correlation resolved a name outside a full roster scan
    * (identify()'s path). Recorded for displayName and for the next roster
    * observation's delta; decides nothing by itself, same as today. */
-  nameObserved(deviceId: ParticipantId, displayName: string): void {
+  nameObserved(deviceId: PlatformParticipantId, displayName: string): void {
     this.names.set(deviceId, displayName);
   }
 
   /** Last-known display name for a device id, if any roster observation or
    * tile correlation has resolved one. */
-  displayName(deviceId: ParticipantId): string | undefined {
+  displayName(deviceId: PlatformParticipantId): string | undefined {
     return this.names.get(deviceId);
   }
 
-  private isLocalDevice(deviceId: ParticipantId): boolean {
+  private isLocalDevice(deviceId: PlatformParticipantId): boolean {
     if (this.localDeviceId === undefined) return false;
     return this.localDeviceId === deviceId;
   }

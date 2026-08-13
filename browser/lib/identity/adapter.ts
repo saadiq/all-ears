@@ -1,7 +1,16 @@
-import type { ParticipantId, Platform, RosterEntry } from "../protocol";
+import type { Platform, RosterEntry } from "../protocol";
 
 // Identity is the fragile, platform-specific part — quarantined behind this one
 // interface. The capture spine (hook, tap, transport) never branches on platform.
+
+/**
+ * The platform's own stable id for a participant — the `id` half of a
+ * platform-kind `ParticipantRef` (protocol.ts). Adapters only ever speak
+ * platform ids: the synthetic stand-ins (`speaker-<n>`, `webaudio-track-<n>`)
+ * are minted by the capture layer (audio-tap.ts) when `identify()` returns
+ * null, never by an adapter.
+ */
+export type PlatformParticipantId = string;
 
 export interface PlatformAdapter {
   readonly platform: Platform;
@@ -10,9 +19,9 @@ export interface PlatformAdapter {
     track: MediaStreamTrack,
     stream: MediaStream,
     transceiver: RTCRtpTransceiver,
-  ): ParticipantId | null;
+  ): PlatformParticipantId | null;
   /** Optional: human label for a participant id, for logs/UI. */
-  displayName?(id: ParticipantId): string | undefined;
+  displayName?(id: PlatformParticipantId): string | undefined;
   /**
    * Optional: called by audio-tap.ts whenever a track's decoded audio crosses
    * into or out of "speaking" (peak over threshold). Adapters that don't use
@@ -45,7 +54,7 @@ export interface PlatformAdapter {
    * upgraded id (see audio-tap.ts's handleIdentityUpgrade for why a rename-
    * in-place wasn't used).
    */
-  onIdentify?(cb: (track: MediaStreamTrack, id: ParticipantId) => void): void;
+  onIdentify?(cb: (track: MediaStreamTrack, id: PlatformParticipantId) => void): void;
   /**
    * Optional: register a callback for an identity that confirmed *after* its
    * track already ended — too late for onIdentify's pipeline restart. Carries
@@ -54,7 +63,7 @@ export interface PlatformAdapter {
    * the fallback participant id it captured under and tells the daemon the two
    * are the same person, so already-recorded audio still gets a named speaker.
    */
-  onRename?(cb: (trackId: string, id: ParticipantId) => void): void;
+  onRename?(cb: (trackId: string, id: PlatformParticipantId) => void): void;
   /**
    * Optional: register a callback for batches of resolved participant identities
    * (id → display name) read from the platform's own roster/UI, independent of

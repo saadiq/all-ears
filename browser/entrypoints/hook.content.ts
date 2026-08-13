@@ -290,7 +290,7 @@ function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => voi
   const onMessage = (event: MessageEvent): void => {
     if (event.source !== window || !isMainEnvelope(event.data)) return;
     const msg = event.data.msg;
-    if (msg.kind === "participant-joined") watcher.observeCandidate(msg.participantId);
+    if (msg.kind === "participant-joined") watcher.observeCandidate(msg.participant.id);
   };
   window.addEventListener("message", onMessage);
 

@@ -1,6 +1,7 @@
 import { registerAdapter, type PlatformAdapter } from "./adapter";
 import { recordAttribution } from "../attribution-recorder";
-import type { ParticipantId, RosterEntry } from "../protocol";
+import type { RosterEntry } from "../protocol";
+import type { PlatformParticipantId } from "./adapter";
 import { setCollectionsListener } from "../rtc-hook";
 import type { CollectionsMuteEvent } from "./meet-collections";
 import {
@@ -164,7 +165,7 @@ import {
 // them; decisively probed during audible speech), and the speaking-ring DOM
 // is the only per-turn per-device signal — see meet-speaking-dom.ts.
 //
-// The returned ParticipantId is the raw tile attribute value (historically
+// The returned PlatformParticipantId is the raw tile attribute value (historically
 // "spaces/<space>/devices/<device>"-shaped); protocol.ts's sanitizeLabel maps
 // it into the earsd source label downstream. This code is left in place
 // (rather than short-circuited to `return null`) because it's still correct
@@ -389,8 +390,8 @@ export class MeetAdapter implements PlatformAdapter {
    * (bounded by the small number of tracks live in a call, and dispose()
    * clears it). Also the backing store for the engine's TrackPresence. */
   private readonly liveTracksById = new Map<string, MediaStreamTrack>();
-  private identifyCb: ((track: MediaStreamTrack, id: ParticipantId) => void) | null = null;
-  private renameCb: ((trackId: string, id: ParticipantId) => void) | null = null;
+  private identifyCb: ((track: MediaStreamTrack, id: PlatformParticipantId) => void) | null = null;
+  private renameCb: ((trackId: string, id: PlatformParticipantId) => void) | null = null;
   private rosterCb: ((entries: RosterEntry[]) => void) | null = null;
 
   constructor() {
@@ -399,7 +400,7 @@ export class MeetAdapter implements PlatformAdapter {
     setCollectionsListener((event) => this.onCollectionsEvent(event));
   }
 
-  identify(track: MediaStreamTrack, stream: MediaStream): ParticipantId | null {
+  identify(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
     // Best-effort by contract: a broken or changed Meet DOM must degrade to
     // speaker-<n>, never throw into the capture path.
     this.liveTracksById.set(track.id, track);
@@ -410,7 +411,7 @@ export class MeetAdapter implements PlatformAdapter {
     }
   }
 
-  displayName(id: ParticipantId): string | undefined {
+  displayName(id: PlatformParticipantId): string | undefined {
     try {
       this.refreshNamesIfDirty();
     } catch {
@@ -419,11 +420,11 @@ export class MeetAdapter implements PlatformAdapter {
     return this.engine.displayName(id);
   }
 
-  onIdentify(cb: (track: MediaStreamTrack, id: ParticipantId) => void): void {
+  onIdentify(cb: (track: MediaStreamTrack, id: PlatformParticipantId) => void): void {
     this.identifyCb = cb;
   }
 
-  onRename(cb: (trackId: string, id: ParticipantId) => void): void {
+  onRename(cb: (trackId: string, id: PlatformParticipantId) => void): void {
     this.renameCb = cb;
   }
 
@@ -466,7 +467,7 @@ export class MeetAdapter implements PlatformAdapter {
 
   /** hook.content.ts calls this on every tile speaking-ring burst onset
    * (meet-speaking-dom.ts). Same best-effort contract as onTrackSpeaking. */
-  onDeviceSpeaking(deviceId: ParticipantId, at: number): void {
+  onDeviceSpeaking(deviceId: PlatformParticipantId, at: number): void {
     if (this.disposed) return;
     try {
       // Recorded before the engine's local-device filter on purpose: the
@@ -642,7 +643,7 @@ export class MeetAdapter implements PlatformAdapter {
     this.deviceState.clear();
   }
 
-  private correlate(track: MediaStreamTrack, stream: MediaStream): ParticipantId | null {
+  private correlate(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
     if (this.disposed || typeof document === "undefined") return null;
     this.ensureObserver();
     this.refreshNamesIfDirty();
@@ -692,7 +693,7 @@ export class MeetAdapter implements PlatformAdapter {
   private refreshNamesIfDirty(at: number = Date.now()): void {
     if (!this.tilesDirty || this.disposed || typeof document === "undefined") return;
     this.tilesDirty = false;
-    const named: Array<{ deviceId: ParticipantId; displayName: string }> = [];
+    const named: Array<{ deviceId: PlatformParticipantId; displayName: string }> = [];
     for (const tile of document.querySelectorAll(TILE_SELECTOR)) {
       const id = extractParticipantId(tile);
       if (!id) continue;
