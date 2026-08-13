@@ -1,7 +1,18 @@
 # Attribution refactor — proposal
 
-Status: **proposal, awaiting approval**. Nothing in this document has been applied.
+Status: **implemented, 2026-08-13** — all ten items (R1–R10) landed on
+`claude/all-ears-speaker-id-arch-3rvnee` (PR #83).
 Prepared 2026-08-13 on top of `wip/roster-reconciliation-and-notes` (HEAD `8441937`).
+
+The journal check requested below was performed before R3 landed: the journal
+DB exists locally (it is gitignored, hence unreadable from a fresh worktree);
+entry #171 refutes the decoder-pool hypothesis and concludes per-source
+attribution is structurally sound, and #174's manual repair procedure is the
+procedure R3/R5 automate. No entry in 142–175 refutes the late-naming design.
+Deliberately deferred at implementation time: the first-binding-wins refusal
+rule stays in the identity engine (relaxing it needs a designed threshold; a
+rebind is now only a metadata hint), and the live ground-truth re-runs remain
+operator-owned.
 
 ## Evidence base, and one honest gap
 
