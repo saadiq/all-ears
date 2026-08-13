@@ -27,27 +27,9 @@ import {
   type Platform,
 } from "./protocol";
 import type { PlatformParticipantId } from "./identity/adapter";
-import { perfDetailEnabled, perfEnabled } from "./perf-main";
-import {
-  audioLog,
-  captureMetrics,
-  DEBUG_AUDIO_NOW,
-  SPEAK_THRESHOLD,
-  type AudioLogEntry,
-} from "./capture-instrumentation";
-import {
-  FRAME_SAMPLES,
-  LinearResampler,
-  RING_CAPACITY,
-  RingBuffer,
-  SilentCaptureWatchdog,
-  silentReport,
-  TARGET_SAMPLE_RATE,
-  trackProcessorSource,
-  type AudioDataLike,
-  type FrameSource,
-  type FrameSourceFactory,
-} from "./frame-pipeline";
+import { perfEnabled } from "./perf-main";
+import { captureMetrics } from "./capture-instrumentation";
+import { TrackCapture, trackProcessorSource, type CaptureHooks } from "./frame-pipeline";
 
 // The per-epoch capture sink. Owns the N→N map: one live MediaStreamTrack →
 // one isolated pipeline. Every pipeline records under a stable per-track
@@ -138,6 +120,24 @@ let anyAudioDecodedThisCall = false;
 // died without the track ending (belt-and-braces alongside decoder restart).
 const RECONCILE_INTERVAL_MS = 3000;
 let reconcileTimer: ReturnType<typeof setInterval> | undefined;
+
+// The orchestration-side callbacks every TrackCapture gets (frame-pipeline.ts
+// owns the interface). One shared object: they all read the same epoch state.
+const captureHooks: CaptureHooks = {
+  post: (msg) => postToIsolated(msg),
+  record: (event) => recordAttribution(event),
+  now: () => Date.now(),
+  platform: () => cfg?.platform,
+  anyAudioDecoded: () => anyAudioDecodedThisCall,
+  noteFirstFrame: (seam) => {
+    anyAudioDecodedThisCall = true;
+    // Proves the seam for the whole call — from here it is never escalated
+    // off, so a participant simply going quiet can't cause seam churn.
+    arbiter?.noteFrame(Date.now(), seam);
+  },
+  noteUnmute: () => arbiter?.noteUnmute(Date.now()),
+  onTrackSpeaking: (track, speaking) => cfg.adapter?.onTrackSpeaking?.(track, speaking),
+};
 
 /**
  * Take over capture for `config.epoch`. Tears down the previous epoch's
@@ -533,7 +533,7 @@ function startPipeline(track: MediaStreamTrack, origin: PipelineOrigin): void {
   // a track. See capture-seams.ts for why the seam is chosen at runtime.
   const makeSource =
     origin.seam === "meet-encoded-tee" ? meetDecodeSource(track) : trackProcessorSource(track);
-  const capture = new TrackCapture(participant.id, () => pipeline.generation, makeSource, () => stopPipeline(track), track, origin.seam);
+  const capture = new TrackCapture(participant.id, () => pipeline.generation, makeSource, () => stopPipeline(track), track, origin.seam, captureHooks);
   const pipeline: Pipeline = {
     participant,
     generation,
@@ -654,276 +654,6 @@ function handleFor(track: MediaStreamTrack, origin: PipelineOrigin): Participant
   return handle;
 }
 
-// ── Shared pipeline: frame source → 16 kHz mono pcm_s16le ───────────────────
-// (frame-pipeline.ts holds the seam-agnostic pieces; TrackCapture composes them)
-
-/** One track → its own frame source, resampler, ring buffer, and PCM emitter. */
-class TrackCapture {
-  private stopped = false;
-  private resampler?: LinearResampler;
-  private readonly acc: number[] = []; // 16 kHz mono float, awaiting a full frame
-  private readonly ring: RingBuffer;
-  private source?: FrameSource;
-  private firstFrameSeen = false;
-  private readonly silentWatchdog: SilentCaptureWatchdog;
-  private unmuteHandler?: () => void;
-  // Debug-only state — see DEBUG_AUDIO above.
-  private vSum = 0;
-  private vPeak = 0;
-  private vCount = 0;
-  private speaking = false; // edge-detection state, see SPEAK_THRESHOLD above — always tracked, not debug-only
-  private readonly trackId: string;
-  /** Monotonic per-participant frame counter stamped on every posted PCM frame
-   * (wraps at 2^32 — ~2.7 years at this frame rate). Paired with a send
-   * timestamp so earsd can distinguish silence from a stalled delivery path. */
-  private seq = 0;
-
-  constructor(
-    private readonly participantId: string,
-    private readonly currentGeneration: () => number,
-    private readonly makeSource: FrameSourceFactory,
-    private readonly onFatal: () => void,
-    private readonly track: MediaStreamTrack,
-    private readonly seam: SeamId,
-  ) {
-    this.ring = new RingBuffer(RING_CAPACITY, participantId);
-    this.trackId = track.id;
-    this.silentWatchdog = new SilentCaptureWatchdog((graceMs) => this.reportSilent(graceMs));
-  }
-
-  /** Whether at least one audio frame has decoded on this track (debug report). */
-  get receiving(): boolean {
-    return this.firstFrameSeen;
-  }
-
-  start(): void {
-    this.source = this.makeSource(
-      (frame) => this.consume(frame),
-      (reason) => this.fail(reason),
-    );
-    this.source.start();
-    // An unmute means the platform says this participant is producing audio now,
-    // so a decoded frame must follow; if none does, capture is silently dropping
-    // them (journal #72). Arm on unmute, not on start — a genuinely quiet
-    // participant yields no frames and that is not a failure.
-    // The same unmute drives two things: the per-participant silent warning,
-    // and the call-level seam arbitration (an unmute is the platform asserting
-    // audio is flowing, so a frameless grace window means the SEAM is wrong,
-    // not that this participant is quiet).
-    this.unmuteHandler = () => {
-      this.silentWatchdog.armOnUnmute();
-      arbiter?.noteUnmute(Date.now());
-    };
-    this.track.addEventListener("unmute", this.unmuteHandler);
-  }
-
-  stop(): void {
-    if (this.stopped) return;
-    this.stopped = true;
-    if (this.unmuteHandler) {
-      this.track.removeEventListener("unmute", this.unmuteHandler);
-      this.unmuteHandler = undefined;
-    }
-    this.silentWatchdog.stop();
-    this.source?.stop();
-  }
-
-  private fail(reason: string): void {
-    console.error(`[ears][capture] ${this.participantId} capture failed: ${reason}`);
-    // Tell the isolated relay (and through it the background/daemon) that this
-    // participant's capture died mid-call, so the audio gap is attributable
-    // rather than looking like the source just went quiet (issue #22).
-    postToIsolated({ kind: "capture-failed", participantId: this.participantId, generation: this.currentGeneration(), reason });
-    this.stop();
-    this.onFatal();
-  }
-
-  /** The silent-capture watchdog fired: this participant unmuted but no decoded
-   * frame ever arrived. Loud console error plus a `status` line the isolated-
-   * world relay logs (and can surface in the popup/daemon). See journal #72. */
-  private reportSilent(graceMs: number): void {
-    const report = silentReport(this.participantId, cfg?.platform, anyAudioDecodedThisCall, graceMs);
-    if (report.level === "warn") {
-      console.error(`[ears][capture] ${report.text}`);
-      postToIsolated({ kind: "status", text: report.text });
-    } else {
-      // Benign: the pipeline works, this participant is just quiet. Keep it low
-      // so it never reads as a failure to a user scanning the console.
-      console.debug(`[ears][capture] ${report.text}`);
-    }
-  }
-
-  private consume(frame: AudioDataLike): void {
-    if (!this.firstFrameSeen) {
-      this.firstFrameSeen = true;
-      anyAudioDecodedThisCall = true;
-      this.silentWatchdog.noteFrame();
-      // Proves the seam for the whole call — from here it is never escalated
-      // off, so a participant simply going quiet can't cause seam churn.
-      arbiter?.noteFrame(Date.now(), this.seam);
-      console.debug(`[ears][capture] ✓ ${this.participantId} first audio frame — capture confirmed live`);
-    }
-    // Two boolean reads per frame. The `performance.now()` calls below are
-    // detail-gated: at ~50 frames/s per active speaker they are cheap but not
-    // free, and this runs on the thread Meet renders video on.
-    const metrics = perfEnabled() ? captureMetrics() : null;
-    const detail = metrics !== null && perfDetailEnabled();
-    const t0 = detail ? performance.now() : 0;
-
-    const inRate = frame.sampleRate;
-    const nFrames = frame.numberOfFrames;
-    const nCh = frame.numberOfChannels;
-    const format = frame.format ?? "f32-planar";
-
-    // Downmix to mono float32.
-    const mono = new Float32Array(nFrames);
-    if (format.endsWith("-planar")) {
-      const plane = new Float32Array(nFrames);
-      for (let ch = 0; ch < nCh; ch++) {
-        frame.copyTo(plane, { planeIndex: ch, format: "f32-planar" });
-        for (let i = 0; i < nFrames; i++) mono[i]! += plane[i]! / nCh;
-      }
-    } else {
-      const inter = new Float32Array(nFrames * nCh);
-      frame.copyTo(inter, { planeIndex: 0, format: "f32" });
-      for (let i = 0; i < nFrames; i++) {
-        let s = 0;
-        for (let ch = 0; ch < nCh; ch++) s += inter[i * nCh + ch]!;
-        mono[i] = s / nCh;
-      }
-    }
-    const tDownmix = detail ? performance.now() : 0;
-
-    // Always tracked (not debug-gated): MeetAdapter's collections-datachannel
-    // correlation needs a real speaking-edge signal, not just a debug log —
-    // see lib/identity/meet.ts and PlatformAdapter.onTrackSpeaking.
-    this.updateSpeaking(mono);
-    const tSpeaking = detail ? performance.now() : 0;
-
-    if (DEBUG_AUDIO_NOW()) this.debugLog(mono, inRate);
-    const tDebugLog = detail ? performance.now() : 0;
-
-    // Resample native → 16 kHz and slice into fixed frames.
-    if (!this.resampler) this.resampler = new LinearResampler(inRate, TARGET_SAMPLE_RATE);
-    const out = this.resampler.process(mono);
-    const tResample = detail ? performance.now() : 0;
-
-    for (let i = 0; i < out.length; i++) this.acc.push(out[i]!);
-
-    while (this.acc.length >= FRAME_SAMPLES) {
-      const chunk = this.acc.splice(0, FRAME_SAMPLES);
-      const int16 = new Int16Array(FRAME_SAMPLES);
-      for (let i = 0; i < FRAME_SAMPLES; i++) {
-        let s = chunk[i]!;
-        if (s > 1) s = 1;
-        else if (s < -1) s = -1;
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      this.ring.push(int16);
-    }
-    const tAccumulate = detail ? performance.now() : 0;
-
-    for (const f of this.ring.drain()) {
-      // seq is per-participant and monotonic across the pipeline's life; the
-      // daemon uses the pair to tell a silent speaker from a stalled extension.
-      this.seq = (this.seq + 1) >>> 0;
-      postToIsolated({
-        kind: "pcm",
-        participantId: this.participantId,
-        generation: this.currentGeneration(),
-        samples: f,
-        seq: this.seq,
-        sentAt: Date.now(),
-      });
-      metrics?.posted.add();
-    }
-
-    if (metrics) {
-      metrics.frames.add();
-      metrics.samples.add(nFrames);
-      if (detail) {
-        const tPost = performance.now();
-        metrics.downmix.observe(tDownmix - t0);
-        metrics.speaking.observe(tSpeaking - tDownmix);
-        metrics.debugLog.observe(tDebugLog - tSpeaking);
-        metrics.resample.observe(tResample - tDebugLog);
-        metrics.accumulate.observe(tAccumulate - tResample);
-        metrics.post.observe(tPost - tAccumulate);
-        metrics.frame.observe(tPost - t0);
-      }
-    }
-  }
-
-  // Edge-triggered start/stop, ~frame-resolution (10-100ms depending on
-  // source) — comparable granularity to the DOM speaking-indicator's
-  // mutation-observer log (journal #47/#48), so the two can be correlated by
-  // timestamp. Always runs (see the call site in consume()): the collections-
-  // datachannel correlation (lib/identity/meet-correlator.ts) needs this
-  // signal live, not just when __earsDebugAudio is set. Debug logging below
-  // stays gated; only the edge detection and the adapter callback are unconditional.
-  private updateSpeaking(mono: Float32Array): void {
-    let framePeak = 0;
-    for (let i = 0; i < mono.length; i++) {
-      const a = Math.abs(mono[i]!);
-      if (a > framePeak) framePeak = a;
-    }
-    const isSpeaking = framePeak > SPEAK_THRESHOLD;
-    if (isSpeaking === this.speaking) return;
-    this.speaking = isSpeaking;
-    cfg.adapter?.onTrackSpeaking?.(this.track, isSpeaking);
-    // Always recorded (unlike the debug log below): these onsets are the audio
-    // half of every speaking-onset correlation, so a recorded call can replay
-    // the exact evidence the correlators saw.
-    recordAttribution({
-      type: "audio-onset",
-      t: Date.now(),
-      participantId: this.participantId,
-      trackId: this.trackId,
-      state: isSpeaking ? "start" : "stop",
-      framePeak: Number(framePeak.toFixed(4)),
-    });
-
-    if (DEBUG_AUDIO_NOW()) {
-      const t = Date.now();
-      const entry: AudioLogEntry = {
-        t,
-        iso: new Date(t).toISOString(),
-        participantId: this.participantId,
-        trackId: this.trackId,
-        state: isSpeaking ? "start" : "stop",
-        framePeak: Number(framePeak.toFixed(4)),
-      };
-      audioLog().push(entry);
-      console.debug(
-        `[ears][debug][audio] ${entry.iso} ${this.participantId} (track ${this.trackId}) speaking-${entry.state} peak=${entry.framePeak}`,
-      );
-    }
-  }
-
-  // Throttled to ~1 log/s/participant — frame counts alone don't prove the
-  // samples aren't all-zero, so this checks actual amplitude. DEBUG_AUDIO-gated.
-  private debugLog(mono: Float32Array, inRate: number): void {
-    for (let i = 0; i < mono.length; i++) {
-      const a = Math.abs(mono[i]!);
-      if (a > this.vPeak) this.vPeak = a;
-      this.vSum += mono[i]! * mono[i]!;
-    }
-    this.vCount += mono.length;
-
-    if (this.vCount >= inRate) {
-      const rms = Math.sqrt(this.vSum / this.vCount);
-      console.debug(
-        `[ears][debug][audio] ${this.participantId} rms=${rms.toFixed(4)} peak=${this.vPeak.toFixed(4)} ` +
-          `(${this.vPeak > 0.005 ? "AUDIO" : "silent"})`,
-      );
-      this.vSum = 0;
-      this.vPeak = 0;
-      this.vCount = 0;
-    }
-  }
-}
-
-
 /**
  * Dev-only: run a LOCAL MediaStream through the real capture path, bypassing the
  * RTC hook (the sandboxed test harness can't establish a WebRTC loopback).
@@ -938,5 +668,5 @@ export function __devCaptureStream(
   // Dev/graph-bridge ids (`graphtap-<n>`, harness labels) are ours, never the
   // platform's — declare them synthetic.
   postToIsolated({ kind: "participant-joined", platform: cfg?.platform ?? "meet", participant: syntheticParticipant(participantId), generation: 1 });
-  new TrackCapture(participantId, () => 1, trackProcessorSource(track), () => {}, track, seam).start();
+  new TrackCapture(participantId, () => 1, trackProcessorSource(track), () => {}, track, seam, captureHooks).start();
 }
