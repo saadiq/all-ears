@@ -17,6 +17,15 @@ import {
 } from "../lib/log-store";
 import { PerfCollector, type PerfRecord } from "../lib/perf";
 import type { PortMessage } from "../lib/protocol";
+import {
+  composeBadgeState,
+  emptyBackgroundPortState,
+  reducePortDisconnect,
+  reducePortMessage,
+  reduceStreamOpened,
+  runBackgroundEffects,
+  type BackgroundSinks,
+} from "../lib/background-core";
 
 // Background context: owns the two WebSockets to earsd. The ingest socket
 // accepts the "pcm" port from the isolated relay, decodes each frame, and
@@ -52,9 +61,7 @@ export default defineBackground(() => {
   let sessionState: SessionState = "idle";
 
   function badgeState(): BadgeState {
-    if (status !== "connected") return status;
-    if (sessionState === "idle") return "connected";
-    return sessionState;
+    return composeBadgeState(status, sessionState);
   }
 
   function broadcastStatus(): void {
@@ -173,17 +180,29 @@ export default defineBackground(() => {
   control.onReady = (snapshot, bootChanged) => sessions.onReady(snapshot, bootChanged);
   control.onEvent = (frame) => sessions.jobEvent(frame);
 
-  // participantId → the port (tab) its PCM arrives on, so an ingest-stream
-  // open can be routed to that tab's session record.
-  const participantPorts = new Map<string, string>();
-  socket.onStreamOpened = (participantId, platform) => {
-    const portId = participantPorts.get(participantId);
-    if (portId) sessions.streamOpened(portId, platform, participantId);
-  };
-
   // browser.storage.session is the browser API (browsing-session-scoped
   // storage), not a concept of ours.
   const tracker = new KeepaliveTracker(browser.alarms, browser.storage.session);
+
+  // ── The pure wiring core (background-core.ts) and its chrome shell ────────
+  // Every pcm-port message reduces to (state, effects); the effects name the
+  // collaborator calls, executed here against the real SessionTracker,
+  // KeepaliveTracker, and EarsSocket.
+  let portState = emptyBackgroundPortState();
+  const sinks: BackgroundSinks = {
+    sessions,
+    keepalive: tracker,
+    ingest: {
+      closeStream: (participantId) => socket.participantLeft(participantId),
+      sendPcm: (participantId, platform, pcm, externalId, stamp) =>
+        socket.sendPcm(participantId, platform, pcm, externalId, stamp),
+      sendAttribution: (events, platform, externalId) =>
+        socket.sendAttribution(events, platform, externalId),
+    },
+  };
+
+  socket.onStreamOpened = (participantId, platform) =>
+    runBackgroundEffects(reduceStreamOpened(portState, participantId, platform), sinks);
   // Respawn path: re-arm the keepalive if capture was live when the old
   // worker died (and clear any stale alarm if not).
   void tracker.restore();
@@ -223,7 +242,6 @@ export default defineBackground(() => {
     if (pf) setPerfEnabled(resolvePerfToggleState(pf.newValue));
   });
 
-  const counts = new Map<string, number>();
   let nextPortId = 0;
 
   browser.runtime.onConnect.addListener((port) => {
@@ -231,82 +249,20 @@ export default defineBackground(() => {
     const portId = `pcm-${nextPortId++}`;
     console.debug(`[ears][bg] pcm port connected (${portId})`);
     port.onMessage.addListener((raw) => {
-      const msg = raw as PortMessage;
-      switch (msg.type) {
-        case "joined":
-          sessions.participantJoined(portId, msg.platform, msg.participant);
-          return;
-        case "roster":
-          sessions.rosterUpdate(portId, msg.platform, msg.entries);
-          return;
-        case "identified":
-          sessions.participantIdentified(
-            portId, msg.platform, msg.participantId, msg.captureId, msg.displayName);
-          return;
-        case "left":
-          tracker.participantLeft(portId, msg.participantId);
-          socket.participantLeft(msg.participantId);
-          sessions.participantLeft(portId, msg.participantId);
-          participantPorts.delete(msg.participantId);
-          return;
-        case "capture-failed":
-          // A participant's capture died mid-call (e.g. the Meet decoder gave
-          // up). The daemon otherwise just sees the source fall silent; log it
-          // loudly here so the recorded gap is attributable to a capture
-          // failure, not a quiet speaker. The participant stays in the roster
-          // (no stream close) — a later renegotiated track re-adopts and
-          // resumes capture on its own.
-          console.error(
-            `[ears][bg] capture failed for ${msg.participantId} (${msg.platform}): ${msg.reason}`,
-          );
-          return;
-        case "meeting-started":
-          sessions.meetingStarted(portId, msg.platform, msg.externalMeetingId, msg.title);
-          return;
-        case "meeting-renamed":
-          sessions.meetingRenamed(msg.externalMeetingId, msg.title);
-          return;
-        case "meeting-ended":
-          sessions.meetingEnded(msg.externalMeetingId);
-          return;
-        case "attribution":
-          // Flight-recorder batch: ship to earsd filed under this port's live
-          // session. With no session (yet) the batch is dropped — the in-page
-          // ring still holds the events for on-demand export.
-          socket.sendAttribution(msg.events, msg.platform, sessions.externalIdFor(portId, msg.platform));
-          return;
-        case "pcm": {
-          tracker.participantActive(portId, msg.participantId, msg.platform);
-          participantPorts.set(msg.participantId, portId);
-          const pcm = base64ToBytes(msg.b64);
-          socket.sendPcm(
-            msg.participantId,
-            msg.platform,
-            pcm,
-            sessions.externalIdFor(portId, msg.platform),
-            { seq: msg.seq, sentAt: msg.sentAt },
-          );
-          const n = (counts.get(msg.participantId) ?? 0) + 1;
-          counts.set(msg.participantId, n);
-          if (n % 50 === 0) console.debug(`[ears][bg] forwarded ${n} frames for ${msg.participantId}`);
-          return;
-        }
-      }
+      const { state, effects } = reducePortMessage(portState, portId, raw as PortMessage);
+      portState = state;
+      runBackgroundEffects(effects, sinks);
     });
     port.onDisconnect.addListener(() => {
       // Tab closed / navigated away mid-call: close its participants' streams
       // now rather than leaking them on earsd until the socket reconnects —
-      // and end its sessions.
+      // and end its sessions. The keepalive tracker both mutates and answers
+      // (which participants are now orphaned), so the shell asks it first and
+      // hands the answer to the reducer.
       const orphaned = tracker.portDisconnected(portId);
-      for (const id of orphaned) {
-        socket.participantLeft(id);
-        participantPorts.delete(id);
-      }
-      sessions.portDisconnected(portId);
-      console.debug(
-        `[ears][bg] pcm port disconnected (${portId})` +
-          (orphaned.length ? ` — closed ${orphaned.length} orphaned stream(s)` : ""),
-      );
+      const { state, effects } = reducePortDisconnect(portState, portId, orphaned);
+      portState = state;
+      runBackgroundEffects(effects, sinks);
     });
   });
 
@@ -372,10 +328,3 @@ export default defineBackground(() => {
     return undefined;
   });
 });
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
