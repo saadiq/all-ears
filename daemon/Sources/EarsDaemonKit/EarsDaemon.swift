@@ -688,13 +688,13 @@ public actor EarsDaemon {
   ///
   /// Visibility of a dynamically-created source elsewhere in the daemon:
   /// `ControlServer`'s map is kept in sync via `registerDynamicSource`
-  /// (`status`/`sources.list`), and `SessionRegistry.knownSourceIDs` is a
+  /// (`status`/`sources.list`), `SessionRegistry.knownSourceIDs` is a
   /// live lookup back into this actor (see `start()`), so a session can
-  /// name a browser source created by a later `ingest.open`. Known remaining gap: `PowerObserver` still holds the
-  /// `captureActors` *snapshot* it was built with at `start()`, so a
-  /// dynamic source created afterwards is not paused/resumed on sleep/wake
-  /// — a documented follow-up (Phase 6 scoped it out as separable), not
-  /// silently assumed fixed.
+  /// name a browser source created by a later `ingest.open` — and
+  /// `PowerObserver` reads the live actor map the same way (via
+  /// `currentPausables()`, queried on each sleep/wake transition), so a
+  /// dynamic source created after `start()` is paused/resumed like any
+  /// config-declared one.
   public func openIngestSource(
     label: SourceID, format: AudioFormatSpec, session: SessionIdentity? = nil
   ) async throws -> String {
