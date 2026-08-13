@@ -114,6 +114,12 @@ public enum RosterReconciler {
     /// Derived from join order against the session start (see
     /// ``localJoinWindowSeconds``).
     case inferred
+    /// The roster's reported flag was contradicted by the evidence — the
+    /// flagged attendee is bound to remote audio while join order singles
+    /// out somebody else — and overridden, with the evidence recorded in
+    /// ``Outcome/warnings``. This is what makes the registry's set-once
+    /// `self` latch revisable after the fact.
+    case revised
     /// Neither available: invariant 1 was not applied.
     case unknown
   }
@@ -135,13 +141,37 @@ public enum RosterReconciler {
 
     // ── Who is the local participant? ────────────────────────────────────
     let reportedLocal = attendees.first(where: \.isLocal)?.id
+    let inferredLocal = inferLocalAttendee(attendees, sessionStart: sessionStart)
     let localID: String?
     let resolution: LocalResolution
     if let reportedLocal {
-      localID = reportedLocal
-      resolution = .reported
-    } else if let inferred = inferLocalAttendee(attendees, sessionStart: sessionStart) {
-      localID = inferred
+      // The reported flag stands unless the evidence contradicts it on both
+      // fronts: the flagged attendee is bound to remote (`browser:*`) audio —
+      // an impossible state for the person captured on `mic` — while join
+      // order singles out somebody *else* as the one whose arrival started
+      // the session. Either alone is survivable (invariant 1 handles a stray
+      // binding); together they say the flag itself landed on the wrong row,
+      // and a flag kept there would make invariant 1 drop a *correct*
+      // binding and hand the call to the wrong name.
+      let reportedAttendee = attendees.first { $0.id == reportedLocal }
+      if let inferredLocal, inferredLocal != reportedLocal,
+        let impossible = reportedAttendee?.source, impossible.sourceClass == .browser
+      {
+        localID = inferredLocal
+        resolution = .revised
+        let reportedName = reportedAttendee?.displayName ?? reportedLocal
+        let inferredName =
+          attendees.first { $0.id == inferredLocal }?.displayName ?? inferredLocal
+        warnings.append(
+          "speaker attribution: the roster marked \(reportedName) as you, but they are bound "
+            + "to remote audio (\(impossible.rawValue)) and \(inferredName) is the only "
+            + "attendee who joined when the session started — treating \(inferredName) as you")
+      } else {
+        localID = reportedLocal
+        resolution = .reported
+      }
+    } else if let inferredLocal {
+      localID = inferredLocal
       resolution = .inferred
     } else {
       localID = nil
@@ -281,7 +311,9 @@ public enum RosterReconciler {
   }
 
   /// The local participant's attendee id, inferred from join order when the
-  /// capture client never flagged one.
+  /// capture client never flagged one — and, when the client did, the
+  /// cross-check a contradicted flag is revised against (see
+  /// ``LocalResolution/revised``).
   ///
   /// Requires exactly one *named* attendee inside ``localJoinWindowSeconds``
   /// of the session start, and that they be strictly the earliest — the

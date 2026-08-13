@@ -87,6 +87,58 @@ struct RosterReconcilerTests {
     #expect(outcome.localResolution == RosterReconciler.LocalResolution.reported)
   }
 
+  @Test("a self flag contradicted by a remote binding and join order is revised")
+  func revisesContradictedLocalFlag() {
+    // The wrong latch: the remote participant got flagged as you, and their
+    // (correct) track binding now looks like the impossible state invariant 1
+    // exists to reject. The flag is contradicted on both fronts — the flagged
+    // row is bound to remote audio, and join order singles out somebody else
+    // as the one whose arrival started the session — so the flag is revised,
+    // not the binding dropped.
+    let attendees = [
+      SessionAttendee(id: "tom", displayName: "Tom Elliot", joined: Self.at(3)),
+      SessionAttendee(
+        id: "matt", displayName: "Matthew Barras", joined: Self.at(53),
+        source: SourceID("browser:meet:matt"), isLocal: true),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:meet:matt"], sessionStart: Self.start)
+
+    #expect(outcome.localAttendeeID == "tom")
+    #expect(outcome.localResolution == RosterReconciler.LocalResolution.revised)
+    // The evidence for the revision travels in the warnings…
+    #expect(
+      outcome.warnings.contains {
+        $0.contains("marked Matthew Barras as you") && $0.contains("browser:meet:matt")
+      })
+    // …and the correct binding survives instead of being dropped, so the
+    // whole call is no longer misattributed by one wrong flag (the failure
+    // the irreversible latch made permanent).
+    #expect(
+      outcome.speakers.contains {
+        $0.source == SourceID("browser:meet:matt") && $0.name == "Matthew Barras"
+      })
+  }
+
+  @Test("a contradicted self flag stands when join order distinguishes nobody")
+  func keepsContradictedFlagWithoutJoinEvidence() {
+    // The flagged row is bound to remote audio, but everyone joined in the
+    // same burst — half the evidence is missing, so the conservative answer
+    // is today's: keep the reported flag, drop the impossible binding.
+    let attendees = [
+      SessionAttendee(id: "tom", displayName: "Tom Elliot", joined: Self.at(3)),
+      SessionAttendee(
+        id: "matt", displayName: "Matthew Barras", joined: Self.at(5),
+        source: SourceID("browser:meet:matt"), isLocal: true),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:meet:matt"], sessionStart: Self.start)
+
+    #expect(outcome.localAttendeeID == "matt")
+    #expect(outcome.localResolution == RosterReconciler.LocalResolution.reported)
+    #expect(!outcome.speakers.contains { $0.name == "Matthew Barras" })
+  }
+
   @Test("joining a call already in progress leaves the local participant unknown")
   func ambiguousJoinsInferNothing() {
     // Everyone lands in the same burst, so join order distinguishes nobody.
