@@ -104,6 +104,10 @@ private actor RecordingIngestSink {
   var nextStreamID = 0
   var failOpen = false
 
+  func setFailOpen(_ value: Bool) {
+    failOpen = value
+  }
+
   func open(
     _ source: SourceID, _ format: AudioFormatSpec, _ session: SessionIdentity?
   ) async throws -> String {
@@ -169,7 +173,7 @@ struct IngestWebSocketServerTests {
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let openRequest = IngestRequest.open(
       source: "browser:meet:jane-a1b2", format: format,
-      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
+      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"), id: nil)
     connection.feed(
       TestWebSocketClient.text(
         String(data: try JSONEncoder().encode(openRequest), encoding: .utf8)!))
@@ -226,7 +230,8 @@ struct IngestWebSocketServerTests {
       #"{"schema":1,"type":"track-ended","t":1001,"trackId":"trk-1"}"#,
     ]
     let request = IngestRequest.attribution(
-      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"), events: lines)
+      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"), events: lines,
+      id: nil)
     connection.feed(
       TestWebSocketClient.text(String(data: try JSONEncoder().encode(request), encoding: .utf8)!))
 
@@ -244,6 +249,121 @@ struct IngestWebSocketServerTests {
     #expect(recorded.count == 1)
     #expect(recorded[0].session == SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
     #expect(recorded[0].events == lines)
+
+    await server.shutdown()
+    _ = await runner.value
+  }
+
+  @Test("every reply path echoes the request's correlation id verbatim")
+  func correlationIDEchoed() async throws {
+    let sink = RecordingIngestSink()
+    let (server, listener) = makeServer(allowedOrigins: ["chrome-extension://abc"], sink: sink)
+    let runner = Task { await server.run() }
+    let connection = FakeSocketConnection()
+    listener.accept(connection)
+
+    connection.feed(TestWebSocketClient.upgradeRequest(origin: "chrome-extension://abc"))
+    _ = await firstChunk(connection)  // the 101 response
+
+    // Golden frames: the literal wire shapes from docs/specs/browser/transport.md.
+    connection.feed(
+      TestWebSocketClient.text(
+        #"{"cmd":"ingest.open","id":"7","source":"browser:meet:jane","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"}}"#
+      ))
+    guard let openBytes = await firstChunk(connection), let openFrame = decodeServerFrame(openBytes)
+    else {
+      Issue.record("no ingest.open reply")
+      return
+    }
+    let openReply = try JSONDecoder().decode(
+      IngestReply<IngestOpenData>.self, from: Data(openFrame.payload))
+    #expect(openReply == IngestReply(.success(IngestOpenData(streamID: "s1")), id: "7"))
+
+    connection.feed(TestWebSocketClient.text(#"{"cmd":"ingest.close","id":"8","stream_id":"s1"}"#))
+    guard let closeBytes = await firstChunk(connection),
+      let closeFrame = decodeServerFrame(closeBytes)
+    else {
+      Issue.record("no ingest.close reply")
+      return
+    }
+    let closeReply = try JSONDecoder().decode(
+      IngestReply<EmptyData>.self, from: Data(closeFrame.payload))
+    #expect(closeReply == IngestReply(.success(EmptyData()), id: "8"))
+
+    connection.feed(
+      TestWebSocketClient.text(
+        #"{"cmd":"ingest.attribution","id":"9","session":{"platform":"meet","external_id":"kQ0"},"events":[]}"#
+      ))
+    guard let attrBytes = await firstChunk(connection), let attrFrame = decodeServerFrame(attrBytes)
+    else {
+      Issue.record("no ingest.attribution reply")
+      return
+    }
+    let attrReply = try JSONDecoder().decode(
+      IngestReply<EmptyData>.self, from: Data(attrFrame.payload))
+    #expect(attrReply == IngestReply(.success(EmptyData()), id: "9"))
+
+    await server.shutdown()
+    _ = await runner.value
+  }
+
+  @Test("a rejected ingest.open still echoes the id, matching the failure to its request")
+  func correlationIDEchoedOnFailure() async throws {
+    let sink = RecordingIngestSink()
+    await sink.setFailOpen(true)
+    let (server, listener) = makeServer(allowedOrigins: ["chrome-extension://abc"], sink: sink)
+    let runner = Task { await server.run() }
+    let connection = FakeSocketConnection()
+    listener.accept(connection)
+
+    connection.feed(TestWebSocketClient.upgradeRequest(origin: "chrome-extension://abc"))
+    _ = await firstChunk(connection)  // the 101 response
+
+    connection.feed(
+      TestWebSocketClient.text(
+        #"{"cmd":"ingest.open","id":"7","source":"browser:meet:jane","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"}}"#
+      ))
+    guard let replyBytes = await firstChunk(connection), let frame = decodeServerFrame(replyBytes)
+    else {
+      Issue.record("no reply")
+      return
+    }
+    let reply = try JSONDecoder().decode(
+      IngestReply<IngestOpenData>.self, from: Data(frame.payload))
+    guard case .failure = reply.response else {
+      Issue.record("expected a failure reply")
+      return
+    }
+    #expect(reply.id == "7")
+
+    await server.shutdown()
+    _ = await runner.value
+  }
+
+  @Test("a request without an id gets a reply without one — pre-id clients see the old shape")
+  func noIDMeansNoEcho() async throws {
+    let sink = RecordingIngestSink()
+    let (server, listener) = makeServer(allowedOrigins: ["chrome-extension://abc"], sink: sink)
+    let runner = Task { await server.run() }
+    let connection = FakeSocketConnection()
+    listener.accept(connection)
+
+    connection.feed(TestWebSocketClient.upgradeRequest(origin: "chrome-extension://abc"))
+    _ = await firstChunk(connection)  // the 101 response
+
+    connection.feed(
+      TestWebSocketClient.text(
+        #"{"cmd":"ingest.open","source":"browser:meet:jane","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"}}"#
+      ))
+    guard let replyBytes = await firstChunk(connection), let frame = decodeServerFrame(replyBytes)
+    else {
+      Issue.record("no reply")
+      return
+    }
+    let object = try #require(
+      JSONSerialization.jsonObject(with: Data(frame.payload)) as? [String: Any])
+    #expect(!object.keys.contains("id"))
+    #expect(object["ok"] as? Bool == true)
 
     await server.shutdown()
     _ = await runner.value
@@ -331,7 +451,8 @@ struct IngestWebSocketServerTests {
 
     // The connection must still be alive and usable afterwards.
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
-    let openRequest = IngestRequest.open(source: "browser:meet:jane", format: format, session: nil)
+    let openRequest = IngestRequest.open(
+      source: "browser:meet:jane", format: format, session: nil, id: nil)
     connection.feed(
       TestWebSocketClient.text(
         String(data: try JSONEncoder().encode(openRequest), encoding: .utf8)!))

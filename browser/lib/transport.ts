@@ -13,8 +13,11 @@ import {
 // rejected open is retried (bounded — see MAX_OPEN_ATTEMPTS) rather than
 // treated as the end of that participant.
 //
-// Control responses carry no correlation id — earsd replies in request order
-// over the single TCP-backed WebSocket — so pending requests are matched FIFO.
+// Every control request is stamped with a correlation `id`, and a response
+// that echoes one is matched to its request by id — so a reordered, duplicated
+// or unsolicited daemon response cannot desynchronise the queue. A response
+// with no id (an earsd from before the field existed replies in request order
+// over the single TCP-backed WebSocket) falls back to FIFO matching.
 
 export type TransportStatus = "connecting" | "connected" | "disconnected";
 
@@ -42,9 +45,9 @@ const OPEN_RETRY_MS = 1_000; // floor between same-tag retries (PCM arrives ~10 
 const OPEN_HOLD_LIMIT_MS = 60_000;
 
 type PendingRequest =
-  | { kind: "open"; participantId: ParticipantId }
-  | { kind: "close" }
-  | { kind: "attribution" };
+  | { kind: "open"; id: string; participantId: ParticipantId }
+  | { kind: "close"; id: string }
+  | { kind: "attribution"; id: string };
 
 /** Per-frame provenance carried from the MAIN world all the way to earsd. */
 export interface FrameStamp {
@@ -115,7 +118,10 @@ export class EarsSocket {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
 
   private readonly participants = new Map<ParticipantId, ParticipantState>();
-  private readonly pending: PendingRequest[] = []; // FIFO, matches responses in order
+  private readonly pending: PendingRequest[] = []; // id-matched; FIFO for daemons that don't echo
+  /** Correlation ids, unique per socket lifetime (uniqueness per connection is
+   * all the protocol needs — pending is cleared on reconnect). */
+  private nextRequestId = 1;
 
   constructor(
     private port: number,
@@ -278,9 +284,11 @@ export class EarsSocket {
     st.opening = true;
     st.attempts++;
     st.attemptedWith = st.meetingExternalId;
-    this.pending.push({ kind: "open", participantId });
+    const id = String(this.nextRequestId++);
+    this.pending.push({ kind: "open", id, participantId });
     this.sendText({
       cmd: "ingest.open",
+      id,
       source: sourceLabel(st.platform, participantId),
       format: INGEST_FORMAT,
       ...(st.meetingExternalId
@@ -324,9 +332,11 @@ export class EarsSocket {
   sendAttribution(events: string[], platform: Platform, meetingExternalId?: string): void {
     if (this.status !== "connected" || !this.ws || events.length === 0) return;
     if (!meetingExternalId) return;
-    this.pending.push({ kind: "attribution" });
+    const id = String(this.nextRequestId++);
+    this.pending.push({ kind: "attribution", id });
     this.sendText({
       cmd: "ingest.attribution",
+      id,
       session: { platform, external_id: meetingExternalId },
       events,
     });
@@ -337,25 +347,46 @@ export class EarsSocket {
     this.participants.delete(participantId);
     if (!st || this.status !== "connected") return;
     if (st.streamId) {
-      this.pending.push({ kind: "close" });
-      this.sendText({ cmd: "ingest.close", stream_id: st.streamId });
+      const id = String(this.nextRequestId++);
+      this.pending.push({ kind: "close", id });
+      this.sendText({ cmd: "ingest.close", id, stream_id: st.streamId });
     }
   }
 
-  // ── Control responses (FIFO) ────────────────────────────────────────────────
+  // ── Control responses (id-matched, FIFO fallback) ───────────────────────────
 
   private onControlResponse(data: unknown): void {
     if (typeof data !== "string") return; // binary from earsd is unexpected
-    const req = this.pending.shift();
-    if (!req) {
-      console.warn("[ears][transport] unsolicited control response:", data);
-      return;
-    }
-    let parsed: { ok?: boolean; data?: { stream_id?: string }; error?: string };
+    let parsed: { ok?: boolean; id?: string; data?: { stream_id?: string }; error?: string };
     try {
       parsed = JSON.parse(data);
     } catch {
+      // A FIFO daemon's reply still answered one request, however garbled —
+      // consume the slot so the queue stays aligned (an id-echoing daemon
+      // never sends unparseable JSON in the first place).
       console.error("[ears][transport] bad control response JSON:", data);
+      this.pending.shift();
+      return;
+    }
+
+    let req: PendingRequest | undefined;
+    if (typeof parsed.id === "string") {
+      // The daemon echoed our correlation id: match by id, order-independent.
+      const idx = this.pending.findIndex((p) => p.id === parsed.id);
+      if (idx === -1) {
+        // Unsolicited or duplicated — dropping it (rather than shifting the
+        // queue) is the whole point of the id: nothing else desynchronises.
+        console.warn("[ears][transport] response with unknown correlation id:", data);
+        return;
+      }
+      req = this.pending.splice(idx, 1)[0]!;
+    } else {
+      // No id echoed (an earsd predating the field): replies arrive in
+      // request order, so the head of the queue is the request answered.
+      req = this.pending.shift();
+    }
+    if (!req) {
+      console.warn("[ears][transport] unsolicited control response:", data);
       return;
     }
 
