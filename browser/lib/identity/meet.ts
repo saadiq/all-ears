@@ -1,10 +1,13 @@
 import { registerAdapter, type PlatformAdapter } from "./adapter";
-import type { BindingOutcome, CorrelatorId } from "../attribution-log";
 import { recordAttribution } from "../attribution-recorder";
 import type { ParticipantId, RosterEntry } from "../protocol";
 import { setCollectionsListener } from "../rtc-hook";
 import type { CollectionsMuteEvent } from "./meet-collections";
-import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
+import {
+  MeetIdentityEngine,
+  type MeetBindingDecision,
+  type MeetIdentityDecision,
+} from "./meet-identity-engine";
 
 // Meet identity — Phase 4: tile-DOM correlation (identify(), synchronous),
 // plus Phase 4 collections-datachannel upgrade (onIdentify(), asynchronous).
@@ -37,7 +40,9 @@ import { SpeakingCorrelator, type CorrelatorMatch } from "./meet-correlator";
 //      audio-domain speaking edge (unconditionally, not debug-gated), and
 //      onTrackUnmute(track) on every track's "unmute" event.
 //   3. THREE SpeakingCorrelator instances (meet-correlator.ts, pure logic,
-//      independently unit-tested) pair device events against track events:
+//      independently unit-tested; owned by MeetIdentityEngine, the pure
+//      decision half this adapter feeds) pair device events against track
+//      events:
 //      - `correlator`: collections mic-open edge ↔ decoded-audio speaking
 //        onset within ~200ms. This was the original design when the flag was
 //        believed to be a per-turn speaking indicator; on the current build
@@ -377,34 +382,6 @@ function mediaStreamOf(el: MediaElementLike): StreamRef | null {
   return so;
 }
 
-// Consecutive confirming turns (SpeakingCorrelator) required before an
-// onIdentify upgrade fires. Shipped at 3 (conservative per Task 4), loosened
-// to 1 after the 2026-07-19 live run showed zero ambiguous matches, then
-// raised back to 2 on 2026-08-05: a live call confirmed a join on a single
-// unmute-edge turn while two same-room devices were hearing the same voice —
-// exactly the coincidence a 1-turn threshold cannot reject (the correlator's
-// distinct-tracks guard only sees ONE track's onset when the other device is
-// muted). One coincidence is cheap; two consecutive coincidences for the same
-// (track, device) pairing are not. The DOM speaking-ring correlator added the
-// same day supplies a device onset per natural turn, so reaching 2 no longer
-// requires two deliberate mute toggles — normal conversation gets there in
-// two turns. Counts are per correlator instance, never summed across them
-// (one physical toggle can legitimately match in two correlators at once and
-// must not self-corroborate).
-export const CONFIRM_THRESHOLD = 2;
-const CORRELATION_WINDOW_MS = 200; // journal #50: onset pairs landed within tens of ms
-// The collections mic-open edge and the track's "unmute" event land close but
-// not tens-of-ms close: the DC message rides a different transport than the
-// RTP unmute, and the 2026-07-24 controlled test measured them within the
-// same second (≤ ~900ms apart) on every toggle. 2s covers that with margin
-// while staying far under the ~5s a human takes between deliberate toggles.
-const UNMUTE_CORRELATION_WINDOW_MS = 2_000;
-// The speaking-ring burst rides Meet's render pipeline (worklet → UI state →
-// RAF-batched class churn), landing later after the audio onset than the
-// tens-of-ms the 200ms audio window assumes. Turns are seconds apart and the
-// correlator's distinct-tracks guard handles overlap, so 1s is safe margin.
-const DOM_CORRELATION_WINDOW_MS = 1_000;
-
 // Exported for meet.test.ts's binding tests only — production wiring goes
 // through registerAdapter at the bottom of this file, never a direct import.
 export class MeetAdapter implements PlatformAdapter {
@@ -419,38 +396,23 @@ export class MeetAdapter implements PlatformAdapter {
   private disposed = false;
 
   // ── Collections-datachannel upgrade state (see file-header doc comment) ──
-  private readonly correlator = new SpeakingCorrelator(CORRELATION_WINDOW_MS);
-  /** Pairs the collections mic-open edge with the track-level unmute event —
-   * the only pairing the current Meet build's channel supports (see header). */
-  private readonly unmuteCorrelator = new SpeakingCorrelator(UNMUTE_CORRELATION_WINDOW_MS);
-  /** Pairs the tile speaking-ring burst (meet-speaking-dom.ts) with decoded-
-   * audio onsets — the per-turn pairing the collections channel lost. */
-  private readonly domCorrelator = new SpeakingCorrelator(DOM_CORRELATION_WINDOW_MS);
+  /** The pure decision half: correlators, binding maps, and the latched local
+   * device id all live there; this shell feeds it observations (each stamped
+   * at the entry point) and translates its decisions into callbacks and
+   * flight-recorder events. */
+  private readonly engine = new MeetIdentityEngine({
+    hasTrack: (trackId) => this.liveTracksById.has(trackId),
+    isTrackLive: (trackId) => this.liveTracksById.get(trackId)?.readyState === "live",
+  });
   /** deviceId → last-known mic state, for future use (e.g. debugging);
-   * not read for the correlation decision itself, which lives in correlator. */
+   * not read for the correlation decision itself, which lives in the engine. */
   private readonly deviceState = new Map<string, { micOpen: boolean; lastSeen: number }>();
-  /** track.id → live track, so a later match can hand the real track object
-   * back to onIdentify. Populated from both identify() and onTrackSpeaking(),
-   * whichever sees a track first; never explicitly pruned (bounded by the
-   * small number of tracks live in a call, and dispose() clears it). */
+  /** track.id → live track, so a later binding decision can hand the real
+   * track object back to onIdentify. Populated from both identify() and
+   * onTrackSpeaking(), whichever sees a track first; never explicitly pruned
+   * (bounded by the small number of tracks live in a call, and dispose()
+   * clears it). Also the backing store for the engine's TrackPresence. */
   private readonly liveTracksById = new Map<string, MediaStreamTrack>();
-  /** track.id → deviceId already pushed via onIdentify. A track binds to one
-   * device for its life: a repeat match doesn't re-fire the callback, and a
-   * match naming a *different* device is refused outright (journal #158 — a
-   * rebind restarts the capture pipeline under a new source id, so a pairing
-   * that oscillates shreds one participant's speech across two named sources).
-   * The correlator's symmetric ambiguity rule is what should stop the
-   * oscillation upstream; this bounds the damage of any that gets through to
-   * one wrong name instead of a 30-minute flip-flop. */
-  private readonly upgradedTracks = new Map<string, ParticipantId>();
-  /** deviceId → the track.id currently bound to it, so one participant can't
-   * own two live tracks at once. Cleared for a device whose owning track has
-   * ended, which is a genuine rejoin rather than a competing claim. */
-  private readonly deviceOwners = new Map<ParticipantId, string>();
-  /** The local participant's own device id (``findLocalDeviceId``), cached once
-   * found — it cannot change for the life of a call. undefined means "not
-   * established", which excludes nobody. */
-  private localDeviceId: ParticipantId | undefined;
   private warnedNoSelfMarker = false;
   private identifyCb: ((track: MediaStreamTrack, id: ParticipantId) => void) | null = null;
   private renameCb: ((trackId: string, id: ParticipantId) => void) | null = null;
@@ -524,9 +486,7 @@ export class MeetAdapter implements PlatformAdapter {
     if (this.disposed) return;
     try {
       this.liveTracksById.set(track.id, track);
-      if (!speaking) return; // only onsets feed the correlator (see meet-correlator.ts)
-      this.applyMatch(this.correlator.recordAudioOnset(track.id, at), "collections", at);
-      this.applyMatch(this.domCorrelator.recordAudioOnset(track.id, at), "dom", at);
+      this.dispatch(this.engine.trackSpeaking(track.id, speaking, at));
     } catch {
       // best-effort — a broken correlation must never affect capture
     }
@@ -537,34 +497,16 @@ export class MeetAdapter implements PlatformAdapter {
   onDeviceSpeaking(deviceId: ParticipantId, at: number): void {
     if (this.disposed) return;
     try {
-      // Recorded before the local-device filter on purpose: the flight
-      // recorder wants the evidence as observed, and roster-delta's isLocal
-      // is what lets a replay re-derive the exclusion.
+      // Recorded before the engine's local-device filter on purpose: the
+      // flight recorder wants the evidence as observed, and roster-delta's
+      // isLocal is what lets a replay re-derive the exclusion. The filter
+      // itself — the real fix for journal #158 (the 2026-08-12 call, #172, is
+      // the worked example) — lives in the engine.
       recordAttribution({ type: "dom-burst", t: at, deviceId });
-      if (this.isLocalDevice(deviceId)) return; // never correlate the user to a remote track
-      this.applyMatch(this.domCorrelator.recordDeviceOnset(deviceId, at), "dom", at);
+      this.dispatch(this.engine.deviceSpeaking(deviceId, at));
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
-  }
-
-  /**
-   * Whether `deviceId` is the local participant's own device.
-   *
-   * Dropping these onsets at the door is the real fix for journal #158: the
-   * user's speaking-ring bursts while they backchannel over someone else's turn
-   * are what land inside a remote track's onset window and confirm a wrong
-   * pairing. The correlator's ambiguity rules can only make that pairing *harder*
-   * to reach; they cannot know it is nonsense. Nothing else can either — the
-   * local participant is a roster device like any other.
-   *
-   * The 2026-08-12 call is the worked example: with #159's guards live it made
-   * exactly one binding all call, and that binding was the local device, so the
-   * remote's 1816 turns were titled with the local user's name (#172).
-   */
-  private isLocalDevice(deviceId: ParticipantId): boolean {
-    if (this.localDeviceId === undefined) return false;
-    return this.localDeviceId === deviceId;
   }
 
   /** audio-tap.ts calls this on every track's "unmute" event. A remote track
@@ -578,7 +520,7 @@ export class MeetAdapter implements PlatformAdapter {
     if (this.disposed) return;
     try {
       this.liveTracksById.set(track.id, track);
-      this.applyMatch(this.unmuteCorrelator.recordAudioOnset(track.id, at), "unmute", at);
+      this.dispatch(this.engine.trackUnmuted(track.id, at));
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
@@ -588,103 +530,80 @@ export class MeetAdapter implements PlatformAdapter {
     if (this.disposed) return;
     try {
       this.deviceState.set(event.deviceId, { micOpen: event.micOpen, lastSeen: at });
-      if (!event.micOpen) return; // only the mic-open edge is a correlatable onset
-      if (this.isLocalDevice(event.deviceId)) return; // the user's own mic toggle, not a remote's
-      this.applyMatch(this.correlator.recordDeviceOnset(event.deviceId, at), "collections", at);
-      this.applyMatch(this.unmuteCorrelator.recordDeviceOnset(event.deviceId, at), "unmute", at);
+      this.dispatch(this.engine.collectionsEdge(event.deviceId, event.micOpen, at));
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
   }
 
-  private applyMatch(match: CorrelatorMatch | null, correlator: CorrelatorId, at: number): void {
-    if (!match || match.confirmations < CONFIRM_THRESHOLD) return;
-    // Every confirmed match records what was decided about it, with its cause
-    // (which correlator, how many confirming turns) — the flight recorder's
-    // `provisional-binding` event.
-    const recordBinding = (outcome: BindingOutcome): void =>
-      recordAttribution({
-        type: "provisional-binding",
-        t: at,
-        trackId: match.trackKey,
-        deviceId: match.deviceId,
-        correlator,
-        confirmations: match.confirmations,
-        outcome,
-      });
-    if (this.isLocalDevice(match.deviceId)) {
-      // Belt and braces: the onset filters should mean this never fires, but a
-      // pairing confirmed before the marker was first read could still arrive.
-      recordBinding("refused-local-device");
-      console.debug(
-        `[ears][identity] Meet identity match refused: ${match.deviceId} is the local participant, ` +
-          `so track ${match.trackKey} cannot be it (journal #158)`,
-      );
-      return;
-    }
-    const bound = this.upgradedTracks.get(match.trackKey);
-    if (bound !== undefined) {
-      if (bound !== match.deviceId) {
-        recordBinding("refused-rebind");
+  /** Translate the engine's decisions into effects: flight-recorder events,
+   * debug logs, and the onIdentify/onRename callbacks. */
+  private dispatch(decisions: MeetIdentityDecision[]): void {
+    for (const decision of decisions) {
+      if (decision.kind === "binding") {
+        this.applyBinding(decision);
+      } else if (decision.kind === "local-resolved") {
         console.debug(
-          `[ears][identity] Meet identity rebind refused: track ${match.trackKey} is already ` +
-            `${bound}, so a ${match.confirmations}-turn match on ${match.deviceId} is a ` +
-            `competing claim, not an upgrade (journal #158)`,
+          `[ears][identity] Meet local participant resolved: ${decision.deviceId} — excluded from identity correlation`,
         );
       }
-      return; // already pushed, or a rebind — either way, nothing to push
     }
-    if (this.deviceClaimed(match.deviceId, match.trackKey)) {
-      recordBinding("refused-device-claimed");
-      console.debug(
-        `[ears][identity] Meet identity claim refused: device ${match.deviceId} is already ` +
-          `carried by live track ${this.deviceOwners.get(match.deviceId)}, so track ` +
-          `${match.trackKey} cannot also be it (journal #158)`,
-      );
-      return;
-    }
-    const track = this.liveTracksById.get(match.trackKey);
-    if (!track) {
-      // The correlation confirmed, but the track it points at is already gone —
-      // too late for onIdentify's pipeline restart. Push the join as a rename
-      // instead: the audio already recorded under the fallback id keeps its
-      // source, and the daemon attaches that source to the named attendee (the
-      // Etel case — a track that died to the AudioDecoder bug before its
-      // upgrade could land, journal #45).
-      this.bind(match.trackKey, match.deviceId);
-      recordBinding("bound-late-rename");
-      console.debug(
-        `[ears][identity] Meet late join: no live track for device ${match.deviceId} ` +
-          `(track ${match.trackKey} ended before ${match.confirmations}-turn confirmation landed)` +
-          ` — pushing as a rename`,
-      );
-      this.renameCb?.(match.trackKey, match.deviceId);
-      return;
-    }
-    this.bind(match.trackKey, match.deviceId);
-    recordBinding("bound");
-    const name = this.names.get(match.deviceId);
-    console.debug(
-      `[ears][identity] Meet identity join: track ${match.trackKey} → ${match.deviceId}` +
-        `${name ? ` "${name}"` : " (name not yet resolved from tiles)"} ` +
-        `via speaking-onset correlation (${match.confirmations} confirming turns)`,
-    );
-    this.identifyCb?.(track, match.deviceId);
   }
 
-  private bind(trackKey: string, deviceId: ParticipantId): void {
-    this.upgradedTracks.set(trackKey, deviceId);
-    this.deviceOwners.set(deviceId, trackKey);
-  }
-
-  /** Whether `deviceId` is spoken for by a *live* track other than `trackKey`.
-   * A binding whose track has ended (or was never seen live — the rename path)
-   * no longer blocks: that participant rejoining with a fresh track is the one
-   * legitimate reason for a second claim. */
-  private deviceClaimed(deviceId: ParticipantId, trackKey: string): boolean {
-    const owner = this.deviceOwners.get(deviceId);
-    if (owner === undefined || owner === trackKey) return false;
-    return this.liveTracksById.get(owner)?.readyState === "live";
+  /** Every confirmed match records what was decided about it, with its cause
+   * (which correlator, how many confirming turns) — the flight recorder's
+   * `provisional-binding` event, which the decision mirrors field for field. */
+  private applyBinding(d: MeetBindingDecision): void {
+    recordAttribution({
+      type: "provisional-binding",
+      t: d.t,
+      trackId: d.trackId,
+      deviceId: d.deviceId,
+      correlator: d.correlator,
+      confirmations: d.confirmations,
+      outcome: d.outcome,
+    });
+    switch (d.outcome) {
+      case "refused-local-device":
+        console.debug(
+          `[ears][identity] Meet identity match refused: ${d.deviceId} is the local participant, ` +
+            `so track ${d.trackId} cannot be it (journal #158)`,
+        );
+        return;
+      case "refused-rebind":
+        console.debug(
+          `[ears][identity] Meet identity rebind refused: track ${d.trackId} is already ` +
+            `${d.boundDeviceId}, so a ${d.confirmations}-turn match on ${d.deviceId} is a ` +
+            `competing claim, not an upgrade (journal #158)`,
+        );
+        return;
+      case "refused-device-claimed":
+        console.debug(
+          `[ears][identity] Meet identity claim refused: device ${d.deviceId} is already ` +
+            `carried by live track ${d.owningTrackId}, so track ` +
+            `${d.trackId} cannot also be it (journal #158)`,
+        );
+        return;
+      case "bound-late-rename":
+        console.debug(
+          `[ears][identity] Meet late join: no live track for device ${d.deviceId} ` +
+            `(track ${d.trackId} ended before ${d.confirmations}-turn confirmation landed)` +
+            ` — pushing as a rename`,
+        );
+        this.renameCb?.(d.trackId, d.deviceId);
+        return;
+      case "bound": {
+        const name = this.names.get(d.deviceId);
+        console.debug(
+          `[ears][identity] Meet identity join: track ${d.trackId} → ${d.deviceId}` +
+            `${name ? ` "${name}"` : " (name not yet resolved from tiles)"} ` +
+            `via speaking-onset correlation (${d.confirmations} confirming turns)`,
+        );
+        const track = this.liveTracksById.get(d.trackId);
+        if (track) this.identifyCb?.(track, d.deviceId);
+        return;
+      }
+    }
   }
 
   /**
@@ -767,13 +686,10 @@ export class MeetAdapter implements PlatformAdapter {
    * the tile set would otherwise clear an exclusion we already rely on.
    */
   private resolveLocalDevice(at: number): void {
-    if (this.localDeviceId !== undefined) return;
+    if (this.engine.localDevice !== undefined) return;
     const found = findLocalDeviceId(document);
     if (found) {
-      this.localDeviceId = found;
-      console.debug(
-        `[ears][identity] Meet local participant resolved: ${found} — excluded from identity correlation`,
-      );
+      this.dispatch(this.engine.localDeviceObserved(found, at));
       // The marker routinely resolves *after* this device's name was already
       // forwarded, and the roster feed is a delta keyed on the name. Drop the
       // emitted record for this one id so the next emitRoster re-sends it,
@@ -806,8 +722,9 @@ export class MeetAdapter implements PlatformAdapter {
     // "which of these is me" belongs — and the daemon needs it to enforce the
     // no-remote-track-is-you invariant on durable state, where this build's
     // missing "(You)" marker cannot silently disable the check.
+    const localDevice = this.engine.localDevice;
     for (const entry of fresh) {
-      if (this.localDeviceId !== undefined && entry.participantId === this.localDeviceId) {
+      if (localDevice !== undefined && entry.participantId === localDevice) {
         entry.isLocal = true;
       }
       console.debug(

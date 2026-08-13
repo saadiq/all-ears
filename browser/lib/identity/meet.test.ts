@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  CONFIRM_THRESHOLD,
   MeetAdapter,
   SELF_MARKER,
   findLocalDeviceId,
@@ -13,6 +12,7 @@ import {
   type DocumentLike,
   type MediaElementLike,
 } from "./meet";
+import { CONFIRM_THRESHOLD } from "./meet-identity-engine";
 
 // Hand-rolled fake DOM (repo prefers small fakes over jsdom — see
 // rtc-hook.test.ts; vitest runs in the node environment). Implements exactly
@@ -356,19 +356,15 @@ describe("rosterDelta", () => {
   });
 });
 
-describe("CONFIRM_THRESHOLD", () => {
-  it("requires at least 2 corroborating turns (2026-08-05: a 1-turn join misattributed under same-room audio)", () => {
-    expect(CONFIRM_THRESHOLD).toBeGreaterThanOrEqual(2);
-  });
-});
-
 // ── Track ↔ device binding (journal #158) ───────────────────────────────────
 //
-// MeetAdapter reaches `window` only in its constructor (setCollectionsListener);
-// onTrackSpeaking/onDeviceSpeaking/applyMatch touch no DOM at all, so a bare
-// window stub is enough to drive the binding rules end to end. Turns go
-// through the speaking-ring correlator — the per-turn signal that carried the
-// live misbinding.
+// The binding rules themselves live in MeetIdentityEngine and are tested
+// exhaustively in meet-identity-engine.test.ts. These tests drive the same
+// behaviours through the adapter shell — real entry points, real track
+// objects — so the shell→engine wiring (observation forwarding, TrackPresence,
+// callback translation) stays covered end to end. MeetAdapter reaches `window`
+// only in its constructor (setCollectionsListener); onTrackSpeaking/
+// onDeviceSpeaking touch no DOM at all, so a bare window stub is enough.
 
 class FakeTrack {
   constructor(
@@ -418,15 +414,6 @@ describe("MeetAdapter track ↔ device binding", () => {
     expect(joins).toEqual([["track-remote", "devices/160"]]);
   });
 
-  it("refuses a second live track's claim on a device another live track already carries", () => {
-    const { adapter, joins } = newAdapter();
-
-    confirm(adapter, new FakeTrack("track-a"), "devices/160");
-    confirm(adapter, new FakeTrack("track-b"), "devices/160");
-
-    expect(joins).toEqual([["track-a", "devices/160"]]);
-  });
-
   it("lets a fresh track claim a device whose previous track has ended (a rejoin)", () => {
     const { adapter, joins } = newAdapter();
     const first = new FakeTrack("track-a");
@@ -438,18 +425,6 @@ describe("MeetAdapter track ↔ device binding", () => {
     expect(joins).toEqual([
       ["track-a", "devices/160"],
       ["track-a2", "devices/160"],
-    ]);
-  });
-
-  it("still upgrades an unbound track to an unclaimed device", () => {
-    const { adapter, joins } = newAdapter();
-
-    confirm(adapter, new FakeTrack("track-a"), "devices/160");
-    confirm(adapter, new FakeTrack("track-b"), "devices/161");
-
-    expect(joins).toEqual([
-      ["track-a", "devices/160"],
-      ["track-b", "devices/161"],
     ]);
   });
 });
