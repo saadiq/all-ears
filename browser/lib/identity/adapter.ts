@@ -4,17 +4,19 @@ import type { Platform, RosterEntry } from "../protocol";
 // interface. The capture spine (hook, tap, transport) never branches on platform.
 
 /**
- * The platform's own stable id for a participant — the `id` half of a
- * platform-kind `ParticipantRef` (protocol.ts). Adapters only ever speak
- * platform ids: the synthetic stand-ins (`speaker-<n>`, `webaudio-track-<n>`)
- * are minted by the capture layer (audio-tap.ts) when `identify()` returns
- * null, never by an adapter.
+ * The platform's own stable id for a participant (a Meet device path, a Zoom
+ * node id). Adapters only ever speak platform ids: the track-scoped source
+ * handles (`t<n>`) are minted by the capture layer (audio-tap.ts), never by
+ * an adapter, and a platform id never becomes a source id — it reaches the
+ * daemon as an attendee upsert linking the handle's source (R3).
  */
 export type PlatformParticipantId = string;
 
 export interface PlatformAdapter {
   readonly platform: Platform;
-  /** Best-effort stable id for a remote track. null → caller assigns speaker-<n>. */
+  /** Best-effort platform id for a remote track at admission. null → the
+   * source simply stays anonymous until (unless) a later identity confirms;
+   * audio is captured under the track handle either way. */
   identify(
     track: MediaStreamTrack,
     stream: MediaStream,
@@ -47,23 +49,16 @@ export interface PlatformAdapter {
    */
   onDeviceSpeaking?(deviceId: string, at: number): void;
   /**
-   * Optional: register a callback for a later, asynchronous identity upgrade
-   * — an id resolved after identify() already returned null (or a fallback)
-   * for that track at +track time. At most one upgrade per track is expected;
-   * audio-tap.ts restarts that track's pipeline as a new segment under the
-   * upgraded id (see audio-tap.ts's handleIdentityUpgrade for why a rename-
-   * in-place wasn't used).
+   * Optional: register a callback for a platform identity that confirmed
+   * asynchronously for a captured track (Meet's speaking-onset correlation).
+   * Carries the track id rather than the track object because nothing needs
+   * the object any more: the pipeline is never restarted for an identity —
+   * audio-tap.ts translates the track id to the source handle its audio is
+   * recorded under and forwards an attendee upsert linking the two
+   * (`participant-identified`). May fire at any point in the track's life,
+   * including after it ended.
    */
-  onIdentify?(cb: (track: MediaStreamTrack, id: PlatformParticipantId) => void): void;
-  /**
-   * Optional: register a callback for an identity that confirmed *after* its
-   * track already ended — too late for onIdentify's pipeline restart. Carries
-   * the dead track's id (the adapter may no longer hold the track object) and
-   * the confirmed participant id. audio-tap.ts translates the track id back to
-   * the fallback participant id it captured under and tells the daemon the two
-   * are the same person, so already-recorded audio still gets a named speaker.
-   */
-  onRename?(cb: (trackId: string, id: PlatformParticipantId) => void): void;
+  onIdentity?(cb: (trackId: string, id: PlatformParticipantId) => void): void;
   /**
    * Optional: register a callback for batches of resolved participant identities
    * (id → display name) read from the platform's own roster/UI, independent of

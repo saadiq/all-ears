@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SessionTracker, type SessionControl, type SessionState } from "./session-tracker";
 import {
-  platformParticipant,
   syntheticParticipant,
   type AttendeeUpsert,
   type SessionWire,
@@ -291,19 +290,25 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     const { tracker } = makeTracker(control);
 
     tracker.meetingStarted("p1", "meet", "abc");
-    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane Doe");
-    tracker.streamOpened("p1", "meet", "jane");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t1"));
+    tracker.streamOpened("p1", "meet", "t1");
+    tracker.participantIdentified("p1", "meet", "jane", "t1", "Jane Doe");
     expect(control.ofVerb("attendee")).toHaveLength(0); // still queued
 
     control.resolveStart();
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe", origin: "platform" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "t1", origin: "synthetic" } },
       {
         verb: "attendee",
         session: "m-1",
-        attendee: { id: "jane", source: "browser:meet:jane", origin: "platform" },
+        attendee: { id: "t1", source: "browser:meet:t1", origin: "synthetic" },
+      },
+      {
+        verb: "attendee",
+        session: "m-1",
+        attendee: { id: "jane", display_name: "Jane Doe", source: "browser:meet:t1", origin: "platform" },
       },
     ]);
   });
@@ -316,27 +321,27 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     await flush();
     // The ingest stream confirms before (or without) a participant-joined for
     // this id — the tracker has no provenance to stamp, and must not invent one.
-    tracker.streamOpened("p1", "meet", "speaker-9");
+    tracker.streamOpened("p1", "meet", "t9");
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "speaker-9", source: "browser:meet:speaker-9" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "t9", source: "browser:meet:t9" } },
     ]);
   });
 
-  it("a synthetic join stamps origin synthetic on its upsert and its stream link", async () => {
+  it("a capture join stamps origin synthetic on its upsert and its stream link", async () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
-    tracker.participantJoined("p1", "meet", syntheticParticipant("speaker-2"));
-    tracker.streamOpened("p1", "meet", "speaker-2");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t2"));
+    tracker.streamOpened("p1", "meet", "t2");
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "speaker-2", origin: "synthetic" } },
-      { verb: "attendee", session: "m-1", attendee: { id: "speaker-2", source: "browser:meet:speaker-2", origin: "synthetic" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "t2", origin: "synthetic" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "t2", source: "browser:meet:t2", origin: "synthetic" } },
     ]);
   });
 
@@ -348,8 +353,8 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
-    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane Doe");
-    tracker.streamOpened("p1", "meet", "jane");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t1"));
+    tracker.streamOpened("p1", "meet", "t1");
     expect(control.ofVerb("attendee")).toHaveLength(0); // no record yet — buffered
 
     tracker.meetingStarted("p1", "meet", "abc");
@@ -357,8 +362,8 @@ describe("SessionTracker (v2 signal forwarder)", () => {
 
     expect(control.ofVerb("start")).toEqual([{ verb: "start", platform: "meet", externalMeetingId: "abc" }]);
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe", origin: "platform" } },
-      { verb: "attendee", session: "m-1", attendee: { id: "jane", source: "browser:meet:jane", origin: "platform" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "t1", origin: "synthetic" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "t1", source: "browser:meet:t1", origin: "synthetic" } },
     ]);
   });
 
@@ -366,7 +371,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     const control = new FakeControl();
     const { tracker } = makeTracker(control);
 
-    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane Doe");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t1"));
     tracker.portDisconnected("p1");
 
     // A later session on the same port id must not resurrect the dropped signal.
@@ -381,38 +386,38 @@ describe("SessionTracker (v2 signal forwarder)", () => {
 
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
-    tracker.participantJoined("p1", "meet", platformParticipant("jane"), "Jane");
-    tracker.participantJoined("p1", "meet", platformParticipant("marcus"), "Marcus");
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t1"));
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t2"));
     await flush();
 
-    tracker.participantLeft("p1", "jane");
+    tracker.participantLeft("p1", "t1");
     await flush();
     expect(control.ofVerb("end")).toHaveLength(0);
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
       session: "m-1",
-      attendee: { id: "jane", left: NOW },
+      attendee: { id: "t1", left: NOW },
     });
 
     // A seam swap (escalateSeam) drains the whole set and re-adopts moments
     // later — zero participants is not evidence the call ended.
-    tracker.participantLeft("p1", "marcus");
+    tracker.participantLeft("p1", "t2");
     await flush();
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
       session: "m-1",
-      attendee: { id: "marcus", left: NOW },
+      attendee: { id: "t2", left: NOW },
     });
     expect(control.ofVerb("end")).toHaveLength(0);
     expect(tracker.sessionActive).toBe(true);
 
     // The new seam's tracks re-join the same live session.
-    tracker.participantJoined("p1", "meet", syntheticParticipant("webaudio-track-1"));
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t3"));
     await flush();
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
       session: "m-1",
-      attendee: { id: "webaudio-track-1", origin: "synthetic" },
+      attendee: { id: "t3", origin: "synthetic" },
     });
   });
 
@@ -441,7 +446,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     // One real capture participant plus a roster name for someone never captured.
-    tracker.participantJoined("p1", "meet", syntheticParticipant("speaker-1"));
+    tracker.participantJoined("p1", "meet", syntheticParticipant("t1"));
     tracker.rosterUpdate("p1", "meet", [{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
     await flush();
     const upsertsBefore = control.ofVerb("attendee").length;
@@ -453,12 +458,12 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     expect(control.ofVerb("attendee")).toHaveLength(upsertsBefore);
 
     // The capture participant's leave stamps its row (and ends nothing).
-    tracker.participantLeft("p1", "speaker-1");
+    tracker.participantLeft("p1", "t1");
     await flush();
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
       session: "m-1",
-      attendee: { id: "speaker-1", left: NOW },
+      attendee: { id: "t1", left: NOW },
     });
     expect(control.ofVerb("end")).toHaveLength(0);
   });

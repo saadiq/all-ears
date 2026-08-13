@@ -17,7 +17,8 @@ import {
 //
 //   meeting-started      → session.start (idempotent on platform+external id)
 //   meeting name scraped → session.rename (compare-and-set on rev)
-//   participant joined   → session.attendee upsert (display name)
+//   participant joined   → session.attendee upsert (synthetic track-handle row)
+//   identity confirmed   → session.attendee upsert (platform id + name + source)
 //   ingest stream opened → session.attendee upsert (source link)
 //   participant left     → session.attendee upsert (left timestamp)
 //   popup pause toggle   → session.pause / session.resume (marks, never capture)
@@ -67,7 +68,7 @@ export interface SessionControl {
  * browser:* source, so the daemon never classified it as a browser session).
  */
 type PendingPortEvent =
-  | { kind: "joined"; platform: Platform; participant: ParticipantRef; displayName?: string }
+  | { kind: "joined"; platform: Platform; participant: ParticipantRef }
   | { kind: "stream"; platform: Platform; participantId: string }
   | { kind: "roster"; platform: Platform; entries: RosterEntry[] }
   | {
@@ -242,20 +243,17 @@ export class SessionTracker {
     if (record) this.endSession(record);
   }
 
-  /** A participant's identity (with display name, when known) from the
-   * tab's DOM layer — upserted onto the daemon session's roster. */
-  participantJoined(
-    portId: string,
-    platform: Platform,
-    participant: ParticipantRef,
-    displayName?: string,
-  ): void {
+  /** A capture participant (a track-scoped handle) from the tab's capture
+   * layer — enrolled for `left` stamping and upserted onto the daemon
+   * session's roster as a synthetic row. Identity arrives separately, via
+   * `participantIdentified` / `rosterUpdate`. */
+  participantJoined(portId: string, platform: Platform, participant: ParticipantRef): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
-      this.enqueuePending(portId, { kind: "joined", platform, participant, displayName });
+      this.enqueuePending(portId, { kind: "joined", platform, participant });
       return;
     }
-    this.applyJoined(record, participant, displayName);
+    this.applyJoined(record, participant);
   }
 
   /**
@@ -312,11 +310,10 @@ export class SessionTracker {
     this.applyStream(record, platform, participantId);
   }
 
-  private applyJoined(record: SessionRecord, participant: ParticipantRef, displayName?: string): void {
+  private applyJoined(record: SessionRecord, participant: ParticipantRef): void {
     record.participants.set(participant.id, participant.kind);
     this.upsertAttendee(record, {
       id: participant.id,
-      ...(displayName ? { display_name: displayName } : {}),
       origin: participant.kind,
     });
   }
@@ -381,7 +378,7 @@ export class SessionTracker {
     this.pendingByPort.delete(portId);
     for (const event of queue) {
       if (event.platform !== record.platform) continue; // different platform on the same port — not this session
-      if (event.kind === "joined") this.applyJoined(record, event.participant, event.displayName);
+      if (event.kind === "joined") this.applyJoined(record, event.participant);
       else if (event.kind === "roster") this.applyRoster(record, event.entries);
       else if (event.kind === "identified")
         this.applyIdentified(record, event.platform, event.participantId, event.captureId, event.displayName);

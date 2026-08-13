@@ -363,7 +363,7 @@ describe("MeetAdapter track ↔ device binding", () => {
   function newAdapter(): { adapter: MeetAdapter; joins: Array<[string, string]> } {
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     return { adapter, joins };
   }
 
@@ -501,7 +501,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     ]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities(); // roster scan latches the local device
 
     for (let i = 0; i < 6; i++) turn(adapter, { id: "track-remote" }, "devices/107");
@@ -516,7 +516,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     ]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities();
 
     for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, { id: "track-remote" }, "devices/108");
@@ -530,7 +530,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     stubDocument([tileEl("devices/107", "Tom Elliot"), tileEl("devices/108", "Priya Raman")]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities();
 
     for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, { id: "track-remote" }, "devices/108");
@@ -542,7 +542,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     stubDocument([tileEl("devices/107", "Tom Elliot (You)")]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities();
 
     // Drive the unmute correlator: track unmute + the local device's mic-open.

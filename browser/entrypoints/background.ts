@@ -234,7 +234,7 @@ export default defineBackground(() => {
       const msg = raw as PortMessage;
       switch (msg.type) {
         case "joined":
-          sessions.participantJoined(portId, msg.platform, msg.participant, msg.displayName);
+          sessions.participantJoined(portId, msg.platform, msg.participant);
           return;
         case "roster":
           sessions.rosterUpdate(portId, msg.platform, msg.entries);

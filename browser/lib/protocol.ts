@@ -11,16 +11,16 @@ import type { PerfRecord } from "./perf";
 /** Marker on every window.postMessage envelope crossing the world boundary. */
 export const EARS_MARKER = "__ears" as const;
 
-/** Platform tag, mirrored into the earsd `browser:<platform>:<participant>` label. */
+/** Platform tag, mirrored into the earsd `browser:<platform>:<track-slug>` label. */
 export type Platform = "meet" | "zoom" | "teams";
 
 /**
  * Where a participant reference was minted. `platform` ids come from the
  * platform itself (a Meet device path like `spaces/x/devices/y`, a Zoom node
- * id) and can be joined against the platform's own roster; `synthetic` ids are
- * stand-ins this extension mints when no platform id is available
- * (`speaker-<n>`, `webaudio-track-<n>`, `graphtap-<n>`) — they name a captured
- * track, not a person. The distinction travels to the daemon as the attendee's
+ * id) and can be joined against the platform's own roster; `synthetic` ids
+ * are extension-minted handles that name a captured track, not a person —
+ * the per-track source slugs (`t<n>`) and the dev-only stand-ins
+ * (`graphtap-<n>`). The distinction travels to the daemon as the attendee's
  * `origin`, so a synthetic roster row is never mistaken for a platform-observed
  * one (attribution refactor R4; reconciler bug B7).
  */
@@ -40,12 +40,7 @@ export interface ParticipantRef {
   id: string;
 }
 
-/** A reference to a participant under the platform's own stable id. */
-export function platformParticipant(id: string): ParticipantRef {
-  return { kind: "platform", id };
-}
-
-/** A reference under an extension-minted stand-in id (`speaker-<n>`, …). */
+/** A reference under an extension-minted track handle (`t<n>`, …). */
 export function syntheticParticipant(id: string): ParticipantRef {
   return { kind: "synthetic", id };
 }
@@ -56,9 +51,9 @@ export function syntheticParticipant(id: string): ParticipantRef {
  * has been correlated to this id yet (issue #23). The daemon upserts these onto
  * the session's attendee roster, so a name lands even when the speaking-onset
  * correlation never tied the participant to a captured track (in which case the
- * track stays `speaker-<n>` and this named entry sits beside it, rather than the
- * name being silently lost). `displayName` is always a non-empty string —
- * empties are dropped before an entry is built.
+ * track's source stays an anonymous handle and this named entry sits beside it,
+ * rather than the name being silently lost). `displayName` is always a
+ * non-empty string — empties are dropped before an entry is built.
  */
 export interface RosterEntry {
   /** Always a platform-minted id: roster entries are harvested from the
@@ -86,10 +81,11 @@ export interface RosterEntry {
  * transferable Int16Array (structured-cloned across the world boundary).
  */
 export type MainMessage =
-  // Declares a participant with full provenance (`participant.kind` says
-  // whether the id is the platform's or a synthetic stand-in). Later messages
-  // refer back by the bare `participantId` key.
-  | { kind: "participant-joined"; platform: Platform; participant: ParticipantRef; generation: number; displayName?: string }
+  // Declares a capture participant — always a track-scoped handle (`t<n>`,
+  // kind `synthetic`): source ids carry no identity (R3). Later messages
+  // refer back by the bare `participantId` key. Identity, when it resolves,
+  // rides `participant-identified` / `participant-roster`, never this.
+  | { kind: "participant-joined"; platform: Platform; participant: ParticipantRef; generation: number }
   | { kind: "participant-left"; participantId: string; generation: number }
   // A batch of participant identities (id → display name) the adapter resolved
   // from the platform's roster/UI, not necessarily tied to a captured track.
@@ -248,10 +244,10 @@ export type PortMessage =
       seq: number;
       sentAt: number;
     }
-  // Participant identity (with display name, when the DOM knows it) — what
-  // the background upserts onto the daemon session's roster. Carries the full
+  // A capture participant (track-scoped handle) — what the background upserts
+  // onto the daemon session's roster as a synthetic row. Carries the full
   // ref: the upsert needs `kind` to stamp the attendee's `origin`.
-  | { type: "joined"; participant: ParticipantRef; platform: Platform; displayName?: string }
+  | { type: "joined"; participant: ParticipantRef; platform: Platform }
   // Identity-only roster names (see MainMessage "participant-roster"). The
   // background upserts each onto the daemon session's attendee roster without
   // treating them as capture participants (no `left` is ever stamped on them).
@@ -283,16 +279,20 @@ export type PortMessage =
 /** v1 always declares 16 kHz mono pcm_s16le; keys match earsd's AudioFormatSpec. */
 export const INGEST_FORMAT = { sample_rate: 16000, channels: 1, encoding: "pcm_s16le" } as const;
 
-/** earsd source labels are `[A-Za-z0-9._-]`; sanitize the participant suffix. */
+/** earsd source labels are `[A-Za-z0-9._-]`; sanitize the capture-id suffix.
+ * Today's track slugs (`t<n>`) are already clean — this guards the label
+ * grammar against any historic or dev-minted id shape. */
 export function sanitizeLabel(id: string): string {
   const cleaned = id.replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
   return cleaned || "unknown";
 }
 
-/** Wire edge: a `ParticipantRef` flattens to its bare `id` here — the earsd
- * source label carries no provenance (that rides on the attendee upsert). */
-export function sourceLabel(platform: Platform, participantId: string): string {
-  return `browser:${platform}:${sanitizeLabel(participantId)}`;
+/** Wire edge: the earsd source label for a capture participant. `captureId`
+ * is the track-scoped handle the audio is recorded under — an opaque slug,
+ * never an identity (R3). Whose voice the source carries rides separately, on
+ * the `session.attendee` upsert linking this label. */
+export function sourceLabel(platform: Platform, captureId: string): string {
+  return `browser:${platform}:${sanitizeLabel(captureId)}`;
 }
 
 // ── earsd control-plane wire (background.ts → earsd ws://…/control) ──────────

@@ -12,9 +12,9 @@
 //     speaking onsets, track unmutes, tile speaking-ring bursts, collections
 //     mic edges, roster scans.
 //   - Outputs are typed decisions (MeetIdentityDecision). The shell translates
-//     them into today's onIdentify/onRename/onRoster callbacks and records
-//     each binding decision as a `provisional-binding` event — the decision
-//     type deliberately mirrors that event's fields.
+//     them into today's onIdentity/onRoster callbacks and records each
+//     binding decision as a `provisional-binding` event — the decision type
+//     deliberately mirrors that event's fields.
 //
 // The one impurity is injected: TrackPresence answers "does the shell hold a
 // usable MediaStreamTrack for this id, and is it live?". Track objects are
@@ -59,8 +59,8 @@ const DOM_CORRELATION_WINDOW_MS = 1_000;
 /** The shell's answers about the MediaStreamTrack objects it holds — the only
  * page state a binding decision depends on. */
 export interface TrackPresence {
-  /** Whether the shell holds a track object for `trackId` that an onIdentify
-   * pipeline restart could use. */
+  /** Whether the shell still holds a track object for `trackId` — the
+   * bound vs bound-late-rename evidence distinction. */
   hasTrack(trackId: string): boolean;
   /** Whether that track's readyState is still "live". */
   isTrackLive(trackId: string): boolean;
@@ -140,12 +140,14 @@ export class MeetIdentityEngine {
 
   /** track.id → deviceId already decided. A track binds to one device for its
    * life: a repeat match decides nothing, and a match naming a *different*
-   * device is refused outright (journal #158 — a rebind restarts the capture
-   * pipeline under a new source id, so a pairing that oscillates shreds one
-   * participant's speech across two named sources). The correlator's symmetric
-   * ambiguity rule is what should stop the oscillation upstream; this bounds
-   * the damage of any that gets through to one wrong name instead of a
-   * 30-minute flip-flop. */
+   * device is refused outright (journal #158). Since R3 a binding is only an
+   * advisory hint — source ids are stable track handles, so a rebind would be
+   * a metadata update, not the pipeline-restarting audio split it once was
+   * (the 86-rebind storm, meet-correlator.ts) — but the refusal is kept:
+   * first-binding-wins bounds a correlator coincidence to one wrong hint,
+   * and the daemon's reconciler judges the hints against the roster anyway.
+   * Relaxing to "revise after sustained contrary evidence" is now safe to try
+   * whenever the evidence threshold is designed; it was not taken up in R3. */
   private readonly upgradedTracks = new Map<string, PlatformParticipantId>();
   /** deviceId → the track.id currently bound to it, so one participant can't
    * own two live tracks at once. A device whose owning track has ended stops
@@ -323,11 +325,11 @@ export class MeetIdentityEngine {
     this.upgradedTracks.set(match.trackKey, match.deviceId);
     this.deviceOwners.set(match.deviceId, match.trackKey);
     if (!this.tracks.hasTrack(match.trackKey)) {
-      // The correlation confirmed, but the shell holds no track to restart —
-      // too late for onIdentify. The join lands as a rename instead: audio
-      // already recorded under the fallback id keeps its source, and the
-      // daemon attaches that source to the named attendee (the Etel case —
-      // journal #45).
+      // The correlation confirmed after the shell dropped the track (the Etel
+      // case — journal #45). Same identity link either way — the shell
+      // forwards it and the daemon attaches the source to the named attendee
+      // — but the distinct outcome keeps the evidence honest: the track was
+      // already gone when this confirmed.
       out.push({ ...base, outcome: "bound-late-rename" });
       return;
     }

@@ -11,19 +11,20 @@ import {
 } from "./meet-identity-engine";
 
 // Meet identity — Phase 4: tile-DOM correlation (identify(), synchronous),
-// plus Phase 4 collections-datachannel upgrade (onIdentify(), asynchronous).
+// plus Phase 4 collections-datachannel upgrade (onIdentity(), asynchronous).
 //
 // identify() approach (specs/extension.md §Platform adapter): Meet renders a
 // per-participant tile; identify() correlates the captured remote track to
 // the tile's media element (srcObject match) and reads the participant id +
 // display name off the tile's DOM. Everything is synchronous and best-effort
 // by contract: any miss — tile not mounted yet, DOM shape changed, track not
-// attached to any media element — returns null and audio-tap.ts's speaker-<n>
-// fallback carries the audio. Identity never blocks, throws into, or delays
-// capture. The VERIFICATION STATUS section below records this path dead on
-// the 2026-07-18 build; the 2026-08-05 probes found the tile id attributes
-// BACK (see the addendum there), so identify() is opportunistic again — it
-// may resolve, and speaker-<n> still carries every call where it doesn't.
+// attached to any media element — returns null and the track's anonymous
+// source handle carries the audio unnamed. Identity never blocks, throws
+// into, or delays capture. The VERIFICATION STATUS section below records this
+// path dead on the 2026-07-18 build; the 2026-08-05 probes found the tile id
+// attributes BACK (see the addendum there), so identify() is opportunistic
+// again — it may resolve, and the handle still carries every call where it
+// doesn't.
 //
 // ── COLLECTIONS-DATACHANNEL UPGRADE (journal #49-#58) ───────────────────────
 //
@@ -70,15 +71,15 @@ import {
 //      meet-identity-engine.ts) consecutive
 //      confirming pairings — per correlator, never summed across them — before
 //      being trusted.
-//   4. Once confirmed, the upgraded id is pushed via the onIdentify(cb)
-//      callback registered by audio-tap.ts, which restarts that track's
-//      pipeline as a new segment under the real id (see audio-tap.ts's
-//      handleIdentityUpgrade for why "new segment" was chosen over
-//      renaming a running segment in place).
+//   4. Once confirmed, the identity is pushed via the onIdentity(cb) callback
+//      registered by audio-tap.ts, which forwards it to the daemon as an
+//      attendee upsert linking the track's source handle
+//      (participant-identified). Nothing restarts: source ids are stable
+//      per-track handles and never carry identity (R3).
 //
 // Degrades silently if the channel never appears or stops parsing (Meet
-// changed the format) — the correlator just never confirms a match, and
-// identify()/onIdentify fall back to speaker-<n> exactly as they already do.
+// changed the format) — the correlator just never confirms a match, and the
+// track's source simply stays anonymous, exactly as it started.
 // rtc-hook.ts warns once (not per-message) if messages arrive but stop
 // parsing; see maybeWarnCollectionsSchema there.
 //
@@ -99,9 +100,9 @@ import {
 // Live-verified end to end (2026-07-19, journal #55-#58, real 3-participant
 // Meet call): the production tracer parsed real traffic, the correlator
 // accumulated and reported a correct match, and MeetAdapter pushed an
-// onIdentify upgrade that audio-tap.ts's handleIdentityUpgrade restarted
-// cleanly as a new segment — confirmed correct for one participant
-// end-to-end. That same session caught and fixed a real schema bug (the
+// identity upgrade that audio-tap.ts applied cleanly (via the pipeline
+// restart of the day — R3 has since replaced that with the identity-link
+// upsert) — confirmed correct for one participant end-to-end. That same session caught and fixed a real schema bug (the
 // speaking-flag path was missing a nesting level; see meet-collections.ts's
 // header comment). The second non-self participant's track died mid-test to
 // the pre-existing, unrelated AudioDecoder bug (journal #45) before its
@@ -142,8 +143,8 @@ import {
 //     non-self tiles, reproduced on two separate meetings — there is no
 //     stable 1:1 track↔tile correspondence to order against (journal #44).
 //
-// identify() keeps returning null by design; audio-tap.ts's speaker-<n>
-// fallback already handles this correctly and needs no change. Re-verify if
+// identify() keeps returning null by design; the anonymous track handle
+// already handles this correctly and needs no change. Re-verify if
 // a future Meet build changes any of the above (e.g. media elements return,
 // or track/tile counts start matching) — see journal #41–#46 for full detail
 // and #45 for an unrelated capture-pipeline bug (AudioDecoder errors) noticed
@@ -384,14 +385,13 @@ export class MeetAdapter implements PlatformAdapter {
   /** deviceId → last-known mic state, for future use (e.g. debugging);
    * not read for the correlation decision itself, which lives in the engine. */
   private readonly deviceState = new Map<string, { micOpen: boolean; lastSeen: number }>();
-  /** track.id → live track, so a later binding decision can hand the real
-   * track object back to onIdentify. Populated from both identify() and
-   * onTrackSpeaking(), whichever sees a track first; never explicitly pruned
-   * (bounded by the small number of tracks live in a call, and dispose()
-   * clears it). Also the backing store for the engine's TrackPresence. */
+  /** track.id → live track — the backing store for the engine's
+   * TrackPresence (is this device's owning track still live?). Populated from
+   * both identify() and onTrackSpeaking(), whichever sees a track first;
+   * never explicitly pruned (bounded by the small number of tracks live in a
+   * call, and dispose() clears it). */
   private readonly liveTracksById = new Map<string, MediaStreamTrack>();
-  private identifyCb: ((track: MediaStreamTrack, id: PlatformParticipantId) => void) | null = null;
-  private renameCb: ((trackId: string, id: PlatformParticipantId) => void) | null = null;
+  private identityCb: ((trackId: string, id: PlatformParticipantId) => void) | null = null;
   private rosterCb: ((entries: RosterEntry[]) => void) | null = null;
 
   constructor() {
@@ -402,7 +402,7 @@ export class MeetAdapter implements PlatformAdapter {
 
   identify(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
     // Best-effort by contract: a broken or changed Meet DOM must degrade to
-    // speaker-<n>, never throw into the capture path.
+    // an anonymous source, never throw into the capture path.
     this.liveTracksById.set(track.id, track);
     try {
       return this.correlate(track, stream);
@@ -420,12 +420,8 @@ export class MeetAdapter implements PlatformAdapter {
     return this.engine.displayName(id);
   }
 
-  onIdentify(cb: (track: MediaStreamTrack, id: PlatformParticipantId) => void): void {
-    this.identifyCb = cb;
-  }
-
-  onRename(cb: (trackId: string, id: PlatformParticipantId) => void): void {
-    this.renameCb = cb;
+  onIdentity(cb: (trackId: string, id: PlatformParticipantId) => void): void {
+    this.identityCb = cb;
   }
 
   onRoster(cb: (entries: RosterEntry[]) => void): void {
@@ -510,7 +506,7 @@ export class MeetAdapter implements PlatformAdapter {
   }
 
   /** Translate the engine's decisions into effects: flight-recorder events,
-   * debug logs, and the onIdentify/onRename/onRoster callbacks. */
+   * debug logs, and the onIdentity/onRoster callbacks. */
   private dispatch(decisions: MeetIdentityDecision[]): void {
     for (const decision of decisions) {
       switch (decision.kind) {
@@ -606,9 +602,9 @@ export class MeetAdapter implements PlatformAdapter {
         console.debug(
           `[ears][identity] Meet late join: no live track for device ${d.deviceId} ` +
             `(track ${d.trackId} ended before ${d.confirmations}-turn confirmation landed)` +
-            ` — pushing as a rename`,
+            ` — pushing the identity link anyway`,
         );
-        this.renameCb?.(d.trackId, d.deviceId);
+        this.identityCb?.(d.trackId, d.deviceId);
         return;
       case "bound": {
         const name = this.engine.displayName(d.deviceId);
@@ -617,8 +613,7 @@ export class MeetAdapter implements PlatformAdapter {
             `${name ? ` "${name}"` : " (name not yet resolved from tiles)"} ` +
             `via speaking-onset correlation (${d.confirmations} confirming turns)`,
         );
-        const track = this.liveTracksById.get(d.trackId);
-        if (track) this.identifyCb?.(track, d.deviceId);
+        this.identityCb?.(d.trackId, d.deviceId);
         return;
       }
     }
@@ -651,7 +646,7 @@ export class MeetAdapter implements PlatformAdapter {
     const media = findMediaElementForTrack(document, track, stream);
     const tile = media ? findParticipantTile(media) : null;
     if (!tile) {
-      // Normal not-(yet-)correlated case — quiet null, speaker-<n> carries it.
+      // Normal not-(yet-)correlated case — quiet null, the handle carries it.
       // But distinguish it from a structural total failure, which warns once.
       this.maybeWarnStructure();
       return null;
@@ -721,7 +716,7 @@ export class MeetAdapter implements PlatformAdapter {
     if (!anyStream) return;
     this.warnedMissingIds = true;
     console.warn(
-      `[ears][identity] Meet DOM carries none of the expected participant-id attributes (${PARTICIPANT_ID_ATTRIBUTES.join(", ")}) on any tile — identity degrades to speaker-<n>. The Meet build's tile DOM has likely changed; see lib/identity/meet.ts for the verification checklist and CSRC fallback notes.`,
+      `[ears][identity] Meet DOM carries none of the expected participant-id attributes (${PARTICIPANT_ID_ATTRIBUTES.join(", ")}) on any tile — sources stay anonymous. The Meet build's tile DOM has likely changed; see lib/identity/meet.ts for the verification checklist and CSRC fallback notes.`,
     );
   }
 }

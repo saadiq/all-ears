@@ -165,7 +165,6 @@ export default defineContentScript({
             type: "joined",
             participant: { kind: p.kind, id: participantId },
             platform: p.platform,
-            ...(p.displayName ? { displayName: p.displayName } : {}),
           });
         }
         // Roster names dedupe in the MAIN world (only deltas are ever sent), so
@@ -215,12 +214,12 @@ interface RelayMetrics {
 }
 
 interface RelayState {
-  // participant id → identity, learned from participant-joined (which precedes
-  // the participant's first PCM), so PCM frames can carry their platform and
-  // reconnect replays can re-teach the roster. `kind` is the ref's provenance
-  // (platform-minted vs synthetic), replayed so a respawned worker still
-  // stamps the attendee's origin correctly.
-  participants: Map<string, { platform: Platform; kind: ParticipantOrigin; displayName?: string }>;
+  // participant id (track handle) → its platform, learned from
+  // participant-joined (which precedes the participant's first PCM), so PCM
+  // frames can carry their platform and reconnect replays can re-teach the
+  // roster. `kind` is the ref's provenance, replayed so a respawned worker
+  // still stamps the attendee's origin correctly.
+  participants: Map<string, { platform: Platform; kind: ParticipantOrigin }>;
   // participantId → resolved roster name, accumulated from participant-roster
   // (identity only, no capture pipeline). Replayed in full on worker respawn
   // because the MAIN world only ever sends deltas (#23).
@@ -263,16 +262,10 @@ function relay(
       state.participants.set(msg.participant.id, {
         platform: msg.platform,
         kind: msg.participant.kind,
-        ...(msg.displayName ? { displayName: msg.displayName } : {}),
       });
-      // Forward identity (display name included) so the background can
-      // upsert the daemon session's attendee roster.
-      port.post({
-        type: "joined",
-        participant: msg.participant,
-        platform: msg.platform,
-        ...(msg.displayName ? { displayName: msg.displayName } : {}),
-      });
+      // Forward the capture declaration so the background can upsert the
+      // daemon session's attendee roster (identity rides other messages).
+      port.post({ type: "joined", participant: msg.participant, platform: msg.platform });
       console.debug(`[ears][relay] joined ${msg.participant.id} gen${msg.generation} (${msg.platform})`);
       break;
     case "participant-left":

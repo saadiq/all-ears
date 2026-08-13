@@ -22,7 +22,6 @@ import {
 import type { PlatformAdapter } from "./identity/adapter";
 import { flushAttribution, recordAttribution } from "./attribution-recorder";
 import {
-  platformParticipant,
   postToIsolated,
   syntheticParticipant,
   type ParticipantOrigin,
@@ -34,8 +33,10 @@ import { mainPerf, perfDetailEnabled, perfEnabled } from "./perf-main";
 import type { Counter, Gauge, Histogram } from "./perf";
 
 // The per-epoch capture sink. Owns the N→N map: one live MediaStreamTrack →
-// one isolated pipeline. Identity resolves through the adapter, degrading to a
-// stable speaker-<n> rather than ever blocking audio.
+// one isolated pipeline. Every pipeline records under a stable per-track
+// handle (`t<n>`); identity never rides the source id — a resolved platform
+// id flows to the daemon as an attendee upsert linking the handle's source
+// (see handleIdentity), so identity can never block or restart audio.
 //
 // Each pipeline: a platform-dependent frame source → downmix → resample to
 // 16 kHz mono → Int16 frames → a bounded ring buffer → postToIsolated. Two
@@ -51,8 +52,8 @@ const RING_CAPACITY = 50;
 
 /**
  * Where a pipeline's frames come from. Receiver-based seams carry the RTC
- * context `resolveIdentity` needs; the others have none, so their pipelines
- * start under a provisional id and are named later by speaking correlation.
+ * context the adapter's `identify()` needs; the others have none, so their
+ * sources stay anonymous until speaking correlation names their owner.
  */
 interface PipelineOrigin {
   seam: SeamId;
@@ -137,18 +138,22 @@ let arbiter: SeamArbiter | undefined;
 // so a re-adoption sweep doesn't capture the same source track twice; the
 // clone's own id differs and is what reaches `pipelines`.
 const adoptedSeamTracks = new Map<string, MediaStreamTrack>();
-let provisionalCounter = 0;
-const generations = new Map<string, number>(); // participant id → segment counter
-// Fallback speaker refs are keyed to the track so a re-adopted track (epoch
-// handoff) keeps its id. WeakMap: entries vanish when the track is GC'd.
-const fallbackIds = new WeakMap<MediaStreamTrack, ParticipantRef>();
-// track.id → the participant its pipeline last captured under. Unlike
-// `fallbackIds` this is keyed by the *string* id and survives the track object,
-// so a late identity for an already-dead track (adapter onRename) can still be
-// translated back to the id whose audio is on disk. Bounded by the number of
-// tracks seen in the page's life; never cleared mid-call on purpose.
+const generations = new Map<string, number>(); // capture handle → segment counter
+// Source handles: one short opaque slug (`t<n>`) per admitted track, minted at
+// first admission and NEVER changed for the track's life (R3). The earsd
+// source id is `browser:<platform>:<slug>` — a handle on a captured track,
+// carrying no identity guess. Whose voice a source carries lives exclusively
+// in the attendee/speaker layer (participant-identified upserts, and the
+// daemon's reconciled `[[speaker]]` map). Keyed by the SOURCE track id
+// (`origin.sourceTrackId` for clone-captured seams) so a re-adoption — epoch
+// handoff, reconcile sweep, fresh clone of the same page track — keeps the
+// handle. Bounded by the tracks seen in the page's life; never cleared.
+let trackHandleCounter = 0;
+const trackHandles = new Map<string, ParticipantRef>();
+// track.id → the handle its pipeline captured under, so an identity that
+// confirms by track id (adapter onIdentity) — even after the track died —
+// can be translated back to the source whose audio is on disk.
 const participantsByTrackId = new Map<string, ParticipantRef>();
-let speakerCounter = 0;
 let cfg: CaptureConfig;
 
 // True once ANY participant on this call has produced a decoded frame. Gates the
@@ -198,8 +203,7 @@ export function initCapture(config: CaptureConfig): void {
   adoptedSeamTracks.clear();
 
   setTrackSink(sink);
-  cfg.adapter?.onIdentify?.(handleIdentityUpgrade);
-  cfg.adapter?.onRename?.(handleLateIdentity);
+  cfg.adapter?.onIdentity?.(handleIdentity);
   // Forward roster names (id → display name) the adapter resolves to the daemon,
   // decoupled from track capture, so a participant's name reaches session.toml
   // even when the speaking-onset correlation never tied them to a track (#23).
@@ -259,75 +263,43 @@ export function captureDebugState(): {
 }
 
 /**
- * Consume a late identity upgrade pushed by an adapter (Meet's collections-
- * datachannel correlation — see lib/identity/meet.ts) for a track that
- * already started capturing under a different id (typically speaker-<n>).
- *
- * Chosen approach: stop the running pipeline and start a new one under the
- * upgraded id, rather than renaming the id on the live segment in place.
- * Reasons: (1) restart reuses the exact lifecycle audio-tap.ts already has —
- * stopPipeline's participant-left / startPipeline's participant-joined, each
- * with its own fresh `generations` counter — so earsd sees the same "old
- * segment ended, new one began" shape it already handles for every
- * reconnect; (2) it's exactly analogous to how a re-adopted track across an
- * epoch handoff already keeps continuity via `fallbackIds`, just triggered
- * by an identity event instead of an epoch. Trade-off: a few frames of audio
- * are lost across the restart (fresh AudioDecoder/processor) — acceptable
- * given upgrades are rare (≤ once per track, after CONFIRM_THRESHOLD
- * confirming turns).
- *
- * When the restart is impossible — the track already ended before the
- * confirmation landed — the fallback is `handleLateIdentity`'s
- * "participant-renamed" message, which joins the already-recorded audio's
- * source to the named attendee daemon-side instead of relabeling anything.
+ * A confirmed platform identity for a captured track — pushed by an adapter
+ * (Meet's speaking-onset correlation, see lib/identity/meet.ts) at any point
+ * in the track's life, including after it ended. The pipeline is untouched:
+ * the source keeps its handle, no frames are lost, and no spurious
+ * `participant-left` is stamped (R3; the restart this replaced was bug B11).
+ * The identity is forwarded as an attendee upsert linking this source.
  */
-function handleIdentityUpgrade(track: MediaStreamTrack, id: PlatformParticipantId): void {
+function handleIdentity(trackId: string, id: PlatformParticipantId): void {
   if (!isCurrentEpoch(cfg.epoch)) return;
-  const pipeline = pipelines.get(track);
-  if (!pipeline || pipeline.participant.id === id) return;
-  if (!seamUsesReceiverTracks(pipeline.origin.seam)) {
-    // Non-receiver seams capture a clone, and a track accepts only one
-    // MediaStreamTrackProcessor in its lifetime — restarting would need a
-    // fresh clone and would drop audio mid-turn for no gain. Rename daemon-
-    // side instead: the recorded source keeps its provisional id and the
-    // attendee's real name is joined to it, which is exactly what this path
-    // already does for a track that ended before its confirmation landed.
-    console.debug(`[ears][capture] identity upgrade on seam ${pipeline.origin.seam}: ${pipeline.participant.id} → ${id} — renaming in place`);
-    handleLateIdentity(track.id, id);
-    return;
-  }
-  const rec = liveTracks().get(track);
-  if (!rec) {
-    // Track already ended between the correlator's match and this callback;
-    // nothing to restart — same late-join shape as the adapter's onRename.
-    handleLateIdentity(track.id, id);
-    return;
-  }
-  console.debug(`[ears][capture] identity upgrade: track ${track.id} ${pipeline.participant.id} → ${id} — restarting as a new segment`);
-  stopPipeline(track);
-  startPipeline(track, { seam: pipeline.origin.seam, rtc: { stream: rec.stream, transceiver: rec.transceiver } }, platformParticipant(id));
+  const captured = participantsByTrackId.get(trackId);
+  if (!captured) return;
+  postIdentity(trackId, captured.id, id);
 }
 
-/**
- * A confirmed identity arrived for a track whose pipeline can no longer be
- * restarted (the track died first — e.g. to the Meet AudioDecoder bug,
- * journal #45). The audio already recorded stays under the fallback id's
- * source; tell the daemon the two ids are the same person so the transcript
- * still labels that source by the attendee's name.
- */
-function handleLateIdentity(trackId: string, id: PlatformParticipantId): void {
-  if (!isCurrentEpoch(cfg.epoch)) return;
-  const from = participantsByTrackId.get(trackId);
-  if (!from || from.id === id) return;
+/** Forward a confirmed identity: an attendee upsert joining the platform id
+ * (and display name, when the adapter has one) to the source handle whose
+ * audio is on disk. Recorded in the flight log with the track id so a replay
+ * can join it to the engine's `provisional-binding` events (the cause). */
+function postIdentity(trackId: string, captureId: string, id: PlatformParticipantId): void {
   const displayName = cfg.adapter?.displayName?.(id);
-  console.debug(`[ears][capture] late identity: track ${trackId} ${from.id} → ${id} — sending identity link (track already ended)`);
+  recordAttribution({
+    type: "identity-link",
+    t: Date.now(),
+    trackId,
+    captureId,
+    participantId: id,
+  });
   postToIsolated({
     kind: "participant-identified",
     platform: cfg.platform,
     participantId: id,
-    captureId: from.id,
+    captureId,
     ...(displayName ? { displayName } : {}),
   });
+  console.debug(
+    `[ears][capture] identity: source ${captureId} → ${id}${displayName ? ` "${displayName}"` : ""}`,
+  );
 }
 
 /**
@@ -337,9 +309,9 @@ function handleLateIdentity(trackId: string, id: PlatformParticipantId): void {
  * Meet pre-allocates remote audio transceivers before there is anyone to fill
  * them — journal #142 saw three in a SOLO call, and #165 confirmed the same
  * three on a two-person call with only the carrying one ever unmuting. Every
- * one that reaches ``startPipeline`` becomes a `speaker-<n>` attendee in
- * session.toml and an `attendee_joined` in events.jsonl, for a participant who
- * does not exist; that noise has been in every session file since July.
+ * one that reaches ``startPipeline`` becomes a phantom track-handle attendee
+ * in session.toml and an `attendee_joined` in events.jsonl, for a participant
+ * who does not exist; that noise has been in every session file since July.
  *
  * `muted` is the discriminator, and it costs nothing to wait on: a muted track
  * carries no audio by definition, and ``AudioFrameSource`` already could not
@@ -544,7 +516,7 @@ function retireSeamTrack(id: string, record?: TrackProvenanceRecord): void {
  * Everything downstream of the frame source is seam-agnostic, so this is a
  * source swap rather than a capture restart — the daemon sees the same
  * participant-left / participant-joined shape it already handles for a
- * reconnect or an identity upgrade.
+ * reconnect.
  */
 function escalateSeam(from: SeamId, to: SeamId): void {
   recordAttribution({
@@ -573,17 +545,23 @@ function escalateSeam(from: SeamId, to: SeamId): void {
   }
 }
 
-function startPipeline(
-  track: MediaStreamTrack,
-  origin: PipelineOrigin,
-  forced?: ParticipantRef,
-): void {
-  const participant = forced ?? identityFor(track, origin);
+function startPipeline(track: MediaStreamTrack, origin: PipelineOrigin): void {
+  const participant = handleFor(track, origin);
   participantsByTrackId.set(track.id, participant);
   const generation = (generations.get(participant.id) ?? 0) + 1;
   generations.set(participant.id, generation);
 
-  const displayName = cfg.adapter?.displayName?.(participant.id);
+  // Identity harvest — the handle stays what it is either way. Receiver-seam
+  // tracks carry the RTC context the adapter can match on (Zoom's MSID parse,
+  // Meet's tile correlation); a hit becomes an attendee upsert linking this
+  // source, never a different source id. Other seams' tracks have ids that
+  // never match a hooked receiver (rtc-hook.ts, ids-never-match finding), so
+  // there is nothing to match on and their owner is named later — by the same
+  // upsert — once speaking correlation resolves them.
+  const platformId =
+    origin.rtc && seamUsesReceiverTracks(origin.seam)
+      ? (cfg.adapter?.identify(track, origin.rtc.stream, origin.rtc.transceiver) ?? null)
+      : null;
 
   // The active seam selects the frame source. Every track-shaped seam shares
   // the one MediaStreamTrackProcessor implementation — only Meet's encoded tee
@@ -613,11 +591,11 @@ function startPipeline(
     participantOrigin: participant.kind,
     generation,
   });
-  postToIsolated({ kind: "participant-joined", platform: cfg.platform, participant, generation, displayName });
+  postToIsolated({ kind: "participant-joined", platform: cfg.platform, participant, generation });
   console.debug(
-    `[ears][capture] +track → ${participant.id} (gen ${generation})` +
-      `${displayName ? ` "${displayName}"` : ""} — ${pipelines.size} live`,
+    `[ears][capture] +track → ${participant.id} (gen ${generation}) — ${pipelines.size} live`,
   );
+  if (platformId) postIdentity(track.id, participant.id, platformId);
 
   // Lifecycle. Delete from the map *before* stop() so a late frame can't
   // resurrect a dead entry.
@@ -696,44 +674,20 @@ function reconcile(): void {
 }
 
 /**
- * Identity for a new pipeline, by seam.
- *
- * Receiver-seam tracks reach the adapter, which knows the transceiver and
- * stream. Tracks from any other seam have ids that never match a hooked
- * receiver (rtc-hook.ts:654), so there is nothing for the adapter to match on
- * and guessing would attach a confidently-wrong name to real audio. They start
- * under a provisional id instead and get their real one from the existing
- * speaking-onset correlation once the participant talks — the same late-naming
- * path that already upgrades speaker-<n> ids (see handleIdentityUpgrade).
+ * The stable per-track handle for a pipeline: minted at first admission,
+ * identical on every re-adoption of the same source track (see the
+ * `trackHandles` comment). Deliberately opaque — the handle names a captured
+ * track, never a person, so no binding mistake can ever be a recording
+ * mistake (R3, finding F2).
  */
-function identityFor(track: MediaStreamTrack, origin: PipelineOrigin): ParticipantRef {
-  if (origin.rtc && seamUsesReceiverTracks(origin.seam)) {
-    return resolveIdentity(track, origin.rtc.stream, origin.rtc.transceiver);
-  }
-  const existing = fallbackIds.get(track);
+function handleFor(track: MediaStreamTrack, origin: PipelineOrigin): ParticipantRef {
+  const key = origin.sourceTrackId ?? track.id;
+  const existing = trackHandles.get(key);
   if (existing) return existing;
-  provisionalCounter += 1;
-  const assigned = syntheticParticipant(`${origin.seam}-${provisionalCounter}`);
-  fallbackIds.set(track, assigned);
-  return assigned;
-}
-
-/** Adapter (platform) identity, else a stable synthetic speaker-<n> so audio
- * never blocks. */
-function resolveIdentity(
-  track: MediaStreamTrack,
-  stream: MediaStream,
-  transceiver: RTCRtpTransceiver,
-): ParticipantRef {
-  const id = cfg.adapter?.identify(track, stream, transceiver) ?? null;
-  if (id) return platformParticipant(id);
-  // Stable per-track fallback: same track → same speaker-<n> across re-adoption.
-  const existing = fallbackIds.get(track);
-  if (existing) return existing;
-  speakerCounter += 1;
-  const assigned = syntheticParticipant(`speaker-${speakerCounter}`);
-  fallbackIds.set(track, assigned);
-  return assigned;
+  trackHandleCounter += 1;
+  const handle = syntheticParticipant(`t${trackHandleCounter}`);
+  trackHandles.set(key, handle);
+  return handle;
 }
 
 // ── Shared pipeline: frame source → 16 kHz mono pcm_s16le ───────────────────

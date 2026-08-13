@@ -25,8 +25,9 @@ export const ATTRIBUTION_SCHEMA = 1;
 export type CorrelatorId = "collections" | "unmute" | "dom";
 
 /** What the Meet identity engine (meet-identity-engine.ts) decided about a
- * confirmed correlator match. `bound` pushed an identity upgrade;
- * `bound-late-rename` bound a track that had already ended (the rename path);
+ * confirmed correlator match. `bound` pushed an identity link;
+ * `bound-late-rename` did the same for a track already gone when the match
+ * confirmed (kept as its own outcome so the evidence stays honest);
  * the `refused-*` outcomes are the journal-#158 guards declining a match. */
 export type BindingOutcome =
   | "bound"
@@ -120,6 +121,19 @@ export type AttributionEvent =
       correlator: CorrelatorId;
       confirmations: number;
       outcome: BindingOutcome;
+    }
+  // The capture layer forwarded a confirmed identity to the daemon: an
+  // attendee upsert linking `captureId`'s source (`browser:<platform>:<slug>`)
+  // to the platform `participantId` (R3 — identity never rides the source
+  // id). `trackId` joins this to the `provisional-binding` event that caused
+  // it, when one did; an admission-time identify (Zoom MSID, a Meet tile hit)
+  // has no binding event and the link is its own record.
+  | {
+      type: "identity-link";
+      t: number;
+      trackId: string;
+      captureId: string;
+      participantId: string;
     };
 
 const EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -137,6 +151,7 @@ const EVENT_TYPES: ReadonlySet<string> = new Set([
   "audio-onset",
   "roster-delta",
   "provisional-binding",
+  "identity-link",
 ]);
 
 /** One event → one JSONL line, `schema` first so a human tailing the file can
