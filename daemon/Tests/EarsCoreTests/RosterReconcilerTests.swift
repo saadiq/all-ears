@@ -264,6 +264,64 @@ struct RosterReconcilerTests {
     #expect(!outcome.warnings.contains { $0.contains("claimed by") })
   }
 
+  @Test("a named synthetic row never blocks the one-remote inference (B7)")
+  func syntheticRowsDoNotBlockCounting() {
+    // One real remote (Ana, platform-origin) plus a junk row: a synthetic
+    // stand-in that somehow acquired a display name. Counted as a second
+    // remote it would raise remoteNames.count above 1 and block invariant 2;
+    // its origin says it names a track, not a person, so it never counts.
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", joined: Self.at(1), isLocal: true),
+      SessionAttendee(
+        id: "a", displayName: "Ana", joined: Self.at(60), origin: .platform),
+      SessionAttendee(
+        id: "webaudio-track-2", displayName: "Meet junk", joined: Self.at(61),
+        origin: .synthetic),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:unassigned"], sessionStart: Self.start)
+
+    #expect(
+      outcome.speakers == [
+        SessionSpeaker(source: SourceID("browser:x:unassigned"), name: "Ana", confidence: .inferred)
+      ])
+  }
+
+  @Test("a named unknown-origin row still blocks the inference (old rosters)")
+  func unknownOriginRowsCountAsToday() {
+    // Same shape, but the junk row predates provenance (origin nil). It is
+    // indistinguishable from a real second participant, so the counts force
+    // nothing — exactly the pre-origin behaviour, preserved for old files.
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", joined: Self.at(1), isLocal: true),
+      SessionAttendee(id: "a", displayName: "Ana", joined: Self.at(60), origin: .platform),
+      SessionAttendee(id: "webaudio-track-2", displayName: "Meet junk", joined: Self.at(61)),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:unassigned"], sessionStart: Self.start)
+
+    #expect(outcome.speakers.isEmpty)
+    #expect(outcome.warnings.contains { $0.contains("could not be matched to any of 2") })
+  }
+
+  @Test("a named synthetic row is left out of the derived title")
+  func syntheticRowsAreLeftOutOfTitles() {
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", isLocal: true),
+      SessionAttendee(id: "a", displayName: "Ana", origin: .platform),
+      SessionAttendee(id: "speaker-3", displayName: "Meet junk", origin: .synthetic),
+    ]
+    #expect(RosterReconciler.derivedTitle(attendees: attendees, localAttendeeID: "me") == "Ana")
+  }
+
+  @Test("excluding synthetic rows from counting is a new derivation — the version says so")
+  func countingChangeBumpedTheVersion() {
+    // The same roster can now produce a different map (the two tests above),
+    // which is the documented trigger for a bump: transcribe re-derives any
+    // stored map older than this, repairing sessions reconciled under v1.
+    #expect(RosterReconciler.version >= 2)
+  }
+
   @Test("one participant seen under several ids is one participant")
   func dedupesByName() {
     // A rejoin, or an identity upgrade, puts the same human on the roster

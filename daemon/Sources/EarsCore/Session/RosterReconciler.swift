@@ -64,7 +64,11 @@ public enum RosterReconciler {
   /// past session instead of only future ones. A file without the field is
   /// version 0: reconciled (or captured) before versioning existed, and
   /// therefore always stale.
-  public static let version = 1
+  ///
+  /// History: 1 — first versioned derivation (duplicate-source and revisable
+  /// `isLocal` invariants); 2 — synthetic-origin rows excluded from the
+  /// named-remote count and the derived title (bug B7).
+  public static let version = 2
 
   /// How far after a session's start an attendee may join and still be taken
   /// for the local participant by ``inferLocalAttendee(_:sessionStart:)``.
@@ -277,6 +281,15 @@ public enum RosterReconciler {
   /// for every question this type asks — above all "is there exactly one
   /// other person on this call?", which a duplicate id would otherwise answer
   /// "no" and block the assignment invariant 2 exists to make.
+  ///
+  /// **Origin rule.** Only rows the platform itself named can be people:
+  /// a row whose ``SessionAttendee/origin`` is `.synthetic` is a capture
+  /// stand-in for a *track*, so it never counts as a named remote — a junk
+  /// named synthetic row must not raise the count above 1 and block the
+  /// one-remote inference, or leak into the derived title (bug B7). A row
+  /// with *unknown* origin (`nil` — old files, old clients) is counted
+  /// exactly as it was before origins existed: it may genuinely be a person,
+  /// and old sessions must keep reconciling the way they always did.
   public static func namedRemoteAttendees(
     _ attendees: [SessionAttendee], localID: String?
   ) -> [String] {
@@ -284,6 +297,7 @@ public enum RosterReconciler {
     var seen: Set<String> = []
     for attendee in attendees {
       guard attendee.id != localID else { continue }
+      guard attendee.origin != .synthetic else { continue }
       guard let name = attendee.displayName, !name.isEmpty else { continue }
       if seen.insert(name).inserted { names.append(name) }
     }

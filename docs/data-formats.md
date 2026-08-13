@@ -135,7 +135,7 @@ transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succe
                                         #   the marker retention keys off
 trigger = "browser-extension"           # manual | browser-extension
 sources = ["mic", "browser:meet:jane-a1b2"]
-reconciler_version = 1                  # which reconciler derived [[speaker]] below;
+reconciler_version = 2                  # which reconciler derived [[speaker]] below;
                                         #   absent = 0 (a file from before versioning,
                                         #   or a session never reconciled) — see
                                         #   "Roster and speaker map"
@@ -294,7 +294,7 @@ Storing only the derived answer meant a failed derivation *erased* a name the se
 At `session.end` the daemon reconciles one into the other, applying invariants a binding must satisfy:
 
 1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool. When that `self` flag is itself contradicted on both fronts — the flagged attendee is bound to remote audio *and* join order singles out a different attendee as the one whose arrival started the session — the flag is revised rather than the binding dropped, and the evidence for the revision is recorded in `warnings`.
-2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label).
+2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label). Only rows the platform itself named can be people: a named attendee whose `origin` is `"synthetic"` is a stand-in for a track and never counts as a remote participant (or appears in the derived title), so a junk synthetic row cannot block this inference. Rows with unknown origin (old files) count exactly as they did before the field existed.
 3. **A source carries at most one name.** Two attendees claiming the same source resolve by roster order — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
 
 With two or more remote participants and an unresolved track, nothing is forced and nothing is assigned: an unlabelled turn is recoverable, a confidently mislabelled one is not. Each entry records `confidence` — `correlated` (the client's binding, having survived the invariants) or `inferred` (assigned by elimination).
