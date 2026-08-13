@@ -23,10 +23,10 @@ export const ATTRIBUTION_SCHEMA = 1;
  * speaking-ring burst with decoded-audio onsets. */
 export type CorrelatorId = "collections" | "unmute" | "dom";
 
-/** What MeetAdapter.applyMatch decided about a confirmed correlator match.
- * `bound` pushed an identity upgrade; `bound-late-rename` bound a track that
- * had already ended (the rename path); the `refused-*` outcomes are the
- * journal-#158 guards declining a match. */
+/** What the Meet identity engine (meet-identity-engine.ts) decided about a
+ * confirmed correlator match. `bound` pushed an identity upgrade;
+ * `bound-late-rename` bound a track that had already ended (the rename path);
+ * the `refused-*` outcomes are the journal-#158 guards declining a match. */
 export type BindingOutcome =
   | "bound"
   | "bound-late-rename"

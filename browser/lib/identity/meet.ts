@@ -65,7 +65,8 @@ import {
 //        pairing confirms on natural turn-taking, no mute toggle needed. The
 //        window is wider than `correlator`'s because the ring rides Meet's
 //        render pipeline (RAF batching, style flush) behind the audio domain.
-//      All require CONFIRM_THRESHOLD (see its own comment below) consecutive
+//      All require CONFIRM_THRESHOLD (see its comment in
+//      meet-identity-engine.ts) consecutive
 //      confirming pairings — per correlator, never summed across them — before
 //      being trusted.
 //   4. Once confirmed, the upgraded id is pushed via the onIdentify(cb)
