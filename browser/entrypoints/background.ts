@@ -268,6 +268,12 @@ export default defineBackground(() => {
         case "meeting-ended":
           sessions.meetingEnded(msg.externalMeetingId);
           return;
+        case "attribution":
+          // Flight-recorder batch: ship to earsd filed under this port's live
+          // session. With no session (yet) the batch is dropped — the in-page
+          // ring still holds the events for on-demand export.
+          socket.sendAttribution(msg.events, msg.platform, sessions.externalIdFor(portId, msg.platform));
+          return;
         case "pcm": {
           tracker.participantActive(portId, msg.participantId, msg.platform);
           participantPorts.set(msg.participantId, portId);

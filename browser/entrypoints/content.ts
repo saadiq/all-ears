@@ -364,6 +364,15 @@ function relay(
         browser.runtime.sendMessage({ kind: "perf-batch", records: msg.records }).catch(() => {});
       }
       break;
+    case "attribution":
+      // Attribution flight-recorder batch: opaque pre-encoded lines, straight
+      // through to the background. No relay state — the MAIN world's ring is
+      // the durable in-page copy, and the daemon's attribution.jsonl is
+      // best-effort, so a respawned worker has nothing to replay here.
+      if (msg.events.length) {
+        port.post({ type: "attribution", platform: msg.platform, events: msg.events });
+      }
+      break;
     case "pcm": {
       const platform = state.participants.get(msg.participantId)?.platform;
       if (!platform) {

@@ -1,5 +1,6 @@
 // The effectful half of the attribution flight recorder: a per-call ring of
-// encoded events, shared across epochs, exportable on demand.
+// encoded events shared across epochs, exportable on demand, and batched
+// toward the daemon.
 //
 // State lives on `window` (same pattern as rtc-hook.ts's `__earsLiveTracks`
 // and audio-tap.ts's `__earsAudioLog`): a re-injected epoch loads a fresh
@@ -7,16 +8,37 @@
 // keep closing over the first bundle's modules — a window-global is the one
 // place both write to. Everything here is best-effort by contract: recording
 // evidence must never throw into the capture or identity paths.
+//
+// Two rings, one type:
+//   - the EXPORT ring keeps the last ATTRIBUTION_RING_CAPACITY events for
+//     on-demand export (`window.__earsExportAttribution()`);
+//   - the PENDING ring holds events awaiting shipment to the daemon. Flushes
+//     ride audio-tap.ts's existing 3s reconcile sweep (no timer of their own)
+//     plus a size threshold, posting an `attribution` MainMessage the relay
+//     and background forward to earsd as `ingest.attribution`.
 
 import { AttributionRing, encodeAttributionEvent, type AttributionEvent } from "./attribution-log";
+import { postToIsolated, type Platform } from "./protocol";
+
+/** Ship a pending batch as soon as it reaches this many events rather than
+ * waiting for the next 3s sweep — a burst's evidence reaches disk promptly
+ * without this module owning a timer. */
+export const ATTRIBUTION_FLUSH_THRESHOLD = 25;
+
+/** Much smaller than the export ring: it only covers the window between
+ * flushes, and anything it ever drops is still in the export ring. */
+const PENDING_CAPACITY = 200;
 
 interface RecorderWindow extends Window {
   __earsAttributionExport?: AttributionRing;
+  __earsAttributionPending?: AttributionRing;
+  __earsAttributionPlatform?: Platform;
 }
 
-/** node-test fallback (vitest runs without a `window`): a module-level ring so
+/** node-test fallback (vitest runs without a `window`): module-level rings so
  * the recorder stays inert but callable. */
 const fallbackExport = new AttributionRing();
+const fallbackPending = new AttributionRing(PENDING_CAPACITY);
 
 function rw(): RecorderWindow | null {
   return typeof window === "undefined" ? null : (window as unknown as RecorderWindow);
@@ -29,15 +51,52 @@ function exportRing(): AttributionRing {
   return g.__earsAttributionExport;
 }
 
+function pendingRing(): AttributionRing {
+  const g = rw();
+  if (!g) return fallbackPending;
+  if (!g.__earsAttributionPending) g.__earsAttributionPending = new AttributionRing(PENDING_CAPACITY);
+  return g.__earsAttributionPending;
+}
+
+/** Remember which platform this page's events belong to, so flushed batches
+ * can be labelled for the daemon. Called once by hook.content.ts at load —
+ * a page whose platform was never set holds its events in the bounded
+ * pending ring instead of shipping them. */
+export function setAttributionPlatform(platform: Platform): void {
+  const g = rw();
+  if (g) g.__earsAttributionPlatform = platform;
+}
+
 /**
- * Record one event: encode once and keep it in the per-call ring. Never
- * throws — evidence is subordinate to capture.
+ * Record one event: encode once, keep it in the per-call export ring, and
+ * queue it for the daemon. Never throws — evidence is subordinate to capture.
  */
 export function recordAttribution(event: AttributionEvent): void {
   try {
-    exportRing().push(encodeAttributionEvent(event));
+    const line = encodeAttributionEvent(event);
+    exportRing().push(line);
+    const pending = pendingRing();
+    pending.push(line);
+    if (pending.size >= ATTRIBUTION_FLUSH_THRESHOLD) flushAttribution();
   } catch {
     // best-effort — the flight recorder must never affect what it records
+  }
+}
+
+/**
+ * Ship the pending batch toward the daemon (MAIN → relay → background →
+ * earsd). Called from audio-tap.ts's reconcile sweep and epoch teardown, and
+ * from the size threshold above. Never throws.
+ */
+export function flushAttribution(): void {
+  try {
+    const platform = rw()?.__earsAttributionPlatform;
+    if (!platform) return;
+    const events = pendingRing().drain();
+    if (events.length === 0) return;
+    postToIsolated({ kind: "attribution", platform, events });
+  } catch {
+    // best-effort
   }
 }
 
@@ -48,6 +107,6 @@ export function exportAttributionLog(): string {
 }
 
 /** Ring counts for the popup's debug-state snapshot. */
-export function attributionDebugState(): { events: number; dropped: number } {
-  return { events: exportRing().size, dropped: exportRing().dropped };
+export function attributionDebugState(): { events: number; dropped: number; pending: number } {
+  return { events: exportRing().size, dropped: exportRing().dropped, pending: pendingRing().size };
 }

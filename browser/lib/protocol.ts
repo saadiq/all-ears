@@ -110,7 +110,13 @@ export type MainMessage =
   // A flush of the MAIN world's perf collector (perf.ts). Kept off the `log`
   // channel on purpose: these must not pass through the console tap, whose
   // synchronous serialization runs on the thread being measured.
-  | { kind: "perf"; records: PerfRecord[] };
+  | { kind: "perf"; records: PerfRecord[] }
+  // A batch of attribution flight-recorder events (attribution-log.ts), each
+  // already encoded as one JSONL line. Pre-encoded on purpose: the relay,
+  // background, and daemon all treat the lines as opaque and append them
+  // verbatim to the session's attribution.jsonl, so what lands on disk is
+  // byte-for-byte what the MAIN world recorded.
+  | { kind: "attribution"; platform: Platform; events: string[] };
 
 /** The envelope actually posted; `event.source === window` + marker gate it. */
 export interface MainEnvelope {
@@ -212,7 +218,11 @@ export type PortMessage =
   | { type: "capture-failed"; participantId: ParticipantId; platform: Platform; reason: string }
   | { type: "meeting-started"; platform: Platform; externalMeetingId: string; title?: string }
   | { type: "meeting-renamed"; platform: Platform; externalMeetingId: string; title: string }
-  | { type: "meeting-ended"; platform: Platform; externalMeetingId: string };
+  | { type: "meeting-ended"; platform: Platform; externalMeetingId: string }
+  // A batch of attribution flight-recorder events (see MainMessage
+  // "attribution"): opaque pre-encoded JSONL lines the background ships to
+  // earsd as `ingest.attribution`, filed under the port's live session.
+  | { type: "attribution"; platform: Platform; events: string[] };
 
 // ── earsd wire (background.ts → earsd) ───────────────────────────────────────
 

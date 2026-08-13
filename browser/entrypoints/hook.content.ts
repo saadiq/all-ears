@@ -8,7 +8,11 @@ import {
   stopMeetGraphProbe,
 } from "../lib/rtc-hook";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
-import { attributionDebugState, exportAttributionLog } from "../lib/attribution-recorder";
+import {
+  attributionDebugState,
+  exportAttributionLog,
+  setAttributionPlatform,
+} from "../lib/attribution-recorder";
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
@@ -84,6 +88,9 @@ export default defineContentScript({
     let lastMeetingId: string | null = null;
 
     perfTag("platform", platform);
+    // Attribution batches are labelled per page, once — evidence recorded
+    // before capture ever starts (e.g. collections edges) still ships.
+    setAttributionPlatform(platform);
 
     // On-demand state snapshot for the popup's "Report state" button. Dumps to
     // THIS tab's console (where the [ears] logs already live) so it can be read

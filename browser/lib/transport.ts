@@ -41,7 +41,10 @@ const OPEN_RETRY_MS = 1_000; // floor between same-tag retries (PCM arrives ~10 
 // rescues the rest of the call.
 const OPEN_HOLD_LIMIT_MS = 60_000;
 
-type PendingRequest = { kind: "open"; participantId: ParticipantId } | { kind: "close" };
+type PendingRequest =
+  | { kind: "open"; participantId: ParticipantId }
+  | { kind: "close" }
+  | { kind: "attribution" };
 
 /** Per-frame provenance carried from the MAIN world all the way to earsd. */
 export interface FrameStamp {
@@ -310,6 +313,25 @@ export class EarsSocket {
     this.perf?.bytes.add(frame.byteLength);
   }
 
+  /**
+   * Ship a batch of attribution flight-recorder events (pre-encoded JSONL
+   * lines — see attribution-log.ts) as an `ingest.attribution` text frame.
+   * Best-effort by contract: with no session tag there is no session directory
+   * to file the batch under, and with the socket down there is no daemon — in
+   * both cases the batch is dropped here, and the in-page ring still holds the
+   * events for on-demand export.
+   */
+  sendAttribution(events: string[], platform: Platform, meetingExternalId?: string): void {
+    if (this.status !== "connected" || !this.ws || events.length === 0) return;
+    if (!meetingExternalId) return;
+    this.pending.push({ kind: "attribution" });
+    this.sendText({
+      cmd: "ingest.attribution",
+      session: { platform, external_id: meetingExternalId },
+      events,
+    });
+  }
+
   participantLeft(participantId: ParticipantId): void {
     const st = this.participants.get(participantId);
     this.participants.delete(participantId);
@@ -338,6 +360,11 @@ export class EarsSocket {
     }
 
     if (req.kind === "close") return; // nothing to do on close ack
+    if (req.kind === "attribution") {
+      // Fire-and-forget: the events are already safe in the in-page ring.
+      if (!parsed.ok) console.warn(`[ears][transport] ingest.attribution rejected: ${parsed.error ?? "unknown"}`);
+      return;
+    }
 
     const st = this.participants.get(req.participantId);
     if (!st) return; // participant already left before open resolved

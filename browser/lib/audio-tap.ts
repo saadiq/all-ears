@@ -20,7 +20,7 @@ import {
   type SeamId,
 } from "./capture-seams";
 import type { PlatformAdapter } from "./identity/adapter";
-import { recordAttribution } from "./attribution-recorder";
+import { flushAttribution, recordAttribution } from "./attribution-recorder";
 import { postToIsolated, type ParticipantId, type Platform } from "./protocol";
 import { mainPerf, perfDetailEnabled, perfEnabled } from "./perf-main";
 import type { Counter, Gauge, Histogram } from "./perf";
@@ -633,6 +633,8 @@ function teardownAll(): void {
   // replays the live registry and re-defers whatever is still muted.
   for (const cleanup of [...deferredMutedTracks.values()]) cleanup();
   loggedSeamSkips.clear();
+  // A superseded epoch's queued evidence still belongs to this call.
+  flushAttribution();
 }
 
 /** Adopt any epoch-owned live track that lost (or never got) a pipeline, and
@@ -651,6 +653,9 @@ function reconcile(): void {
   }
   adoptSeamTracks();
   cfg.adapter?.pollIdentities?.();
+  // The attribution flight recorder's batch cadence rides this sweep too —
+  // one 3s clock for everything low-frequency in the capture path.
+  flushAttribution();
   // Piggy-backed on the existing 3s sweep rather than adding a timer: the
   // pipeline count is what per-frame cost scales with, so it's the denominator
   // for every capture-stage number.

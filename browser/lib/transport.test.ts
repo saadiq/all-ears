@@ -277,4 +277,40 @@ describe("EarsSocket", () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
     void ws;
   });
+
+  it("ships an attribution batch as ingest.attribution with the session tag, lines verbatim", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+
+    const lines = ['{"schema":1,"type":"track-ended","t":1,"trackId":"trk-1"}'];
+    socket.sendAttribution(lines, "meet", "kQ0DRVtDaekB");
+    expect(textSent(ws)).toEqual([
+      {
+        cmd: "ingest.attribution",
+        session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
+        events: lines,
+      },
+    ]);
+  });
+
+  it("drops an attribution batch with no session tag — there is nowhere to file it", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+    socket.sendAttribution(['{"schema":1,"type":"track-ended","t":1}'], "meet", undefined);
+    expect(textSent(ws)).toEqual([]);
+  });
+
+  it("keeps the FIFO response matching straight when attribution acks interleave with opens", () => {
+    const opened: string[] = [];
+    const socket = new EarsSocket(47811);
+    socket.onStreamOpened = (id) => opened.push(id);
+    const ws = connectAndOpen(socket);
+
+    socket.sendAttribution(['{"schema":1,"type":"dom-burst","t":1,"deviceId":"d"}'], "meet", "kQ0");
+    socket.sendPcm("jane", "meet", new Uint8Array([1]), "kQ0");
+    ws.respond({ ok: true, data: {} }); // the attribution ack, first in FIFO order
+    ws.respond({ ok: true, data: { stream_id: "s1" } }); // then the open's reply
+    expect(opened).toEqual(["jane"]); // the open's reply reached the open, not the ack
+    expect(decodeFrame(binarySent(ws)[0]!).streamId).toBe("s1");
+  });
 });
