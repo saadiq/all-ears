@@ -871,3 +871,101 @@ private func waitUntil(
     await Task.yield()
   }
 }
+
+/// Reconciliation at `session.end`: the derivation that used to be an
+/// implicit, irreversible side effect of whichever live correlation won a
+/// race now runs once, over the final roster, and is persisted.
+@Suite("SessionRegistry roster reconciliation")
+struct SessionRegistryReconciliationTests {
+  private let base = Instant(secondsSinceEpoch: 1_784_284_200)
+
+  private func makeRegistry(_ clock: ManualClock, dataRoot: URL) -> SessionRegistry {
+    SessionRegistry(
+      dataRoot: dataRoot, clock: clock, makeID: { "session-1" }, graceSeconds: 120,
+      sleep: { _ in }, knownSourceIDs: { [] })
+  }
+
+  private func makeDataRoot() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "SessionRegistryReconcile-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  /// A browser session in the shape the 2026-08-12 call had: you join first,
+  /// one other person joins, and a remote track ends up bound to your device.
+  private func endMisattributedCall(
+    title: String? = nil, dataRoot: URL, clock: ManualClock
+  ) async throws -> Session {
+    let registry = makeRegistry(clock, dataRoot: dataRoot)
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "wUE9lE2sg5YB", title: title,
+        trigger: .browserExtension))
+    clock.advance(by: 3)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404", displayName: "Tom Elliot",
+        joined: clock.now()))
+    clock.advance(by: 50)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/403", displayName: "Matthew Barras",
+        joined: clock.now()))
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404",
+        source: SourceID("browser:meet:devices-404")))
+    clock.advance(by: 2000)
+    return try await registry.end(id: session.id)
+  }
+
+  @Test("session.end reconciles the roster and persists the speaker map")
+  func reconcilesAtEnd() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let ended = try await endMisattributedCall(dataRoot: dataRoot, clock: ManualClock(base))
+
+    #expect(ended.speakers.map { $0.name } == ["Matthew Barras"])
+    #expect(ended.speakers.map { $0.source.rawValue } == ["browser:meet:devices-404"])
+    #expect(ended.attendees.first { $0.id == "devices/404" }?.isLocal == true)
+    #expect(!ended.warnings.isEmpty)
+  }
+
+  @Test("an unnamed session is titled from the roster rather than the meeting id")
+  func titlesFromRoster() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let ended = try await endMisattributedCall(dataRoot: dataRoot, clock: ManualClock(base))
+
+    #expect(ended.title == "Matthew Barras")
+  }
+
+  /// The window title is the first preference: a name scraped from the tab
+  /// (or typed by hand) reached the session as a title, and the roster
+  /// fallback exists only for a session that never got one.
+  @Test("a title the meeting already had is never replaced by the roster's")
+  func keepsAnEstablishedTitle() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let ended = try await endMisattributedCall(
+      title: "Matt / Tom weekly 1:1", dataRoot: dataRoot, clock: ManualClock(base))
+
+    #expect(ended.title == "Matt / Tom weekly 1:1")
+  }
+
+  @Test("the reconciled session round-trips through session.toml")
+  func persistsAcrossReload() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let ended = try await endMisattributedCall(dataRoot: dataRoot, clock: clock)
+
+    let reloaded = makeRegistry(clock, dataRoot: dataRoot)
+    await reloaded.loadFromDisk()
+    let recovered = try await reloaded.get(id: ended.id)
+    #expect(recovered.speakers == ended.speakers)
+    #expect(recovered.warnings == ended.warnings)
+    #expect(recovered.title == "Matthew Barras")
+  }
+}

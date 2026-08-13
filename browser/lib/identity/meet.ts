@@ -749,6 +749,13 @@ export class MeetAdapter implements PlatformAdapter {
       console.debug(
         `[ears][identity] Meet local participant resolved: ${found} — excluded from identity correlation`,
       );
+      // The marker routinely resolves *after* this device's name was already
+      // forwarded, and the roster feed is a delta keyed on the name. Drop the
+      // emitted record for this one id so the next emitRoster re-sends it,
+      // now carrying `isLocal` — without it the daemon never learns which
+      // roster row is the user and falls back to inferring it.
+      this.emittedNames.delete(found);
+      this.emitRoster();
       return;
     }
     // MUST-NOT #13: a build or locale that never renders the marker must not
@@ -769,9 +776,18 @@ export class MeetAdapter implements PlatformAdapter {
   private emitRoster(): void {
     const fresh = rosterDelta(this.names, this.emittedNames);
     if (fresh.length === 0) return;
+    // Mark the local participant on the way out. The roster is the only
+    // channel that reaches the daemon carrying identity alone, so it is where
+    // "which of these is me" belongs — and the daemon needs it to enforce the
+    // no-remote-track-is-you invariant on durable state, where this build's
+    // missing "(You)" marker cannot silently disable the check.
     for (const entry of fresh) {
+      if (this.localDeviceId !== undefined && entry.participantId === this.localDeviceId) {
+        entry.isLocal = true;
+      }
       console.debug(
-        `[ears][identity] Meet roster resolved: ${entry.participantId} → "${entry.displayName}"`,
+        `[ears][identity] Meet roster resolved: ${entry.participantId} → "${entry.displayName}"` +
+          (entry.isLocal ? " (you)" : ""),
       );
     }
     this.rosterCb?.(fresh);

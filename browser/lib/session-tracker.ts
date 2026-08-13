@@ -333,7 +333,11 @@ export class SessionTracker {
       // Identity only — deliberately NOT added to record.participants: no
       // capture pipeline backs this id, so no pipeline-teardown `left` should
       // ever be stamped on it.
-      this.upsertAttendee(record, { id: entry.participantId, display_name: entry.displayName });
+      this.upsertAttendee(record, {
+        id: entry.participantId,
+        display_name: entry.displayName,
+        ...(entry.isLocal ? { self: true } : {}),
+      });
     }
   }
 

@@ -34,6 +34,25 @@ struct TOMLFieldReader {
     return value
   }
 
+  /// An optional array field: an absent key decodes to `[]`.
+  ///
+  /// The tolerant counterpart to ``array(_:)``, for arrays added to a schema
+  /// after files were already written under it. A `session.toml` from before
+  /// `speaker`/`warnings` existed is a valid record of what that session knew,
+  /// not a corrupt one, and refusing to load it would strand every session
+  /// captured before the upgrade.
+  func optionalArray(_ key: String) -> [ConfigValue] {
+    guard case .array(let value)? = table[key] else { return [] }
+    return value
+  }
+
+  /// An optional boolean field: an absent key (or one of the wrong kind)
+  /// decodes to `false`.
+  func optionalBool(_ key: String) -> Bool {
+    guard case .bool(let value)? = table[key] else { return false }
+    return value
+  }
+
   /// An optional string field: an empty string or an absent key both decode
   /// to `nil`, matching the "empty => absent" sentinel convention this
   /// codebase already uses for optional path-like fields (`socket_path`,

@@ -177,7 +177,10 @@ enum SummarizeRuntime {
     let code = await SummarizePipeline.run(
       inputs: SummarizePipeline.Inputs(
         transcriptPaths: transcriptPaths, presets: presets, out: inputs.out,
-        notes: inputs.notes, outputRoot: outputRoot, weekNumbering: weekNumbering),
+        notes: inputs.notes, outputRoot: outputRoot, weekNumbering: weekNumbering,
+        // Opted into here rather than defaulted in `Inputs`: this is the one
+        // caller with a real user's notes to lose.
+        backupDirectory: NoteBackup.defaultDirectory),
       dependencies: dependencies
     )
 

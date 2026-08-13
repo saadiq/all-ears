@@ -30,6 +30,20 @@ export type ParticipantId = string;
 export interface RosterEntry {
   participantId: ParticipantId;
   displayName: string;
+  /**
+   * This entry is the local participant — you. Present only when the adapter
+   * could establish it beyond doubt; absent means "not known to be you", never
+   * "known not to be you".
+   *
+   * The daemon needs it because the local participant is captured on `mic`,
+   * so a browser-tapped remote track bound to them is an impossible state
+   * rather than an unlikely one — the failure behind journal #158/#172. The
+   * live guard in meet.ts already refuses such a binding, but it fails *open*
+   * when the platform withholds its "(You)" marker, so the flag travels to
+   * the daemon as well and the same invariant is enforced again at session
+   * end, on durable state.
+   */
+  isLocal?: boolean;
 }
 
 /**
@@ -296,6 +310,10 @@ export interface AttendeeUpsert {
   joined?: string;
   left?: string;
   source?: string;
+  /** This attendee is the local participant (see `RosterEntry.isLocal`).
+   * Omitted rather than sent `false`: the daemon latches it and never clears
+   * it, so a later upsert that simply doesn't know cannot un-flag them. */
+  self?: boolean;
 }
 
 /**

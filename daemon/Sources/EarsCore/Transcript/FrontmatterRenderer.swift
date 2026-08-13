@@ -28,6 +28,18 @@ enum FrontmatterRenderer {
     if let title = frontmatter.title {
       lines.append(YAML.line("title", scalar(title)))
     }
+    // The inverse of the note's own `transcript:` link — see
+    // ``TranscriptFrontmatter/note``. Rendered next to `title` so the two
+    // human-facing identity lines sit together, above the capture metadata.
+    if let note = frontmatter.note {
+      lines.append(YAML.line("note", scalar(note)))
+    }
+    // Who was on the call, as the roster observed it — kept next to the other
+    // human-facing identity lines and above the capture metadata, because it
+    // is the part a reader of the raw file actually wants.
+    if !frontmatter.attendees.isEmpty {
+      lines.append(YAML.line("attendees", .flowArray(frontmatter.attendees.map(scalar))))
+    }
     if let started = frontmatter.started {
       lines.append(YAML.line("started", .plain(UTCCalendar.iso8601(started))))
     }
@@ -76,6 +88,13 @@ enum FrontmatterRenderer {
           "audio_stores",
           .flowArray(frontmatter.audioStores.map { .quoted("\($0.source.rawValue)=\($0.store)") })))
     }
+    // Last, and always quoted: warnings are free prose (they carry commas,
+    // parentheses and `:`), so the flow-array grammar needs them quoted to
+    // round-trip.
+    if !frontmatter.warnings.isEmpty {
+      lines.append(
+        YAML.line("warnings", .flowArray(frontmatter.warnings.map { .quoted($0) })))
+    }
 
     return lines.joined(separator: "\n")
   }
@@ -94,7 +113,7 @@ enum FrontmatterRenderer {
   /// version-like strings such as `"0.x"` all start with a digit), or a
   /// YAML reserved word. Fields with a known-safe shape (the range-run id,
   /// `kind`, numeric fields) bypass this and render `.plain` directly.
-  private static func scalar(_ string: String) -> YAML.Value {
+  static func scalar(_ string: String) -> YAML.Value {
     needsQuoting(string) ? .quoted(string) : .plain(string)
   }
 

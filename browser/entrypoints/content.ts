@@ -215,7 +215,7 @@ interface RelayState {
   // participantId → resolved roster name, accumulated from participant-roster
   // (identity only, no capture pipeline). Replayed in full on worker respawn
   // because the MAIN world only ever sends deltas (#23).
-  roster: Map<string, { platform: Platform; displayName: string }>;
+  roster: Map<string, { platform: Platform; displayName: string; isLocal?: boolean }>;
   // fromId → late-identity join (participant-renamed), keyed on the fallback
   // id so a repeat confirmation overwrites rather than duplicates. Replayed on
   // worker respawn for the same reason as the roster.
@@ -227,12 +227,15 @@ interface RelayState {
  * `roster` port message. A tab is single-platform in practice, but grouping
  * keeps the wire shape honest if that ever changes. */
 function groupRosterByPlatform(
-  roster: Map<string, { platform: Platform; displayName: string }>,
+  roster: Map<string, { platform: Platform; displayName: string; isLocal?: boolean }>,
 ): Map<Platform, RosterEntry[]> {
   const byPlatform = new Map<Platform, RosterEntry[]>();
   for (const [participantId, r] of roster) {
     const list = byPlatform.get(r.platform) ?? [];
-    list.push({ participantId, displayName: r.displayName });
+    // `isLocal` rides the respawn replay too — a service worker that restarts
+    // mid-call must not come back with a roster that has forgotten which row
+    // is the user.
+    list.push({ participantId, displayName: r.displayName, ...(r.isLocal ? { isLocal: true } : {}) });
     byPlatform.set(r.platform, list);
   }
   return byPlatform;
@@ -270,11 +273,19 @@ function relay(
     case "participant-roster": {
       // Identity-only names resolved from the platform roster; remember them for
       // respawn replay and forward so the background upserts the daemon roster.
-      const fresh = msg.entries.filter(
-        (e) => state.roster.get(e.participantId)?.displayName !== e.displayName,
-      );
+      // News is a new *or changed* name, or a first `isLocal` — the local
+      // marker often resolves after the name it belongs to has already been
+      // forwarded, and filtering on the name alone would drop it forever.
+      const fresh = msg.entries.filter((e) => {
+        const known = state.roster.get(e.participantId);
+        return known?.displayName !== e.displayName || (e.isLocal === true && !known?.isLocal);
+      });
       for (const entry of msg.entries) {
-        state.roster.set(entry.participantId, { platform: msg.platform, displayName: entry.displayName });
+        state.roster.set(entry.participantId, {
+          platform: msg.platform,
+          displayName: entry.displayName,
+          isLocal: entry.isLocal || state.roster.get(entry.participantId)?.isLocal,
+        });
       }
       if (fresh.length > 0) {
         port.post({ type: "roster", platform: msg.platform, entries: fresh });

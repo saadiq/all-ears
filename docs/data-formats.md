@@ -147,7 +147,17 @@ display_name = "Jane Doe"
 joined = "2026-07-19T10:00:12Z"
 left = ""
 source = "browser:meet:jane-a1b2"       # optional link to a per-participant source
+self = false                            # true on the local participant — you
+
+[[speaker]]                             # the *reconciled* source → name map,
+source = "browser:meet:jane-a1b2"       #   derived from the roster at session end
+name = "Jane Doe"                       #   (see "Roster and speaker map" below)
+confidence = "correlated"               # correlated | inferred
 ```
+
+`warnings = [...]` (a top-level array, omitted when empty) records what
+reconciliation could not resolve or resolved by inference. It travels into the
+transcript's frontmatter and from there into the note itself.
 
 `events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
@@ -169,6 +179,17 @@ session: 0d5e7f6a-…         # the session UUID this transcript unions the
                             # <start-timestamp>_<slug> identifier
 title: Weekly standup       # the session's display title, and `{title}` in a
                             # downstream path template; absent with no session
+note: "[[daily-notes/2026/07/29/2026-07-17 - Weekly standup.md]]"
+                            # the note `summarize` wrote from this transcript —
+                            # the inverse of that note's own `transcript:` link.
+                            # Stamped in after the summary lands, since that is
+                            # the only point both paths are known; absent until
+                            # a preset has summarized this transcript
+attendees: [Tom Elliot (me), Jane Doe]
+                            # everyone the roster named, `(me)` marking the
+                            # local participant. Independent of whether any
+                            # audio was matched to them — see "Roster and
+                            # speaker map"; absent with no session context
 started: 2026-07-17T10:30:00Z
                             # when the session began, as distinct from `range`
                             # below (a --from/--to rerun narrows the range but
@@ -189,6 +210,12 @@ vocab: [global, standup]
                             # which store each source was read from (`session` =
                             # per-session copy, `ring` = legacy global buffer),
                             # so a wrong-store read is visible
+# warnings: ["speaker attribution: …"]
+#                           # what was degraded or inferred about this
+                            # transcript; omitted when there is nothing to say.
+                            # `summarize` renders these into the note as a
+                            # callout, because a warning only in a log is a
+                            # warning nobody reads
 ---
 
 **[10:30:04] You**
@@ -229,6 +256,23 @@ Rules:
 ```
 
 The Markdown is rendered from the same data the sidecar holds, so the two never disagree for a given run.
+
+## Roster and speaker map
+
+Two different things, kept apart on purpose.
+
+The **roster** (`[[attendee]]`) is observed: the platform names its own participants, and it is right from the moment they join. The **speaker map** (`[[speaker]]`) is derived: which audio track carries whose voice. Deriving it is a guess — the capture client pairs a track to a participant by temporal coincidence — and guesses fail.
+
+Storing only the derived answer meant a failed derivation *erased* a name the session had known all along: the transcript, the note's title and its attendee list all read the binding, so a correlation miss lost the participant entirely. Keeping the roster whole means a total attribution failure still yields the right attendees and the right note title.
+
+At `session.end` the daemon reconciles one into the other, applying invariants a binding must satisfy:
+
+1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool.
+2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label).
+
+With two or more remote participants and an unresolved track, nothing is forced and nothing is assigned: an unlabelled turn is recoverable, a confidently mislabelled one is not. Each entry records `confidence` — `correlated` (the client's binding, having survived the invariants) or `inferred` (assigned by elimination).
+
+The derivation is a pure function of the roster, so it also runs on demand: `transcribe --session` over a session with no stored map reconciles it there and then, which repairs sessions captured before reconciliation existed.
 
 ## Speaker attribution
 

@@ -119,8 +119,22 @@
               "display_name": "Jane Doe",
               "joined": "2026-07-19T10:00:12.000Z",
               "source": "browser:meet:jane-a1b2"
+            },
+            {
+              "id": "spaces/x/devices/z",
+              "display_name": "Tom Elliot",
+              "joined": "2026-07-19T10:00:02.000Z",
+              "self": true
             }
           ],
+          "speakers": [
+            {
+              "source": "browser:meet:jane-a1b2",
+              "name": "Jane Doe",
+              "confidence": "correlated"
+            }
+          ],
+          "warnings": [],
           "sources": ["mic", "browser:meet:jane-a1b2"],
           "trigger": "browser-extension",
           "rev": 43
@@ -176,6 +190,8 @@
             "started": "2026-07-19T10:00:00.000Z",
             "intervals": [{ "start": "2026-07-19T10:00:00.000Z", "end": "2026-07-19T10:12:30.000Z" }],
             "attendees": [],
+            "speakers": [],
+            "warnings": [],
             "sources": ["browser:meet:jane-a1b2"],
             "trigger": "browser-extension",
             "rev": 43

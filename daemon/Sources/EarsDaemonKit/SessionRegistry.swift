@@ -307,7 +307,7 @@ public actor SessionRegistry {
     var session = Session(
       id: makeID(),
       identity: identity,
-      title: params.title ?? Self.defaultTitle(identity: identity),
+      title: params.title ?? Session.defaultTitle(identity: identity),
       state: .active,
       started: now,
       intervals: [SessionInterval(start: now)],
@@ -350,6 +350,7 @@ public actor SessionRegistry {
     session.state = .ended
     session.ended = now
 
+    reconcileRoster(&session)
     logRosterSummary(session)
     try persist(session)
     appendEvent(session.id, event: "ended", at: now, reason: reason.rawValue)
@@ -459,6 +460,10 @@ public actor SessionRegistry {
     if let joined = params.joined { attendee.joined = joined }
     if let left = params.left { attendee.left = left }
     if let source = params.source { attendee.source = source }
+    // Latched, never cleared: the client reports `self` on whichever upsert
+    // happens to carry it, and a later upsert for the same attendee that
+    // simply omits the field must not un-flag them.
+    if let isLocal = params.isLocal, isLocal { attendee.isLocal = true }
 
     if let index = session.attendees.firstIndex(where: { $0.id == params.id }) {
       session.attendees[index] = attendee
@@ -804,6 +809,62 @@ public actor SessionRegistry {
     return "\"\(value)\""
   }
 
+  /// Derives the session's speaker map, warnings, and — when nothing ever
+  /// named it — its title, from the final roster.
+  ///
+  /// Runs at `session.end`, on the last state before anything downstream
+  /// reads it: `transcribe` labels turns from ``Session/speakers``, and every
+  /// published path interpolates ``Session/title``. Doing it here rather than
+  /// live means it sees the *whole* call — an attendee who joins late, a
+  /// binding made and then contradicted — instead of deciding on partial
+  /// evidence and never revisiting it.
+  ///
+  /// **Title precedence.** A title anyone else established wins outright, and
+  /// the roster is consulted only for a session still carrying the platform's
+  /// own default. That default is regenerated and compared rather than
+  /// tracked with a flag, so the order needs no extra state: the extension's
+  /// meeting-name scrape (`MeetMeetingTitleWatcher` → `session.rename`) and a
+  /// manual rename both take precedence simply by having changed the title
+  /// away from it. The roster is the last resort before an opaque meeting id.
+  private func reconcileRoster(_ session: inout Session) {
+    let outcome = RosterReconciler.reconcile(
+      attendees: session.attendees, sources: session.sources, sessionStart: session.started)
+    session.speakers = outcome.speakers
+    session.warnings = outcome.warnings
+    // An inferred local participant is written back onto the roster, so
+    // `session.toml` records the conclusion and not just the evidence for it.
+    // Downstream only has to read `self`, and a re-reconciliation of this
+    // session starts from the answer rather than re-deriving it.
+    if let localID = outcome.localAttendeeID,
+      let index = session.attendees.firstIndex(where: { $0.id == localID })
+    {
+      session.attendees[index].isLocal = true
+    }
+
+    let speakerMap = outcome.speakers
+      .map { "\($0.source.rawValue)→\"\($0.name)\"(\($0.confidence.rawValue))" }
+      .joined(separator: ",")
+    log(
+      "session.end reconciled: session=\(session.id) "
+        + "local=\(logField(outcome.localAttendeeID))(\(outcome.localResolution.rawValue)) "
+        + "speakers=\(speakerMap.isEmpty ? "-" : speakerMap) "
+        + "warnings=\(outcome.warnings.count)")
+    for warning in outcome.warnings {
+      log("session.end warning: session=\(session.id) \(warning)")
+    }
+
+    guard session.hasDefaultTitle else { return }
+    guard
+      let derived = RosterReconciler.derivedTitle(
+        attendees: session.attendees, localAttendeeID: outcome.localAttendeeID)
+    else { return }
+    log(
+      "session.end titled from roster: session=\(session.id) "
+        + "title=\"\(derived)\" (was the platform default \"\(session.title)\")")
+    session.title = derived
+    appendEvent(session.id, event: "renamed", at: session.ended ?? session.started, title: derived)
+  }
+
   /// At session end, log which attendees resolved a name and a source and which
   /// are still unresolved (name and/or source missing). This makes an
   /// unresolved attendee an explicit, greppable fact rather than a silent empty
@@ -823,11 +884,6 @@ public actor SessionRegistry {
       "session.end roster summary: session=\(session.id) attendees=\(session.attendees.count) "
         + "with_name=\(withName) with_source=\(withSource) "
         + "unresolved=\(unresolved.isEmpty ? "-" : unresolved.joined(separator: ","))")
-  }
-
-  private static func defaultTitle(identity: SessionIdentity?) -> String {
-    guard let identity else { return "session" }
-    return "\(identity.platform) \(identity.externalID)"
   }
 
   // MARK: - Log helpers

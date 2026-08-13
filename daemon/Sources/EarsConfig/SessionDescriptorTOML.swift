@@ -42,6 +42,7 @@ public enum SessionDescriptorTOML {
             "end": .string(interval.end.map(formatInstant) ?? ""),
           ])
         }),
+      "warnings": .array(session.warnings.map { .string($0) }),
       "attendee": .array(
         session.attendees.map { attendee in
           .table([
@@ -50,6 +51,19 @@ public enum SessionDescriptorTOML {
             "joined": .string(attendee.joined.map(formatInstant) ?? ""),
             "left": .string(attendee.left.map(formatInstant) ?? ""),
             "source": .string(attendee.source?.rawValue ?? ""),
+            "self": .bool(attendee.isLocal),
+          ])
+        }),
+      // The reconciled derivation, kept beside the roster it came from rather
+      // than replacing it: `attendee` stays the observed record, `speaker` is
+      // what `RosterReconciler` concluded, and having both on disk is what
+      // makes a wrong conclusion diagnosable after the fact.
+      "speaker": .array(
+        session.speakers.map { speaker in
+          .table([
+            "source": .string(speaker.source.rawValue),
+            "name": .string(speaker.name),
+            "confidence": .string(speaker.confidence.rawValue),
           ])
         }),
     ])
@@ -135,7 +149,31 @@ public enum SessionDescriptorTOML {
           displayName: attendeeFields.optionalString("display_name"),
           joined: attendeeFields.optionalString("joined").flatMap(parseInstant),
           left: attendeeFields.optionalString("left").flatMap(parseInstant),
-          source: attendeeFields.optionalString("source").map { SourceID($0) }))
+          source: attendeeFields.optionalString("source").map { SourceID($0) },
+          isLocal: attendeeFields.optionalBool("self")))
+    }
+
+    // `speaker`/`warnings` post-date schema 3's first files, so both read
+    // tolerantly: a session captured before reconciliation existed simply has
+    // an empty speaker map, which is exactly what it knew.
+    var speakers: [SessionSpeaker] = []
+    for element in fields.optionalArray("speaker") {
+      guard case .table(let speakerTable) = element else { throw .invalidField("speaker") }
+      let speakerFields = TOMLFieldReader(table: speakerTable)
+      guard
+        let confidence = SpeakerConfidence(rawValue: try speakerFields.string("confidence"))
+      else { throw .invalidField("speaker.confidence") }
+      speakers.append(
+        SessionSpeaker(
+          source: SourceID(try speakerFields.string("source")),
+          name: try speakerFields.string("name"),
+          confidence: confidence))
+    }
+
+    var warnings: [String] = []
+    for element in fields.optionalArray("warnings") {
+      guard case .string(let warning) = element else { throw .invalidField("warnings") }
+      warnings.append(warning)
     }
 
     return Session(
@@ -147,6 +185,8 @@ public enum SessionDescriptorTOML {
       ended: ended,
       intervals: intervals,
       attendees: attendees,
+      speakers: speakers,
+      warnings: warnings,
       sources: sources,
       trigger: trigger,
       transcriptCompleted: transcriptCompleted)

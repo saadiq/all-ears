@@ -39,10 +39,22 @@ public enum UTCCalendar {
   }
 
   /// `YYYY-MM-DDTHH:MM:SSZ`.
-  static func iso8601(_ instant: Instant) -> String {
+  ///
+  /// `public` for the same reason ``timeOfDay(_:)`` is: `summarize` stamps the
+  /// conversation's start onto the transcript text it sends an LLM, and a
+  /// second epoch-seconds → civil conversion living in that module would be
+  /// the same math spelled twice.
+  public static func iso8601(_ instant: Instant) -> String {
     let c = civilTime(for: instant)
     return "\(pad(c.year, 4))-\(pad(c.month, 2))-\(pad(c.day, 2))T"
       + "\(pad(c.hour, 2)):\(pad(c.minute, 2)):\(pad(c.second, 2))Z"
+  }
+
+  /// `YYYY-MM-DD` — the day a vault files a note under, and the same string
+  /// `PathTemplate`'s `{date}` token expands to.
+  public static func isoDate(_ instant: Instant) -> String {
+    let c = civilTime(for: instant)
+    return "\(pad(c.year, 4))-\(pad(c.month, 2))-\(pad(c.day, 2))"
   }
 
   /// `HH:MM:SS`.
