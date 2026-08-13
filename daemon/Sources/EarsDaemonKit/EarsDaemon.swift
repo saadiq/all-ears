@@ -248,6 +248,12 @@ public actor EarsDaemon {
   /// individual `ingest.open` still gets its own fresh id to route binary
   /// frames and a later `ingest.close` by.
   private var ingestStreams: [String: SourceID] = [:]
+  /// stream_id → the membership tag its `ingest.open` carried, echoed to
+  /// `SessionRegistry.ingestStreamClosed(source:session:)` so the orphan
+  /// grace clock is scoped to the stream's own session on close exactly as
+  /// it is on open (#24) — never to an unrelated session that happens to
+  /// share the slot-style source label.
+  private var ingestStreamIdentities: [String: SessionIdentity] = [:]
   private var nextIngestStreamID = 0
   private var ingestWebSocketServer: IngestWebSocketServer?
   private var ingestServerRunTask: Task<Void, Never>?
@@ -771,6 +777,7 @@ public actor EarsDaemon {
     nextIngestStreamID += 1
     let streamID = "s\(nextIngestStreamID)"
     ingestStreams[streamID] = label
+    ingestStreamIdentities[streamID] = identity
     // Feed the session registry's orphan-grace tracking: a live stream on a
     // session's source cancels its pending grace expiry. The membership tag
     // (when the extension sent one) links the source into its session
@@ -949,13 +956,15 @@ public actor EarsDaemon {
   /// them rather than starting over.
   public func closeIngestSource(streamID: String) async {
     guard let label = ingestStreams.removeValue(forKey: streamID) else { return }
+    let identity = ingestStreamIdentities.removeValue(forKey: streamID)
     await flushIngestStats(source: label)
     if let actor = captureActors[label] {
       await actor.stop()
     }
     // When this was a browser session's last live stream, its ingest-close
-    // grace clock starts now.
-    await sessionRegistry?.ingestStreamClosed(source: label)
+    // grace clock starts now — scoped by the stream's own membership tag,
+    // mirroring the open side.
+    await sessionRegistry?.ingestStreamClosed(source: label, session: identity)
   }
 
   /// Stops and forgets the `CaptureActor` + `PushCaptureBackend` behind a

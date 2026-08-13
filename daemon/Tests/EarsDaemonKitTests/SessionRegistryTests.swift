@@ -718,6 +718,36 @@ struct SessionRegistryTests {
     #expect(timeline.last?.reason == "ingest-idle")
   }
 
+  @Test("a foreign tagged stream's close does not start another session's grace clock")
+  func foreignTaggedCloseDoesNotScheduleGrace() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let gate = SleepGate()
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, graceSeconds: 120,
+      sleep: { seconds in await gate.wait(seconds) })
+
+    // Session A, live, naming a slot-style (non-unique) source label.
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "abc", sources: ["browser:meet:speaker-1"],
+        trigger: .browserExtension))
+
+    // Another call's stream reuses the same slot label, tagged with its own
+    // identity — whose session.start never arrives (tab closed early). Its
+    // close belongs to that identity, not to session A.
+    let foreign = SessionIdentity(platform: "meet", externalID: "zzz")
+    await registry.ingestStreamOpened(source: "browser:meet:speaker-1", session: foreign)
+    await registry.ingestStreamClosed(source: "browser:meet:speaker-1", session: foreign)
+
+    await gate.releaseAll()
+    // Give any (wrongly) scheduled expiry a chance to run — it must not exist.
+    for _ in 0..<50 { await Task.yield() }
+
+    #expect(try await registry.get(id: session.id).state == .active)
+  }
+
   @Test("a tagged stream opened before session.start is claimed at start")
   func taggedStreamBeforeStartIsClaimed() async throws {
     let dataRoot = try makeDataRoot()

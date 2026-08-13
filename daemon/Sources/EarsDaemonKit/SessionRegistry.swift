@@ -47,8 +47,8 @@ public enum SessionRegistryError: Error, Sendable, Hashable {
 /// Browser sessions (any `browser:*` source) auto-end with
 /// `reason = "ingest-idle"` once their last live ingest stream has been
 /// closed for `graceSeconds` with no re-open — `EarsDaemon` feeds
-/// ``ingestStreamOpened(source:)``/``ingestStreamClosed(source:)`` from the
-/// ingest WebSocket. Manual sessions are never auto-ended: the daemon
+/// ``ingestStreamOpened(source:session:)``/``ingestStreamClosed(source:session:)``
+/// from the ingest WebSocket. Manual sessions are never auto-ended: the daemon
 /// records, it doesn't decide.
 public actor SessionRegistry {
   /// Why a session ended, recorded in `events.jsonl`'s `ended` line.
@@ -574,7 +574,16 @@ public actor SessionRegistry {
 
   /// A live ingest stream closed for `source` — when this leaves a browser
   /// session with no live streams at all, its grace clock starts.
-  public func ingestStreamClosed(source: SourceID) {
+  ///
+  /// A non-nil `session` is the same membership tag the stream's
+  /// `ingest.open` carried, echoed here so the close is scoped exactly the
+  /// way the open is (#24): the grace clock starts only for the session that
+  /// identity resolves to — NOT every non-ended session whose roster happens
+  /// to include the (slot-style, non-unique) `source` label, which would let
+  /// an unrelated call's dying stream start (or re-arm) another session's
+  /// grace. With no tag, fall back to the sessions that name the source (at
+  /// most one under the single-active invariant).
+  public func ingestStreamClosed(source: SourceID, session identity: SessionIdentity? = nil) {
     let remaining = max(0, (liveIngest[source] ?? 0) - 1)
     liveIngest[source] = remaining == 0 ? nil : remaining
     if remaining == 0 {
@@ -582,11 +591,15 @@ public actor SessionRegistry {
       // nothing — a later session must not adopt a source that isn't flowing.
       pendingIngestLinks[source] = nil
     }
-    for session in sessions.values
-    where session.state != .ended && session.sources.contains(source) {
-      if session.isBrowserSession && !hasLiveIngest(session) {
-        scheduleGraceExpiry(sessionID: session.id)
-      }
+    let affected: [Session]
+    if let identity {
+      affected = byIdentity[identity].flatMap { sessions[$0] }.map { [$0] } ?? []
+    } else {
+      affected = sessions.values.filter { $0.state != .ended && $0.sources.contains(source) }
+    }
+    for session in affected
+    where session.state != .ended && session.isBrowserSession && !hasLiveIngest(session) {
+      scheduleGraceExpiry(sessionID: session.id)
     }
   }
 
