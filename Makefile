@@ -40,7 +40,7 @@ SIGN_IDENTITY ?=
 # Installs are a strict ordered sequence; never parallelize them.
 .NOTPARALLEL:
 
-.PHONY: help build sign install install-bin install-agent \
+.PHONY: help build test sign install install-bin install-agent \
         uninstall uninstall-bin uninstall-agent reinstall status guard-user
 
 # --- Top-level targets ----------------------------------------------------
@@ -48,6 +48,7 @@ SIGN_IDENTITY ?=
 help:
 	@echo "All Ears — Makefile targets:"
 	@echo "  make build        Build release binaries (swift build -c release)"
+	@echo "  make test         Run the Swift and browser test suites"
 	@echo "  make sign         Code-sign the built binaries (needs build first)"
 	@echo "  make install      Build, sign, install to \$$PREFIX/bin, load the LaunchAgent"
 	@echo "  make uninstall    Stop/remove the LaunchAgent and the installed binaries"
@@ -61,6 +62,14 @@ help:
 build:
 	@echo "==> Building release binaries (swift build -c release)"
 	cd $(DAEMON) && swift build -c release
+
+# Both suites CI runs (.github/workflows/ci.yml): the Swift daemon tests and
+# the browser extension's vitest suite.
+test:
+	@echo "==> Running Swift tests (swift test)"
+	cd $(DAEMON) && swift test
+	@echo "==> Running browser tests (bun install && bun run test)"
+	cd browser && bun install && bun run test
 
 # Sign the built binaries in place, before they are copied to $(BINDIR).
 # codesign embeds the signature in the Mach-O, so a later `install`/copy keeps
