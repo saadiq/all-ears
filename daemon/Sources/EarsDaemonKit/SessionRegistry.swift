@@ -307,7 +307,7 @@ public actor SessionRegistry {
     var session = Session(
       id: makeID(),
       identity: identity,
-      title: params.title ?? Session.defaultTitle(identity: identity),
+      title: params.title ?? Session.defaultTitle(identity: identity, started: now),
       state: .active,
       started: now,
       intervals: [SessionInterval(start: now)],

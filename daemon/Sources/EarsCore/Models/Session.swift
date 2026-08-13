@@ -100,25 +100,35 @@ public struct Session: Sendable, Hashable {
   }
 
   /// The title a session gets when no client ever names one: the platform
-  /// and its own meeting identifier, e.g. `meet wUE9lE2sg5YB`.
+  /// and its own meeting identifier, e.g. `meet wUE9lE2sg5YB` — or, for a
+  /// manual session, `session` and its UTC start to the minute, e.g.
+  /// `session 2026-07-17 10:30`.
   ///
   /// Unreadable in a file listing and unsearchable, so it is a last resort
   /// rather than a default anyone should end up with — see
-  /// ``RosterReconciler/derivedTitle(attendees:localAttendeeID:)``.
-  public static func defaultTitle(identity: SessionIdentity?) -> String {
-    guard let identity else { return "session" }
+  /// ``RosterReconciler/derivedTitle(attendees:localAttendeeID:)``. The
+  /// manual default carries `started` because the recompute-and-compare
+  /// detection below forces the default to be a pure function of the
+  /// session's own fields: with a shared constant (`"session"`, the old
+  /// shape) every unnamed manual session was titled identically, so their
+  /// listings and derived notes were indistinguishable and collided.
+  public static func defaultTitle(identity: SessionIdentity?, started: Instant) -> String {
+    guard let identity else {
+      let time = String(UTCCalendar.timeOfDay(started).prefix(5))  // HH:MM
+      return "session \(UTCCalendar.isoDate(started)) \(time)"
+    }
     return "\(identity.platform) \(identity.externalID)"
   }
 
-  /// Whether this session is still carrying ``defaultTitle(identity:)`` —
-  /// i.e. nothing has named it.
+  /// Whether this session is still carrying ``defaultTitle(identity:started:)``
+  /// — i.e. nothing has named it.
   ///
   /// Recomputed and compared rather than tracked with a flag, which is what
   /// makes title precedence need no extra state: a meeting name scraped from
   /// the window title, and a rename typed by hand, both take precedence
   /// simply by having changed the title away from this.
   public var hasDefaultTitle: Bool {
-    title == Self.defaultTitle(identity: identity)
+    title == Self.defaultTitle(identity: identity, started: started)
   }
 
   /// Whether any of this session's sources is a `browser:*` source — the

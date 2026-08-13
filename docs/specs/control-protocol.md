@@ -106,7 +106,7 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
 {
   "id": "0d5e…",                          // daemon-assigned UUID
   "identity": {"platform": "meet", "external_id": "abc-defg-hij"},  // optional; absent for manual sessions
-  "title": "Weekly sync",                 // renameable; defaults from identity or id
+  "title": "Weekly sync",                 // renameable; defaults from identity or start time
   "state": "active",                      // active | paused | ended
   "started": "2026-07-19T10:00:00Z",
   "ended": null,
