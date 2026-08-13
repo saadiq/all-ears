@@ -44,10 +44,27 @@
 ///    upgrade, which resolve to a single speaker label downstream precisely
 ///    because they share a name.
 ///
+/// 3. **A source carries at most one name.** Competing claims on one source
+///    are resolved by roster order — the first claimant wins, identically on
+///    every re-run — and the losing claim is warned about rather than left
+///    to whichever entry a downstream dictionary happened to keep last.
+///
 /// With two or more remote attendees and an unresolved track, the counts
 /// force nothing, and this deliberately assigns nothing: an unlabelled turn
 /// is recoverable, a confidently mislabelled one is not.
 public enum RosterReconciler {
+
+  /// The version of this derivation, persisted as `reconciler_version` in
+  /// `session.toml` beside the `[[speaker]]` map it produced.
+  ///
+  /// Bumped whenever a change here can produce a different map from the same
+  /// roster — new invariants, changed tie-breaking. `transcribe` compares a
+  /// stored map's version against this and re-derives when the stored one is
+  /// older, which is what turns a reconciler bug fix into a repair for every
+  /// past session instead of only future ones. A file without the field is
+  /// version 0: reconciled (or captured) before versioning existed, and
+  /// therefore always stale.
+  public static let version = 1
 
   /// How far after a session's start an attendee may join and still be taken
   /// for the local participant by ``inferLocalAttendee(_:sessionStart:)``.
@@ -97,6 +114,12 @@ public enum RosterReconciler {
     /// Derived from join order against the session start (see
     /// ``localJoinWindowSeconds``).
     case inferred
+    /// The roster's reported flag was contradicted by the evidence — the
+    /// flagged attendee is bound to remote audio while join order singles
+    /// out somebody else — and overridden, with the evidence recorded in
+    /// ``Outcome/warnings``. This is what makes the registry's set-once
+    /// `self` latch revisable after the fact.
+    case revised
     /// Neither available: invariant 1 was not applied.
     case unknown
   }
@@ -118,13 +141,37 @@ public enum RosterReconciler {
 
     // ── Who is the local participant? ────────────────────────────────────
     let reportedLocal = attendees.first(where: \.isLocal)?.id
+    let inferredLocal = inferLocalAttendee(attendees, sessionStart: sessionStart)
     let localID: String?
     let resolution: LocalResolution
     if let reportedLocal {
-      localID = reportedLocal
-      resolution = .reported
-    } else if let inferred = inferLocalAttendee(attendees, sessionStart: sessionStart) {
-      localID = inferred
+      // The reported flag stands unless the evidence contradicts it on both
+      // fronts: the flagged attendee is bound to remote (`browser:*`) audio —
+      // an impossible state for the person captured on `mic` — while join
+      // order singles out somebody *else* as the one whose arrival started
+      // the session. Either alone is survivable (invariant 1 handles a stray
+      // binding); together they say the flag itself landed on the wrong row,
+      // and a flag kept there would make invariant 1 drop a *correct*
+      // binding and hand the call to the wrong name.
+      let reportedAttendee = attendees.first { $0.id == reportedLocal }
+      if let inferredLocal, inferredLocal != reportedLocal,
+        let impossible = reportedAttendee?.source, impossible.sourceClass == .browser
+      {
+        localID = inferredLocal
+        resolution = .revised
+        let reportedName = reportedAttendee?.displayName ?? reportedLocal
+        let inferredName =
+          attendees.first { $0.id == inferredLocal }?.displayName ?? inferredLocal
+        warnings.append(
+          "speaker attribution: the roster marked \(reportedName) as you, but they are bound "
+            + "to remote audio (\(impossible.rawValue)) and \(inferredName) is the only "
+            + "attendee who joined when the session started — treating \(inferredName) as you")
+      } else {
+        localID = reportedLocal
+        resolution = .reported
+      }
+    } else if let inferredLocal {
+      localID = inferredLocal
       resolution = .inferred
     } else {
       localID = nil
@@ -153,7 +200,28 @@ public enum RosterReconciler {
           + "track bound to your own name could not be ruled out")
     }
 
-    var speakers = bound.map {
+    // ── One source carries at most one name ──────────────────────────────
+    // Two attendees claiming the same source used to yield two rows here,
+    // and the transcript's source→name dictionary silently kept whichever
+    // was inserted last. Roster order — the order the claims arrived —
+    // decides instead, identically on every re-run, and the losing claim is
+    // said out loud rather than shadowed. Two rows agreeing on a name (one
+    // human rejoining) are one claim, not a conflict.
+    var claimedNames: [SourceID: String] = [:]
+    var distinct: [(source: SourceID, name: String)] = []
+    for claim in bound {
+      guard let winner = claimedNames[claim.source] else {
+        claimedNames[claim.source] = claim.name
+        distinct.append(claim)
+        continue
+      }
+      guard winner != claim.name else { continue }
+      warnings.append(
+        "speaker attribution: \(claim.source.rawValue) was claimed by both \(winner) and "
+          + "\(claim.name) — keeping \(winner), the roster's first claimant")
+    }
+
+    var speakers = distinct.map {
       SessionSpeaker(source: $0.source, name: $0.name, confidence: .correlated)
     }
 
@@ -243,7 +311,9 @@ public enum RosterReconciler {
   }
 
   /// The local participant's attendee id, inferred from join order when the
-  /// capture client never flagged one.
+  /// capture client never flagged one — and, when the client did, the
+  /// cross-check a contradicted flag is revised against (see
+  /// ``LocalResolution/revised``).
   ///
   /// Requires exactly one *named* attendee inside ``localJoinWindowSeconds``
   /// of the session start, and that they be strictly the earliest — the

@@ -86,6 +86,13 @@ struct Transcribe: AsyncParsableCommand {
     help: "Union a session's transcription intervals into one transcript (session id).")
   var session: String?
 
+  @Flag(
+    name: .customLong("rereconcile"),
+    help:
+      "Re-derive the session's speaker map from its roster with the current reconciler, ignoring the stored [[speaker]] map (requires --session)."
+  )
+  var rereconcile = false
+
   @Option(name: .customLong("source"), help: "Source(s) to transcribe; repeatable.")
   var sources: [String] = []
 
@@ -146,6 +153,7 @@ struct Transcribe: AsyncParsableCommand {
     let session = self.session
     let sources = self.sources
     let out = self.out
+    let rereconcile = self.rereconcile
 
     // The real run happens inside `work`, between `run.start` and
     // `run.summary`; the summary now reflects the outcome we return here,
@@ -178,7 +186,7 @@ struct Transcribe: AsyncParsableCommand {
         arguments: arguments,
         inputs: TranscribePipeline.Inputs(
           last: last, from: from, to: to, session: session, sourceIDs: sources,
-          out: out),
+          out: out, rereconcile: rereconcile),
         diagnostics: diagnostics,
         spans: bootstrap.stageSpans(tool: "transcribe"),
         emitJSONEnvelope: json)
@@ -204,6 +212,13 @@ struct Transcribe: AsyncParsableCommand {
   /// Rejects mutually exclusive flag combinations before any run. Mirrors the
   /// per-mode guards the dispatch in ``run()`` relies on having already passed.
   private func validateArgumentCombinations() throws {
+    // The speaker map is a session artifact, so re-reconciling one is
+    // meaningless without a session to read the roster from — checked first
+    // so `--file --rereconcile` and `--follow --rereconcile` get this
+    // precise error rather than the generic combination one.
+    if rereconcile, session == nil {
+      throw ValidationError("--rereconcile requires --session")
+    }
     if !files.isEmpty {
       // `--file` is a standalone-file batch: every range/session selector
       // and the live-`--follow` attach make no sense against a file

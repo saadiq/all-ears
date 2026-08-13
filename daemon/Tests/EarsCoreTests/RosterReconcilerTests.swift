@@ -87,6 +87,58 @@ struct RosterReconcilerTests {
     #expect(outcome.localResolution == RosterReconciler.LocalResolution.reported)
   }
 
+  @Test("a self flag contradicted by a remote binding and join order is revised")
+  func revisesContradictedLocalFlag() {
+    // The wrong latch: the remote participant got flagged as you, and their
+    // (correct) track binding now looks like the impossible state invariant 1
+    // exists to reject. The flag is contradicted on both fronts — the flagged
+    // row is bound to remote audio, and join order singles out somebody else
+    // as the one whose arrival started the session — so the flag is revised,
+    // not the binding dropped.
+    let attendees = [
+      SessionAttendee(id: "tom", displayName: "Tom Elliot", joined: Self.at(3)),
+      SessionAttendee(
+        id: "matt", displayName: "Matthew Barras", joined: Self.at(53),
+        source: SourceID("browser:meet:matt"), isLocal: true),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:meet:matt"], sessionStart: Self.start)
+
+    #expect(outcome.localAttendeeID == "tom")
+    #expect(outcome.localResolution == RosterReconciler.LocalResolution.revised)
+    // The evidence for the revision travels in the warnings…
+    #expect(
+      outcome.warnings.contains {
+        $0.contains("marked Matthew Barras as you") && $0.contains("browser:meet:matt")
+      })
+    // …and the correct binding survives instead of being dropped, so the
+    // whole call is no longer misattributed by one wrong flag (the failure
+    // the irreversible latch made permanent).
+    #expect(
+      outcome.speakers.contains {
+        $0.source == SourceID("browser:meet:matt") && $0.name == "Matthew Barras"
+      })
+  }
+
+  @Test("a contradicted self flag stands when join order distinguishes nobody")
+  func keepsContradictedFlagWithoutJoinEvidence() {
+    // The flagged row is bound to remote audio, but everyone joined in the
+    // same burst — half the evidence is missing, so the conservative answer
+    // is today's: keep the reported flag, drop the impossible binding.
+    let attendees = [
+      SessionAttendee(id: "tom", displayName: "Tom Elliot", joined: Self.at(3)),
+      SessionAttendee(
+        id: "matt", displayName: "Matthew Barras", joined: Self.at(5),
+        source: SourceID("browser:meet:matt"), isLocal: true),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:meet:matt"], sessionStart: Self.start)
+
+    #expect(outcome.localAttendeeID == "matt")
+    #expect(outcome.localResolution == RosterReconciler.LocalResolution.reported)
+    #expect(!outcome.speakers.contains { $0.name == "Matthew Barras" })
+  }
+
   @Test("joining a call already in progress leaves the local participant unknown")
   func ambiguousJoinsInferNothing() {
     // Everyone lands in the same burst, so join order distinguishes nobody.
@@ -166,6 +218,50 @@ struct RosterReconcilerTests {
       RosterReconciler.derivedTitle(
         attendees: [SessionAttendee(id: "me", displayName: "Tom", isLocal: true)],
         localAttendeeID: "me") == nil)
+  }
+
+  @Test("two attendees claiming one source keep the roster's first claimant, with a warning")
+  func duplicateSourceClaimsResolveDeterministically() {
+    // Both Ana and Ben claim browser:x:1. Before this invariant the map held
+    // two rows and transcribe's source→name dictionary silently kept
+    // whichever landed last; roster order (the order the claims arrived)
+    // decides the same way on every re-run.
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", joined: Self.at(1), isLocal: true),
+      SessionAttendee(
+        id: "a", displayName: "Ana", joined: Self.at(60), source: SourceID("browser:x:1")),
+      SessionAttendee(
+        id: "b", displayName: "Ben", joined: Self.at(70), source: SourceID("browser:x:1")),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:1"], sessionStart: Self.start)
+
+    #expect(outcome.speakers.filter { $0.source == SourceID("browser:x:1") }.map(\.name) == ["Ana"])
+    #expect(
+      outcome.warnings.contains {
+        $0.contains("claimed by") && $0.contains("Ana") && $0.contains("Ben")
+      })
+  }
+
+  @Test("one human claiming a source under two roster rows is one claim, not a conflict")
+  func duplicateClaimsSharingANameCoalesce() {
+    // A rejoin puts the same person on the roster twice, both rows bound to
+    // the surviving track. That is agreement — one speaker row, no warning.
+    let attendees = [
+      SessionAttendee(id: "me", displayName: "Tom Elliot", joined: Self.at(1), isLocal: true),
+      SessionAttendee(
+        id: "a1", displayName: "Ana", joined: Self.at(60), source: SourceID("browser:x:1")),
+      SessionAttendee(
+        id: "a2", displayName: "Ana", joined: Self.at(90), source: SourceID("browser:x:1")),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:1"], sessionStart: Self.start)
+
+    #expect(
+      outcome.speakers == [
+        SessionSpeaker(source: SourceID("browser:x:1"), name: "Ana", confidence: .correlated)
+      ])
+    #expect(!outcome.warnings.contains { $0.contains("claimed by") })
   }
 
   @Test("one participant seen under several ids is one participant")

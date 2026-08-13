@@ -930,6 +930,49 @@ struct SessionRegistryReconciliationTests {
     #expect(ended.speakers.map { $0.source.rawValue } == ["browser:meet:devices-404"])
     #expect(ended.attendees.first { $0.id == "devices/404" }?.isLocal == true)
     #expect(!ended.warnings.isEmpty)
+    // The map records which reconciler produced it, so a later `transcribe`
+    // can tell a current map from one an older derivation left behind.
+    #expect(ended.reconcilerVersion == RosterReconciler.version)
+  }
+
+  @Test("a wrong self latch is revised at session end, with the evidence persisted")
+  func revisesWrongSelfLatch() async throws {
+    // The upsert latch is set-once by design (a client omitting `self` must
+    // not un-flag anyone), so a flag that landed on the wrong row used to be
+    // wrong forever. Reconciliation is the one place with the evidence to
+    // revise it: here the *remote* participant arrives flagged as you.
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let registry = makeRegistry(clock, dataRoot: dataRoot)
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "wUE9lE2sg5YB", trigger: .browserExtension))
+    clock.advance(by: 3)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404", displayName: "Tom Elliot",
+        joined: clock.now()))
+    clock.advance(by: 50)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/403", displayName: "Matthew Barras",
+        joined: clock.now(), source: SourceID("browser:meet:devices-403"), isLocal: true))
+    clock.advance(by: 2000)
+    let ended = try await registry.end(id: session.id)
+
+    // The latch moved: the flag lands on the actual local participant and is
+    // cleared from the row the client mis-flagged.
+    #expect(ended.attendees.first { $0.id == "devices/404" }?.isLocal == true)
+    #expect(ended.attendees.first { $0.id == "devices/403" }?.isLocal == false)
+    // The correct binding survives, so the call is attributed to the person
+    // actually speaking on the track.
+    #expect(
+      ended.speakers.contains {
+        $0.source == SourceID("browser:meet:devices-403") && $0.name == "Matthew Barras"
+      })
+    // The evidence for the revision is persisted with the session.
+    #expect(ended.warnings.contains { $0.contains("marked Matthew Barras as you") })
   }
 
   @Test("an unnamed session is titled from the roster rather than the meeting id")
@@ -967,5 +1010,6 @@ struct SessionRegistryReconciliationTests {
     #expect(recovered.speakers == ended.speakers)
     #expect(recovered.warnings == ended.warnings)
     #expect(recovered.title == "Matthew Barras")
+    #expect(recovered.reconcilerVersion == RosterReconciler.version)
   }
 }

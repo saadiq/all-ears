@@ -831,14 +831,22 @@ public actor SessionRegistry {
       attendees: session.attendees, sources: session.sources, sessionStart: session.started)
     session.speakers = outcome.speakers
     session.warnings = outcome.warnings
-    // An inferred local participant is written back onto the roster, so
-    // `session.toml` records the conclusion and not just the evidence for it.
-    // Downstream only has to read `self`, and a re-reconciliation of this
-    // session starts from the answer rather than re-deriving it.
-    if let localID = outcome.localAttendeeID,
-      let index = session.attendees.firstIndex(where: { $0.id == localID })
-    {
-      session.attendees[index].isLocal = true
+    // Stamp which derivation produced this map, so `transcribe` can tell a
+    // current map from one a since-fixed reconciler left behind and re-derive
+    // the stale one.
+    session.reconcilerVersion = RosterReconciler.version
+    // The reconciler's local-participant conclusion is written back onto the
+    // roster — in both directions. Setting the concluded row records the
+    // answer, so `session.toml` carries the conclusion and not just the
+    // evidence for it; clearing every other row is what makes the upsert
+    // latch above (set-once, so a client omitting `self` can't un-flag
+    // anyone) revisable after all: the registry never un-flags on a client's
+    // say-so, but a reconciliation that showed the flag impossible does, and
+    // its evidence is persisted in `warnings` (``RosterReconciler/LocalResolution/revised``).
+    if let localID = outcome.localAttendeeID {
+      for index in session.attendees.indices {
+        session.attendees[index].isLocal = session.attendees[index].id == localID
+      }
     }
 
     let speakerMap = outcome.speakers
