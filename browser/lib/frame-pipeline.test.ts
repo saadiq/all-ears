@@ -1,0 +1,172 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  LinearResampler,
+  RingBuffer,
+  SILENT_CAPTURE_GRACE_MS,
+  SilentCaptureWatchdog,
+  silentReport,
+} from "./frame-pipeline";
+
+describe("LinearResampler", () => {
+  it("halves the sample count at 2:1 (e.g. 48kHz → 24kHz)", () => {
+    const r = new LinearResampler(48000, 24000);
+    const input = new Float32Array(480).fill(1);
+    const out = r.process(input);
+    expect(out.length).toBeCloseTo(240, -1);
+  });
+
+  it("resamples 48kHz → 16kHz (the real Meet/decoder rate) to a third the length", () => {
+    const r = new LinearResampler(48000, 16000);
+    const input = new Float32Array(4800).fill(0.5);
+    const out = r.process(input);
+    expect(out.length).toBeCloseTo(1600, -1);
+    for (const s of out) expect(s).toBeCloseTo(0.5, 5);
+  });
+
+  it("passes a constant signal through unchanged in value", () => {
+    const r = new LinearResampler(44100, 16000);
+    const input = new Float32Array(1000).fill(-0.25);
+    const out = r.process(input);
+    expect(out.length).toBeGreaterThan(0);
+    for (const s of out) expect(s).toBeCloseTo(-0.25, 5);
+  });
+
+  it("is phase-continuous across chunks — splitting one signal into two calls yields the same tail as one call", () => {
+    const full = new Float32Array(2000);
+    for (let i = 0; i < full.length; i++) full[i] = Math.sin(i * 0.05);
+
+    const whole = new LinearResampler(48000, 16000).process(full);
+
+    const chunked = new LinearResampler(48000, 16000);
+    const a = chunked.process(full.slice(0, 900));
+    const b = chunked.process(full.slice(900));
+    const combined = Float32Array.from([...a, ...b]);
+
+    // Same total output length, and closely matching values (allowing for a
+    // possible ±1 sample boundary rounding difference).
+    expect(Math.abs(combined.length - whole.length)).toBeLessThanOrEqual(1);
+    const n = Math.min(combined.length, whole.length);
+    for (let i = 0; i < n; i++) {
+      expect(combined[i]).toBeCloseTo(whole[i]!, 4);
+    }
+  });
+
+  it("reuses correctly across independent source instances (standard vs. Meet decode)", () => {
+    // Two frame sources feeding two different tracks must not share resampler
+    // state — each TrackCapture owns its own instance.
+    const a = new LinearResampler(48000, 16000);
+    const b = new LinearResampler(16000, 16000);
+    const outA = a.process(new Float32Array(480).fill(1));
+    const outB = b.process(new Float32Array(160).fill(-1));
+    expect(outA.every((s) => s === 1)).toBe(true);
+    expect(outB.every((s) => s === -1)).toBe(true);
+  });
+});
+
+describe("RingBuffer", () => {
+  it("drains frames in push order", () => {
+    const ring = new RingBuffer(4, "test");
+    ring.push(Int16Array.from([1]));
+    ring.push(Int16Array.from([2]));
+    ring.push(Int16Array.from([3]));
+    expect(ring.drain().map((f) => f[0])).toEqual([1, 2, 3]);
+  });
+
+  it("drain empties the buffer", () => {
+    const ring = new RingBuffer(4, "test");
+    ring.push(Int16Array.from([1]));
+    ring.drain();
+    expect(ring.drain()).toEqual([]);
+  });
+
+  it("drops the oldest frame on overflow, keeping the freshest", () => {
+    const ring = new RingBuffer(2, "test");
+    ring.push(Int16Array.from([1]));
+    ring.push(Int16Array.from([2]));
+    ring.push(Int16Array.from([3])); // overflow: drops [1]
+    expect(ring.drain().map((f) => f[0])).toEqual([2, 3]);
+  });
+
+  it("never grows past capacity even under sustained overflow", () => {
+    const ring = new RingBuffer(3, "test");
+    for (let i = 0; i < 100; i++) ring.push(Int16Array.from([i]));
+    const drained = ring.drain();
+    expect(drained.length).toBe(3);
+    expect(drained.map((f) => f[0])).toEqual([97, 98, 99]);
+  });
+});
+
+// ── Silent-capture watchdog (journal #72) ───────────────────────────────────
+
+describe("SilentCaptureWatchdog", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("fires once when an unmuted track never yields a frame", () => {
+    const silent: number[] = [];
+    const wd = new SilentCaptureWatchdog((ms) => silent.push(ms));
+    wd.armOnUnmute();
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS);
+    expect(silent).toEqual([SILENT_CAPTURE_GRACE_MS]);
+  });
+
+  it("stays quiet when a frame arrives within the grace window", () => {
+    const silent: number[] = [];
+    const wd = new SilentCaptureWatchdog((ms) => silent.push(ms));
+    wd.armOnUnmute();
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS / 2);
+    wd.noteFrame();
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS);
+    expect(silent).toEqual([]);
+  });
+
+  it("reports at most once across repeated unmutes", () => {
+    const silent: number[] = [];
+    const wd = new SilentCaptureWatchdog((ms) => silent.push(ms));
+    wd.armOnUnmute();
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS);
+    wd.armOnUnmute(); // a later speaking turn must not re-warn
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS);
+    expect(silent).toHaveLength(1);
+  });
+
+  it("a frame seen before an unmute keeps the track silent-free forever", () => {
+    const silent: number[] = [];
+    const wd = new SilentCaptureWatchdog((ms) => silent.push(ms));
+    wd.noteFrame();
+    wd.armOnUnmute();
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS * 2);
+    expect(silent).toEqual([]);
+  });
+
+  it("stop() cancels a pending warning (track ended mid-grace)", () => {
+    const silent: number[] = [];
+    const wd = new SilentCaptureWatchdog((ms) => silent.push(ms));
+    wd.armOnUnmute();
+    wd.stop();
+    vi.advanceTimersByTime(SILENT_CAPTURE_GRACE_MS * 2);
+    expect(silent).toEqual([]);
+  });
+});
+
+describe("silentReport", () => {
+  it("escalates to a loud warning when nothing has decoded on the call", () => {
+    const r = silentReport("speaker-1", "meet", false, SILENT_CAPTURE_GRACE_MS);
+    expect(r.level).toBe("warn");
+    expect(r.text).toContain("SILENT");
+    expect(r.text).toContain("createEncodedStreams");
+  });
+
+  it("downgrades to a benign note when other participants are being captured (a quiet/noise-gated speaker)", () => {
+    const r = silentReport("speaker-3", "meet", true, SILENT_CAPTURE_GRACE_MS);
+    expect(r.level).toBe("info");
+    expect(r.text).toContain("noise-suppressed");
+    expect(r.text).not.toContain("SILENT");
+  });
+
+  it("omits the Meet-specific hint on other platforms", () => {
+    const r = silentReport("speaker-1", "zoom", false, SILENT_CAPTURE_GRACE_MS);
+    expect(r.level).toBe("warn");
+    expect(r.text).not.toContain("createEncodedStreams");
+  });
+});
