@@ -337,6 +337,67 @@ export function reduceRelay(
   }
 }
 
+/**
+ * What a respawned service worker must be re-taught (extension.md §Messaging,
+ * the stranded-session bug class): the worker holds the live call only in
+ * memory, so after an eviction it can neither attribute the PCM it forwards
+ * nor end the session when the tab goes away. The relay replays these
+ * messages into every *fresh* port — ahead of the message that triggered the
+ * reconnect (see ReconnectingPort.onReconnect) — so the worker re-learns the
+ * meeting, the capture participants, the accumulated roster names (the MAIN
+ * world only ever sends deltas, #23), and the identity links joining sources
+ * to named attendees. Attribution batches are deliberately absent: the MAIN
+ * world's ring is their durable copy, and the daemon's attribution.jsonl is
+ * best-effort.
+ */
+export function respawnReplay(state: RelayState): { messages: PortMessage[]; log: string } {
+  const messages: PortMessage[] = [];
+  if (state.liveMeeting) messages.push({ type: "meeting-started", ...state.liveMeeting });
+  for (const [participantId, p] of state.participants) {
+    messages.push({
+      type: "joined",
+      participant: { kind: p.kind, id: participantId },
+      platform: p.platform,
+    });
+  }
+  for (const [platform, entries] of groupRosterByPlatform(state.roster)) {
+    messages.push({ type: "roster", platform, entries });
+  }
+  for (const [captureId, r] of state.identities) {
+    messages.push({
+      type: "identified",
+      platform: r.platform,
+      participantId: r.participantId,
+      captureId,
+      ...(r.displayName ? { displayName: r.displayName } : {}),
+    });
+  }
+  const log =
+    `[ears][relay] replayed to respawned worker: ` +
+    `meeting=${state.liveMeeting?.externalMeetingId ?? "none"}, ` +
+    `${state.participants.size} participant(s), ${state.roster.size} roster name(s), ` +
+    `${state.identities.size} identity link(s)`;
+  return { messages, log };
+}
+
+/** Regroup the accumulated roster back into per-platform entry batches for the
+ * `roster` port message. A tab is single-platform in practice, but grouping
+ * keeps the wire shape honest if that ever changes. */
+function groupRosterByPlatform(
+  roster: RelayState["roster"],
+): Map<Platform, RosterEntry[]> {
+  const byPlatform = new Map<Platform, RosterEntry[]>();
+  for (const [participantId, r] of roster) {
+    const list = byPlatform.get(r.platform) ?? [];
+    // `isLocal` rides the respawn replay too — a service worker that restarts
+    // mid-call must not come back with a roster that has forgotten which row
+    // is the user.
+    list.push({ participantId, displayName: r.displayName, ...(r.isLocal ? { isLocal: true } : {}) });
+    byPlatform.set(r.platform, list);
+  }
+  return byPlatform;
+}
+
 /** The relay hop's instruments, minimal shapes so tests can hand in plain
  * recorders (content.ts hands in perf.ts's Histogram/Counter). */
 export interface RelayMetricSinks {

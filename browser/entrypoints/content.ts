@@ -13,10 +13,11 @@ import {
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { ReconnectingPort } from "../lib/pcm-port";
 import { Counter, Histogram, PerfCollector } from "../lib/perf";
-import { isMainEnvelope, postToMain, type Platform, type RosterEntry } from "../lib/protocol";
+import { isMainEnvelope, postToMain } from "../lib/protocol";
 import {
   emptyRelayState,
   reduceRelay,
+  respawnReplay,
   runRelayEffects,
   type RelaySinks,
   type RelayState,
@@ -156,41 +157,15 @@ export default defineContentScript({
     // fresh state per lifecycle message, so this binding is reassigned.
     let state: RelayState = emptyRelayState();
 
-    // Dedicated PCM/lifecycle port to the background.
+    // Dedicated PCM/lifecycle port to the background. A fresh port after a
+    // worker respawn is re-taught the call (respawnReplay, relay-core.ts)
+    // ahead of the message that triggered the reconnect.
     const port = new ReconnectingPort(
       () => browser.runtime.connect({ name: "pcm" }),
       (post) => {
-        if (state.liveMeeting) post({ type: "meeting-started", ...state.liveMeeting });
-        for (const [participantId, p] of state.participants) {
-          post({
-            type: "joined",
-            participant: { kind: p.kind, id: participantId },
-            platform: p.platform,
-          });
-        }
-        // Roster names dedupe in the MAIN world (only deltas are ever sent), so
-        // a respawned worker would otherwise miss every already-emitted name
-        // until Meet changed one. Replay the full accumulated roster here.
-        for (const [platform, entries] of groupRosterByPlatform(state.roster)) {
-          post({ type: "roster", platform, entries });
-        }
-        // Identity links are one-shot deltas like roster names; replay them
-        // too so a respawned worker still joins sources to named attendees.
-        for (const [captureId, r] of state.identities) {
-          post({
-            type: "identified",
-            platform: r.platform,
-            participantId: r.participantId,
-            captureId,
-            ...(r.displayName ? { displayName: r.displayName } : {}),
-          });
-        }
-        console.debug(
-          `[ears][relay] replayed to respawned worker: ` +
-            `meeting=${state.liveMeeting?.externalMeetingId ?? "none"}, ` +
-            `${state.participants.size} participant(s), ${state.roster.size} roster name(s), ` +
-            `${state.identities.size} identity link(s)`,
-        );
+        const { messages, log } = respawnReplay(state);
+        for (const msg of messages) post(msg);
+        console.debug(log);
       },
     );
 
@@ -226,23 +201,5 @@ interface RelayMetrics {
   dropped: Counter;
   unknownParticipant: Counter;
   detail: boolean;
-}
-
-/** Regroup the accumulated roster back into per-platform entry batches for the
- * `roster` port message. A tab is single-platform in practice, but grouping
- * keeps the wire shape honest if that ever changes. */
-function groupRosterByPlatform(
-  roster: Map<string, { platform: Platform; displayName: string; isLocal?: boolean }>,
-): Map<Platform, RosterEntry[]> {
-  const byPlatform = new Map<Platform, RosterEntry[]>();
-  for (const [participantId, r] of roster) {
-    const list = byPlatform.get(r.platform) ?? [];
-    // `isLocal` rides the respawn replay too — a service worker that restarts
-    // mid-call must not come back with a roster that has forgotten which row
-    // is the user.
-    list.push({ participantId, displayName: r.displayName, ...(r.isLocal ? { isLocal: true } : {}) });
-    byPlatform.set(r.platform, list);
-  }
-  return byPlatform;
 }
 
