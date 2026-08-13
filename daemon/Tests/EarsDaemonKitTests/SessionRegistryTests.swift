@@ -498,7 +498,8 @@ struct SessionRegistryTests {
     let session = try await registry.start(SessionStartParams(platform: "meet", externalID: "a"))
 
     _ = try await registry.upsertAttendee(
-      SessionAttendeeParams(session: session.id, id: "p1", displayName: "Jane Doe"))
+      SessionAttendeeParams(
+        session: session.id, id: "p1", displayName: "Jane Doe", origin: .platform))
     clock.advance(by: 60)
     let linked = try await registry.upsertAttendee(
       SessionAttendeeParams(session: session.id, id: "p1", source: "browser:meet:jane"))
@@ -507,6 +508,8 @@ struct SessionRegistryTests {
     let attendee = linked.attendees[0]
     #expect(attendee.displayName == "Jane Doe")  // earlier field kept
     #expect(attendee.source == "browser:meet:jane")
+    // An upsert that omits `origin` leaves the declared provenance alone.
+    #expect(attendee.origin == .platform)
     #expect(attendee.joined == base)  // stamped at first upsert
     #expect(linked.sources.contains("browser:meet:jane"))
 

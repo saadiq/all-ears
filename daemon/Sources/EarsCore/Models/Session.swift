@@ -167,11 +167,29 @@ public struct SessionInterval: Sendable, Hashable {
   }
 }
 
+/// Where a roster entry's ``SessionAttendee/id`` was minted.
+///
+/// The capture client reports it on `session.attendee` (`origin`), flattened
+/// from its typed participant reference. The distinction is load-bearing for
+/// reconciliation: a synthetic row names a captured track, not a person, so
+/// ``RosterReconciler`` never counts it as a named remote participant —
+/// see ``RosterReconciler/namedRemoteAttendees(_:localID:)``.
+public enum AttendeeOrigin: String, Sendable, Hashable, Codable, CaseIterable {
+  /// The platform's own stable id (a Meet device path, a Zoom node id),
+  /// joinable against the platform's roster.
+  case platform
+  /// A capture-client stand-in minted when no platform id was available
+  /// (`speaker-<n>`, `webaudio-track-<n>`, `graphtap-<n>`).
+  case synthetic
+}
+
 /// One roster entry, with join/leave times and an optional mapping to the
 /// attendee's per-participant audio source (which downstream feeds the
 /// transcript's speaker-name map).
 public struct SessionAttendee: Sendable, Hashable {
-  /// The platform's participant id, e.g. `spaces/x/devices/y`.
+  /// The participant id the capture client upserted under — usually the
+  /// platform's own (e.g. `spaces/x/devices/y`), sometimes a synthetic
+  /// stand-in; ``origin`` says which.
   public var id: String
   public var displayName: String?
   public var joined: Instant?
@@ -183,6 +201,11 @@ public struct SessionAttendee: Sendable, Hashable {
   /// are occasionally wrong. ``RosterReconciler`` is what turns these into the
   /// speaker map, applying the invariants a binding has to satisfy first.
   public var source: SourceID?
+  /// Where ``id`` was minted — see ``AttendeeOrigin``. `nil` means unknown:
+  /// the roster row predates provenance (old `session.toml` files, old
+  /// clients), and every consumer treats an unknown row exactly as it did
+  /// before origins existed.
+  public var origin: AttendeeOrigin?
   /// Whether this attendee is the local participant — you.
   ///
   /// Reported by the capture client, which can see the platform's own "(You)"
@@ -199,6 +222,7 @@ public struct SessionAttendee: Sendable, Hashable {
     joined: Instant? = nil,
     left: Instant? = nil,
     source: SourceID? = nil,
+    origin: AttendeeOrigin? = nil,
     isLocal: Bool = false
   ) {
     self.id = id
@@ -206,6 +230,7 @@ public struct SessionAttendee: Sendable, Hashable {
     self.joined = joined
     self.left = left
     self.source = source
+    self.origin = origin
     self.isLocal = isLocal
   }
 }
@@ -284,7 +309,7 @@ extension SessionInterval: Codable {
 
 extension SessionAttendee: Codable {
   private enum CodingKeys: String, CodingKey {
-    case id, joined, left, source
+    case id, joined, left, source, origin
     case displayName = "display_name"
     // `self` on the wire: it reads as the platform's own "(You)" marker,
     // which is what the capture client is relaying.
@@ -298,6 +323,7 @@ extension SessionAttendee: Codable {
     joined = try container.decodeISO8601InstantIfPresent(forKey: .joined)
     left = try container.decodeISO8601InstantIfPresent(forKey: .left)
     source = try container.decodeIfPresent(SourceID.self, forKey: .source)
+    origin = try container.decodeIfPresent(AttendeeOrigin.self, forKey: .origin)
     isLocal = try container.decodeIfPresent(Bool.self, forKey: .isLocal) ?? false
   }
 
@@ -308,6 +334,8 @@ extension SessionAttendee: Codable {
     try container.encodeISO8601InstantIfPresent(joined, forKey: .joined)
     try container.encodeISO8601InstantIfPresent(left, forKey: .left)
     try container.encodeIfPresent(source, forKey: .source)
+    // Absent = unknown, so an unknown origin is omitted, never invented.
+    try container.encodeIfPresent(origin, forKey: .origin)
     // Written only when true: an absent `self` and `self: false` mean the
     // same thing, and every roster is mostly the latter.
     if isLocal { try container.encode(true, forKey: .isLocal) }

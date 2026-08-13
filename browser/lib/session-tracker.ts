@@ -309,14 +309,19 @@ export class SessionTracker {
     this.upsertAttendee(record, {
       id: participant.id,
       ...(displayName ? { display_name: displayName } : {}),
+      origin: participant.kind,
     });
   }
 
   private applyStream(record: SessionRecord, platform: Platform, participantId: string): void {
     if (!record.participants.has(participantId)) record.participants.set(participantId, undefined);
+    // The join declared this id's provenance; a stream for an id no join
+    // declared has none, and unknown is sent as absent, never guessed.
+    const origin = record.participants.get(participantId);
     this.upsertAttendee(record, {
       id: participantId,
       source: sourceLabel(platform, participantId),
+      ...(origin ? { origin } : {}),
     });
   }
 
@@ -326,9 +331,12 @@ export class SessionTracker {
     fromId: string,
     toId: string,
   ): void {
+    // A rename joins a dead track's source to a *confirmed platform id* —
+    // that is the whole meaning of the message (protocol.ts).
     this.upsertAttendee(record, {
       id: toId,
       source: sourceLabel(platform, fromId),
+      origin: "platform",
     });
   }
 
@@ -338,9 +346,12 @@ export class SessionTracker {
       // Identity only — deliberately NOT added to record.participants: no
       // capture pipeline backs this id, so no pipeline-teardown `left` should
       // ever be stamped on it.
+      // Roster ids are harvested from the platform's own UI — always
+      // platform-minted (protocol.ts RosterEntry).
       this.upsertAttendee(record, {
         id: entry.participantId,
         display_name: entry.displayName,
+        origin: "platform",
         ...(entry.isLocal ? { self: true } : {}),
       });
     }

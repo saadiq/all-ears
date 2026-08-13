@@ -460,6 +460,9 @@ public actor SessionRegistry {
     if let joined = params.joined { attendee.joined = joined }
     if let left = params.left { attendee.left = left }
     if let source = params.source { attendee.source = source }
+    // Omitted = "sender doesn't know": a later upsert without the field must
+    // not erase the provenance the join declared.
+    if let origin = params.origin { attendee.origin = origin }
     // Latched, never cleared: the client reports `self` on whichever upsert
     // happens to carry it, and a later upsert for the same attendee that
     // simply omits the field must not un-flag them.

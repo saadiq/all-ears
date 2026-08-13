@@ -165,14 +165,25 @@ describe("controlRequest builders match the golden fixtures", () => {
     expect(controlRequest.sessionEnd(7, session)).toEqual(fixture("requests", "session.end"));
   });
 
-  it("session.attendee upsert (display name + source link)", () => {
+  it("session.attendee upsert (display name + source link + platform origin)", () => {
     expect(
       controlRequest.sessionAttendee(9, "0d5e1111-aaaa-bbbb-cccc-222233334444", {
         id: "spaces/x/devices/y",
         display_name: "Jane Doe",
         source: "browser:meet:jane-a1b2",
+        origin: "platform",
       }),
     ).toEqual(fixture("requests", "session.attendee-upsert"));
+  });
+
+  it("session.attendee upsert marks an extension-minted id as synthetic", () => {
+    expect(
+      controlRequest.sessionAttendee(10, "0d5e1111-aaaa-bbbb-cccc-222233334444", {
+        id: "speaker-1",
+        source: "browser:meet:speaker-1",
+        origin: "synthetic",
+      }),
+    ).toEqual(fixture("requests", "session.attendee-upsert-synthetic"));
   });
 });
 

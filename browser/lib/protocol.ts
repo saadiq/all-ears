@@ -342,6 +342,9 @@ export interface SessionWire {
     joined?: string;
     left?: string;
     source?: string;
+    /** Provenance of `id` (see {@link ParticipantOrigin}); absent on rosters
+     * recorded before provenance existed. */
+    origin?: ParticipantOrigin;
   }>;
   sources: string[];
   trigger: string;
@@ -363,6 +366,14 @@ export interface AttendeeUpsert {
   joined?: string;
   left?: string;
   source?: string;
+  /** Where `id` was minted — the flattened `ParticipantRef.kind`. Platform
+   * ids came from the platform's own roster/streams; synthetic ids are
+   * extension stand-ins (`speaker-<n>`, …) that name a track, not a person.
+   * The reconciler counts only platform-origin rows as named remote
+   * participants (bug B7). Omitted when the sender doesn't know (a stream
+   * link for an id whose join was never seen) — absent means unknown, and
+   * the daemon leaves the stored value untouched. */
+  origin?: ParticipantOrigin;
   /** This attendee is the local participant (see `RosterEntry.isLocal`).
    * Omitted rather than sent `false`: the daemon latches it and never clears
    * it, so a later upsert that simply doesn't know cannot un-flag them. */

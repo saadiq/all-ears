@@ -299,12 +299,44 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe", origin: "platform" } },
       {
         verb: "attendee",
         session: "m-1",
-        attendee: { id: "jane", source: "browser:meet:jane" },
+        attendee: { id: "jane", source: "browser:meet:jane", origin: "platform" },
       },
+    ]);
+  });
+
+  it("a stream-opened for an id no join declared carries no origin — unknown is not guessed", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    await flush();
+    // The ingest stream confirms before (or without) a participant-joined for
+    // this id — the tracker has no provenance to stamp, and must not invent one.
+    tracker.streamOpened("p1", "meet", "speaker-9");
+    await flush();
+
+    expect(control.ofVerb("attendee")).toEqual([
+      { verb: "attendee", session: "m-1", attendee: { id: "speaker-9", source: "browser:meet:speaker-9" } },
+    ]);
+  });
+
+  it("a synthetic join stamps origin synthetic on its upsert and its stream link", async () => {
+    const control = new FakeControl();
+    const { tracker } = makeTracker(control);
+
+    tracker.meetingStarted("p1", "meet", "abc");
+    await flush();
+    tracker.participantJoined("p1", "meet", syntheticParticipant("speaker-2"));
+    tracker.streamOpened("p1", "meet", "speaker-2");
+    await flush();
+
+    expect(control.ofVerb("attendee")).toEqual([
+      { verb: "attendee", session: "m-1", attendee: { id: "speaker-2", origin: "synthetic" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "speaker-2", source: "browser:meet:speaker-2", origin: "synthetic" } },
     ]);
   });
 
@@ -325,8 +357,8 @@ describe("SessionTracker (v2 signal forwarder)", () => {
 
     expect(control.ofVerb("start")).toEqual([{ verb: "start", platform: "meet", externalMeetingId: "abc" }]);
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe" } },
-      { verb: "attendee", session: "m-1", attendee: { id: "jane", source: "browser:meet:jane" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "jane", display_name: "Jane Doe", origin: "platform" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "jane", source: "browser:meet:jane", origin: "platform" } },
     ]);
   });
 
@@ -380,7 +412,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     expect(control.calls.at(-1)).toEqual({
       verb: "attendee",
       session: "m-1",
-      attendee: { id: "webaudio-track-1" },
+      attendee: { id: "webaudio-track-1", origin: "synthetic" },
     });
   });
 
@@ -397,8 +429,8 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot" } },
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/446", display_name: "Tom E" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot", origin: "platform" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/446", display_name: "Tom E", origin: "platform" } },
     ]);
   });
 
@@ -441,7 +473,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/445", display_name: "Tom Elliot", origin: "platform" } },
     ]);
   });
 
@@ -460,10 +492,11 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     await flush();
 
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", display_name: "Etel Friedmann" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", display_name: "Etel Friedmann", origin: "platform" } },
       // Name and source now land on the same attendee row — the join the
       // transcript's speaker map needs. The id is sanitized into the label.
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1" } },
+      // A rename target is a confirmed platform id by contract.
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1", origin: "platform" } },
     ]);
   });
 
@@ -503,7 +536,7 @@ describe("SessionTracker (v2 signal forwarder)", () => {
     tracker.meetingStarted("p1", "meet", "abc");
     await flush();
     expect(control.ofVerb("attendee")).toEqual([
-      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1" } },
+      { verb: "attendee", session: "m-1", attendee: { id: "spaces/s/devices/183", source: "browser:meet:speaker-1", origin: "platform" } },
     ]);
   });
 

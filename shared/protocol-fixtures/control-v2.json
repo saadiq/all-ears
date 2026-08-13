@@ -62,7 +62,21 @@
           "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "id": "spaces/x/devices/y",
           "display_name": "Jane Doe",
-          "source": "browser:meet:jane-a1b2"
+          "source": "browser:meet:jane-a1b2",
+          "origin": "platform"
+        }
+      }
+    },
+    {
+      "name": "session.attendee-upsert-synthetic",
+      "frame": {
+        "id": 10,
+        "method": "session.attendee",
+        "params": {
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "id": "speaker-1",
+          "source": "browser:meet:speaker-1",
+          "origin": "synthetic"
         }
       }
     },
@@ -118,7 +132,8 @@
               "id": "spaces/x/devices/y",
               "display_name": "Jane Doe",
               "joined": "2026-07-19T10:00:12.000Z",
-              "source": "browser:meet:jane-a1b2"
+              "source": "browser:meet:jane-a1b2",
+              "origin": "platform"
             },
             {
               "id": "spaces/x/devices/z",
