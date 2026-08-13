@@ -227,28 +227,36 @@ public actor IngestWebSocketServer {
         WebSocketFrameWriter.text(failureText("unsupported cmd on the ingest WebSocket")))
       return
     }
+    // The request's correlation id rides every reply path verbatim (nil for
+    // pre-id clients, whose replies stay byte-identical to before the field).
+    let id = request.correlationID
     switch request {
-    case .open(let source, let format, let session):
+    case .open(let source, let format, let session, _):
       do {
         let streamID = try await openHandler(source, format, session)
         openStreams[streamID] = OpenStream(format: format)
         try? await socket.send(
           WebSocketFrameWriter.text(
-            replyText(ControlResponse<IngestOpenData>.success(IngestOpenData(streamID: streamID)))))
+            replyText(
+              IngestReply(.success(IngestOpenData(streamID: streamID)), id: id))))
       } catch {
         try? await socket.send(
           WebSocketFrameWriter.text(
-            replyText(ControlResponse<IngestOpenData>.failure(ControlError("\(error)")))))
+            replyText(
+              IngestReply(ControlResponse<IngestOpenData>.failure(ControlError("\(error)")), id: id)
+            )))
       }
-    case .close(let streamID):
+    case .close(let streamID, _):
       openStreams.removeValue(forKey: streamID)
       await closeHandler(streamID)
       try? await socket.send(
-        WebSocketFrameWriter.text(replyText(ControlResponse<EmptyData>.success(EmptyData()))))
-    case .attribution(let session, let events):
+        WebSocketFrameWriter.text(
+          replyText(IngestReply(ControlResponse<EmptyData>.success(EmptyData()), id: id))))
+    case .attribution(let session, let events, _):
       await attributionHandler(session, events)
       try? await socket.send(
-        WebSocketFrameWriter.text(replyText(ControlResponse<EmptyData>.success(EmptyData()))))
+        WebSocketFrameWriter.text(
+          replyText(IngestReply(ControlResponse<EmptyData>.success(EmptyData()), id: id))))
     }
   }
 
@@ -288,8 +296,8 @@ public actor IngestWebSocketServer {
 
   // MARK: - Reply encoding
 
-  private func replyText<Payload>(_ response: ControlResponse<Payload>) -> String {
-    guard let data = try? encoder.encode(response), let text = String(data: data, encoding: .utf8)
+  private func replyText<Payload>(_ reply: IngestReply<Payload>) -> String {
+    guard let data = try? encoder.encode(reply), let text = String(data: data, encoding: .utf8)
     else {
       return "{\"ok\":false,\"error\":\"internal encode error\"}"
     }
@@ -297,6 +305,8 @@ public actor IngestWebSocketServer {
   }
 
   private func failureText(_ message: String) -> String {
-    replyText(ControlResponse<EmptyData>.failure(ControlError(message)))
+    // No id: this path answers frames that failed to decode as any
+    // IngestRequest, so there is no trustworthy id to echo.
+    replyText(IngestReply(ControlResponse<EmptyData>.failure(ControlError(message))))
   }
 }
