@@ -133,6 +133,10 @@ transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succe
                                         #   the marker retention keys off
 trigger = "browser-extension"           # manual | browser-extension
 sources = ["mic", "browser:meet:jane-a1b2"]
+reconciler_version = 1                  # which reconciler derived [[speaker]] below;
+                                        #   absent = 0 (a file from before versioning,
+                                        #   or a session never reconciled) — see
+                                        #   "Roster and speaker map"
 
 [[interval]]                            # transcription marks over the recording;
 start = "2026-07-19T10:00:00Z"          #   pause closes one, resume opens the next
@@ -267,12 +271,13 @@ Storing only the derived answer meant a failed derivation *erased* a name the se
 
 At `session.end` the daemon reconciles one into the other, applying invariants a binding must satisfy:
 
-1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool.
+1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool. When that `self` flag is itself contradicted on both fronts — the flagged attendee is bound to remote audio *and* join order singles out a different attendee as the one whose arrival started the session — the flag is revised rather than the binding dropped, and the evidence for the revision is recorded in `warnings`.
 2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label).
+3. **A source carries at most one name.** Two attendees claiming the same source resolve by roster order — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
 
 With two or more remote participants and an unresolved track, nothing is forced and nothing is assigned: an unlabelled turn is recoverable, a confidently mislabelled one is not. Each entry records `confidence` — `correlated` (the client's binding, having survived the invariants) or `inferred` (assigned by elimination).
 
-The derivation is a pure function of the roster, so it also runs on demand: `transcribe --session` over a session with no stored map reconciles it there and then, which repairs sessions captured before reconciliation existed.
+The derivation is a pure function of the roster, so it also runs on demand — and it is versioned: `reconciler_version` in `session.toml` records which reconciler wrote the stored map, and a file without the field is version 0 (written before versioning existed, and read fine — the field's absence is never an error). `transcribe --session` re-derives the map when none is stored *or* when the stored one carries an older version than the current reconciler, so a reconciler fix repairs past sessions on their next transcription rather than only future ones; `transcribe --rereconcile` forces the re-derivation even for a current-version map. The re-derived map labels that run's transcript — `session.toml` keeps the daemon's own record.
 
 ## Speaker attribution
 
