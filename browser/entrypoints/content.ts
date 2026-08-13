@@ -13,14 +13,15 @@ import {
 import { createBatcher, installConsoleTap } from "../lib/debug-log";
 import { ReconnectingPort } from "../lib/pcm-port";
 import { Counter, Histogram, PerfCollector } from "../lib/perf";
+import { isMainEnvelope, postToMain } from "../lib/protocol";
 import {
-  isMainEnvelope,
-  postToMain,
-  type MainMessage,
-  type ParticipantOrigin,
-  type Platform,
-  type RosterEntry,
-} from "../lib/protocol";
+  emptyRelayState,
+  reduceRelay,
+  respawnReplay,
+  runRelayEffects,
+  type RelaySinks,
+  type RelayState,
+} from "../lib/relay-core";
 
 // Isolated-world relay. The MAIN-world hook (hook.content.ts) generates PCM and
 // lifecycle events and posts them across the world boundary; this script is the
@@ -149,58 +150,47 @@ export default defineContentScript({
     // the live meeting and current participants. This is the durable copy of
     // what the MV3 service worker holds only in memory — the worker can be
     // evicted mid-call and respawn empty, so the relay replays these to every
-    // fresh port (see ReconnectingPort's onReconnect).
-    const state: RelayState = { participants: new Map(), roster: new Map(), identities: new Map(), liveMeeting: null };
+    // fresh port (see ReconnectingPort's onReconnect). The reducer returns a
+    // fresh state per lifecycle message, so this binding is reassigned.
+    let state: RelayState = emptyRelayState();
 
-    // Dedicated PCM/lifecycle port to the background.
+    // Dedicated PCM/lifecycle port to the background. A fresh port after a
+    // worker respawn is re-taught the call (respawnReplay, relay-core.ts)
+    // ahead of the message that triggered the reconnect.
     const port = new ReconnectingPort(
       () => browser.runtime.connect({ name: "pcm" }),
       (post) => {
-        if (state.liveMeeting) post({ type: "meeting-started", ...state.liveMeeting });
-        for (const [participantId, p] of state.participants) {
-          post({
-            type: "joined",
-            participant: { kind: p.kind, id: participantId },
-            platform: p.platform,
-          });
-        }
-        // Roster names dedupe in the MAIN world (only deltas are ever sent), so
-        // a respawned worker would otherwise miss every already-emitted name
-        // until Meet changed one. Replay the full accumulated roster here.
-        for (const [platform, entries] of groupRosterByPlatform(state.roster)) {
-          post({ type: "roster", platform, entries });
-        }
-        // Identity links are one-shot deltas like roster names; replay them
-        // too so a respawned worker still joins sources to named attendees.
-        for (const [captureId, r] of state.identities) {
-          post({
-            type: "identified",
-            platform: r.platform,
-            participantId: r.participantId,
-            captureId,
-            ...(r.displayName ? { displayName: r.displayName } : {}),
-          });
-        }
-        console.debug(
-          `[ears][relay] replayed to respawned worker: ` +
-            `meeting=${state.liveMeeting?.externalMeetingId ?? "none"}, ` +
-            `${state.participants.size} participant(s), ${state.roster.size} roster name(s), ` +
-            `${state.identities.size} identity link(s)`,
-        );
+        const { messages, log } = respawnReplay(state);
+        for (const msg of messages) post(msg);
+        console.debug(log);
       },
     );
 
+    // The thin shell around the pure reducer (relay-core.ts): reduce, adopt
+    // the new state, execute the effect plan against the chrome surfaces.
+    const sinks: RelaySinks = {
+      post: (msg) => port.post(msg),
+      sendRuntimeMessage: (msg) => void browser.runtime.sendMessage(msg).catch(() => {}),
+      tagPlatform: (platform) => perf.tag("platform", platform),
+      metrics: relayMetrics,
+    };
     window.addEventListener("message", (event: MessageEvent) => {
       if (event.source !== window) return; // only same-window
       if (!isMainEnvelope(event.data)) return;
-      relay(event.data.msg, port, state, relayMetrics, perf);
+      const { state: next, effects } = reduceRelay(state, event.data.msg, {
+        detail: relayMetrics.detail,
+        now: () => performance.now(),
+      });
+      state = next;
+      runRelayEffects(effects, sinks);
     });
   },
 });
 
-/** The relay hop's instruments, resolved once and handed to `relay()` so the
- * per-frame path never looks anything up. `detail` gates the timing calls
- * themselves — the counters are cheap enough to always run. */
+/** The relay hop's instruments, resolved once and handed to the effect runner
+ * (relay-core.ts) so the per-frame path never looks anything up. `detail`
+ * gates the timing calls themselves — the counters are cheap enough to always
+ * run. */
 interface RelayMetrics {
   encode: Histogram;
   frames: Counter;
@@ -210,215 +200,3 @@ interface RelayMetrics {
   detail: boolean;
 }
 
-interface RelayState {
-  // participant id (track handle) → its platform, learned from
-  // participant-joined (which precedes the participant's first PCM), so PCM
-  // frames can carry their platform and reconnect replays can re-teach the
-  // roster. `kind` is the ref's provenance, replayed so a respawned worker
-  // still stamps the attendee's origin correctly.
-  participants: Map<string, { platform: Platform; kind: ParticipantOrigin }>;
-  // participantId → resolved roster name, accumulated from participant-roster
-  // (identity only, no capture pipeline). Replayed in full on worker respawn
-  // because the MAIN world only ever sends deltas (#23).
-  roster: Map<string, { platform: Platform; displayName: string; isLocal?: boolean }>;
-  // captureId → identity link (participant-identified), keyed on the capture
-  // id so a repeat confirmation overwrites rather than duplicates. Replayed on
-  // worker respawn for the same reason as the roster.
-  identities: Map<string, { platform: Platform; participantId: string; displayName?: string }>;
-  liveMeeting: { platform: Platform; externalMeetingId: string; title?: string } | null;
-}
-
-/** Regroup the accumulated roster back into per-platform entry batches for the
- * `roster` port message. A tab is single-platform in practice, but grouping
- * keeps the wire shape honest if that ever changes. */
-function groupRosterByPlatform(
-  roster: Map<string, { platform: Platform; displayName: string; isLocal?: boolean }>,
-): Map<Platform, RosterEntry[]> {
-  const byPlatform = new Map<Platform, RosterEntry[]>();
-  for (const [participantId, r] of roster) {
-    const list = byPlatform.get(r.platform) ?? [];
-    // `isLocal` rides the respawn replay too — a service worker that restarts
-    // mid-call must not come back with a roster that has forgotten which row
-    // is the user.
-    list.push({ participantId, displayName: r.displayName, ...(r.isLocal ? { isLocal: true } : {}) });
-    byPlatform.set(r.platform, list);
-  }
-  return byPlatform;
-}
-
-function relay(
-  msg: MainMessage,
-  port: ReconnectingPort,
-  state: RelayState,
-  metrics: RelayMetrics,
-  perf: PerfCollector,
-): void {
-  switch (msg.kind) {
-    case "participant-joined":
-      perf.tag("platform", msg.platform);
-      state.participants.set(msg.participant.id, {
-        platform: msg.platform,
-        kind: msg.participant.kind,
-      });
-      // Forward the capture declaration so the background can upsert the
-      // daemon session's attendee roster (identity rides other messages).
-      port.post({ type: "joined", participant: msg.participant, platform: msg.platform });
-      console.debug(`[ears][relay] joined ${msg.participant.id} gen${msg.generation} (${msg.platform})`);
-      break;
-    case "participant-left":
-      state.participants.delete(msg.participantId);
-      port.post({ type: "left", participantId: msg.participantId });
-      console.debug(`[ears][relay] left ${msg.participantId} gen${msg.generation}`);
-      break;
-    case "participant-roster": {
-      // Identity-only names resolved from the platform roster; remember them for
-      // respawn replay and forward so the background upserts the daemon roster.
-      // News is a new *or changed* name, or a first `isLocal` — the local
-      // marker often resolves after the name it belongs to has already been
-      // forwarded, and filtering on the name alone would drop it forever.
-      const fresh = msg.entries.filter((e) => {
-        const known = state.roster.get(e.participantId);
-        return known?.displayName !== e.displayName || (e.isLocal === true && !known?.isLocal);
-      });
-      for (const entry of msg.entries) {
-        state.roster.set(entry.participantId, {
-          platform: msg.platform,
-          displayName: entry.displayName,
-          isLocal: entry.isLocal || state.roster.get(entry.participantId)?.isLocal,
-        });
-      }
-      if (fresh.length > 0) {
-        port.post({ type: "roster", platform: msg.platform, entries: fresh });
-        console.debug(
-          `[ears][relay] roster ${fresh.length} name(s) (${msg.platform}): ` +
-            fresh.map((e) => `${e.participantId}="${e.displayName}"`).join(", "),
-        );
-      }
-      break;
-    }
-    case "participant-identified":
-      state.identities.set(msg.captureId, {
-        platform: msg.platform,
-        participantId: msg.participantId,
-        ...(msg.displayName ? { displayName: msg.displayName } : {}),
-      });
-      port.post({
-        type: "identified",
-        platform: msg.platform,
-        participantId: msg.participantId,
-        captureId: msg.captureId,
-        ...(msg.displayName ? { displayName: msg.displayName } : {}),
-      });
-      console.debug(
-        `[ears][relay] identified ${msg.captureId} → ${msg.participantId}` +
-          `${msg.displayName ? ` "${msg.displayName}"` : ""} (${msg.platform})`,
-      );
-      break;
-    case "status":
-      console.debug(`[ears][relay] status: ${msg.text}`);
-      break;
-    case "log":
-      // The MAIN-world hook's tapped console entries; hand them straight to
-      // the background store (already batched by the hook).
-      if (msg.entries.length) {
-        browser.runtime.sendMessage({ kind: "log-batch", entries: msg.entries }).catch(() => {});
-      }
-      break;
-    case "capture-failed": {
-      // The participant is still in the call but their capture pipeline died;
-      // forward it (with the platform learned at join) so the background can
-      // attribute the audio gap. Not a participant-left: don't drop the roster.
-      const platform = state.participants.get(msg.participantId)?.platform;
-      console.warn(`[ears][relay] capture-failed ${msg.participantId} gen${msg.generation}: ${msg.reason}`);
-      if (platform) port.post({ type: "capture-failed", participantId: msg.participantId, platform, reason: msg.reason });
-      break;
-    }
-    case "meeting-started":
-      state.liveMeeting = {
-        platform: msg.platform,
-        externalMeetingId: msg.externalMeetingId,
-        ...(msg.title ? { title: msg.title } : {}),
-      };
-      port.post({
-        type: "meeting-started",
-        platform: msg.platform,
-        externalMeetingId: msg.externalMeetingId,
-        ...(msg.title ? { title: msg.title } : {}),
-      });
-      console.debug(`[ears][relay] meeting started: ${msg.platform}/${msg.externalMeetingId}`);
-      break;
-    case "meeting-renamed":
-      // Fold the name into the durable relay state too, so a respawned
-      // service worker's replayed `meeting-started` already carries it.
-      if (state.liveMeeting?.externalMeetingId === msg.externalMeetingId) {
-        state.liveMeeting = { ...state.liveMeeting, title: msg.title };
-      }
-      port.post({
-        type: "meeting-renamed",
-        platform: msg.platform,
-        externalMeetingId: msg.externalMeetingId,
-        title: msg.title,
-      });
-      console.debug(`[ears][relay] meeting named: ${msg.title}`);
-      break;
-    case "meeting-ended":
-      state.liveMeeting = null;
-      port.post({
-        type: "meeting-ended",
-        platform: msg.platform,
-        externalMeetingId: msg.externalMeetingId,
-      });
-      console.debug(`[ears][relay] meeting ended: ${msg.platform}/${msg.externalMeetingId}`);
-      break;
-    case "perf":
-      // MAIN-world records; hand them straight to the background store. Kept
-      // off the console-tap path on purpose (see perf.ts).
-      if (msg.records.length) {
-        browser.runtime.sendMessage({ kind: "perf-batch", records: msg.records }).catch(() => {});
-      }
-      break;
-    case "attribution":
-      // Attribution flight-recorder batch: opaque pre-encoded lines, straight
-      // through to the background. No relay state — the MAIN world's ring is
-      // the durable in-page copy, and the daemon's attribution.jsonl is
-      // best-effort, so a respawned worker has nothing to replay here.
-      if (msg.events.length) {
-        port.post({ type: "attribution", platform: msg.platform, events: msg.events });
-      }
-      break;
-    case "pcm": {
-      const platform = state.participants.get(msg.participantId)?.platform;
-      if (!platform) {
-        metrics.unknownParticipant.add();
-        return; // no join seen yet; drop until identity is known
-      }
-      const bytes = new Uint8Array(msg.samples.buffer, msg.samples.byteOffset, msg.samples.byteLength);
-      // base64 allocates a string the size of the frame on this thread — the
-      // same thread the page renders on — so it is measured, not assumed cheap.
-      const started = metrics.detail ? performance.now() : 0;
-      const b64 = bytesToBase64(bytes);
-      if (metrics.detail) metrics.encode.observe(performance.now() - started);
-      metrics.frames.add();
-      metrics.bytes.add(bytes.byteLength);
-      const sent = port.post({
-        type: "pcm",
-        participantId: msg.participantId,
-        platform,
-        b64,
-        seq: msg.seq,
-        sentAt: msg.sentAt,
-      });
-      if (!sent) metrics.dropped.add();
-      break;
-    }
-  }
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
-}
