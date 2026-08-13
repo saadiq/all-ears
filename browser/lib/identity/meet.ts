@@ -382,9 +382,6 @@ export class MeetAdapter implements PlatformAdapter {
     hasTrack: (trackId) => this.liveTracksById.has(trackId),
     isTrackLive: (trackId) => this.liveTracksById.get(trackId)?.readyState === "live",
   });
-  /** deviceId → last-known mic state, for future use (e.g. debugging);
-   * not read for the correlation decision itself, which lives in the engine. */
-  private readonly deviceState = new Map<string, { micOpen: boolean; lastSeen: number }>();
   /** track.id → live track — the backing store for the engine's
    * TrackPresence (is this device's owning track still live?). Populated from
    * both identify() and onTrackSpeaking(), whichever sees a track first;
@@ -498,7 +495,6 @@ export class MeetAdapter implements PlatformAdapter {
   private onCollectionsEvent(event: CollectionsMuteEvent, at: number = Date.now()): void {
     if (this.disposed) return;
     try {
-      this.deviceState.set(event.deviceId, { micOpen: event.micOpen, lastSeen: at });
       this.dispatch(this.engine.collectionsEdge(event.deviceId, event.micOpen, at));
     } catch {
       // best-effort — same contract as onTrackSpeaking
@@ -635,7 +631,6 @@ export class MeetAdapter implements PlatformAdapter {
     this.observer?.disconnect();
     this.observer = null;
     this.liveTracksById.clear();
-    this.deviceState.clear();
   }
 
   private correlate(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
