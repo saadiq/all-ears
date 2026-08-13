@@ -616,6 +616,50 @@ struct SessionRegistryTests {
     #expect(redeclared.id == started.id)
   }
 
+  @Test("boot repairs an unparseable session.toml so its audio re-enters retention")
+  func bootRepairsCorruptDescriptor() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+
+    // A session directory left behind with recorded audio and a descriptor
+    // that no longer parses (torn write, disk fault, hand edit).
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: "corrupt-1")
+    let audioDirectory = sessionRoot.appendingPathComponent("sources/mic/asr")
+    try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: audioDirectory.appendingPathComponent("chunk.m4a"))
+    try Data("schema = [not toml".utf8).write(
+      to: sessionRoot.appendingPathComponent("session.toml"))
+
+    let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
+    await registry.loadFromDisk()
+
+    // The unreadable original is preserved for diagnosis…
+    #expect(
+      FileManager.default.fileExists(
+        atPath: sessionRoot.appendingPathComponent("session.toml.corrupt").path))
+    // …and a minimal ended record takes its place, stamped with the boot
+    // instant and a warning naming the repair.
+    let repaired = try SessionStore.read(sessionID: "corrupt-1", dataRoot: dataRoot)
+    #expect(repaired.state == .ended)
+    #expect(repaired.ended == base)
+    #expect(repaired.warnings.contains { $0.contains("session.toml.corrupt") })
+
+    // Which is exactly what puts the audio back inside retention: a sweep past
+    // the max audio age now evicts it.
+    let sweeper = EvictionSweeper(
+      dataRoot: dataRoot,
+      clock: ManualClock(base.advanced(by: 2_000)),
+      intervalSeconds: 60,
+      evictAfterTranscriptSeconds: 100,
+      maxAudioAgeSeconds: 1_000,
+      log: { _ in })
+    await sweeper.sweepOnce()
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: sessionRoot.appendingPathComponent("sources").path))
+  }
+
   // MARK: - orphan grace
 
   @Test("a browser session ends with reason ingest-idle once the grace elapses")

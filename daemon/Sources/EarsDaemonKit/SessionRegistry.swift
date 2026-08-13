@@ -183,11 +183,21 @@ public actor SessionRegistry {
   /// A resumed *browser* session whose streams don't return starts its orphan
   /// grace clock from daemon boot, so even the survivor converges to `ended` if
   /// it's actually dead.
+  ///
+  /// A `session.toml` that exists but doesn't parse is **repaired**, not just
+  /// skipped — see ``repairCorruptSession(id:error:)``: skipping alone left
+  /// the directory's audio invisible to the retention sweeper (which reads
+  /// the same descriptors) and therefore stranded forever.
   public func loadFromDisk() async {
+    var corrupt: [(id: String, error: Error)] = []
     let live = SessionStore.readAll(
       dataRoot: dataRoot,
-      onSkip: { [log] id, error in log("session registry: skipping sessions/\(id): \(error)") }
+      onSkip: { id, error in corrupt.append((id, error)) }
     ).filter { $0.state != .ended }
+
+    for (id, error) in corrupt {
+      repairCorruptSession(id: id, error: error)
+    }
 
     // The survivor: the most-recently-started live session. Ties (identical
     // `started`) resolve by id for determinism.
@@ -228,6 +238,50 @@ public actor SessionRegistry {
     if survivor.state == .active {
       log("boot: resuming capture for session \(survivor.id) sources=\(sourceLabel(survivor))")
       await startCapture(survivor.id, survivor.sources)
+    }
+  }
+
+  /// Quarantines an unparseable `session.toml` and writes a minimal **ended**
+  /// record in its place, so the directory's audio re-enters retention.
+  ///
+  /// The unreadable original is preserved beside it as `session.toml.corrupt`
+  /// (replacing any earlier quarantine) for diagnosis. The synthesized record
+  /// is deliberately minimal — this boot's instant for `started`/`ended`, no
+  /// identity, no sources — because nothing in the corrupt file can be
+  /// trusted; its one job is to exist and be `ended`, which is what lets the
+  /// eviction sweeper delete `sources/` at `ended + max_audio_age_seconds`
+  /// instead of never. The repair is recorded in the session's `warnings`, so
+  /// `session list`/`session.get` show it where a user looks.
+  private func repairCorruptSession(id: String, error: Error) {
+    let now = clock.now()
+    let tomlURL = DataStoreLayout.sessionTomlFile(dataRoot: dataRoot, sessionID: id)
+    let quarantineURL = tomlURL.appendingPathExtension("corrupt")
+    do {
+      if FileManager.default.fileExists(atPath: quarantineURL.path) {
+        try FileManager.default.removeItem(at: quarantineURL)
+      }
+      try FileManager.default.moveItem(at: tomlURL, to: quarantineURL)
+    } catch {
+      log("boot: quarantining corrupt sessions/\(id)/session.toml failed: \(error)")
+      return
+    }
+    let repaired = Session(
+      id: id,
+      title: "recovered session",
+      state: .ended,
+      started: now,
+      ended: now,
+      warnings: [
+        "session.toml was unreadable at boot (\(error)); the original is preserved as "
+          + "session.toml.corrupt and this minimal record re-entered the session into retention"
+      ])
+    do {
+      try persist(repaired)
+      log(
+        "boot: repaired corrupt sessions/\(id)/session.toml — original preserved as "
+          + "session.toml.corrupt, minimal ended record written (was: \(error))")
+    } catch {
+      log("boot: rewriting repaired sessions/\(id)/session.toml failed: \(error)")
     }
   }
 
