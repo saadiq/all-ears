@@ -117,10 +117,13 @@ like silence at the far end.
 `score.py` reports three scores **separately**, because they fail differently.
 
 **1. Roster.** The display names typed at join versus `session.toml`'s attendees,
-their `spaces/<space>/devices/<n>` ids, whether each carries a
-`browser:<platform>:<participant>` source, and join/leave instants versus
-`events.jsonl`. Fails on a declared guest that never appeared, or an attendee
-that is neither declared nor a recorded observer.
+their `spaces/<space>/devices/<n>` ids, whether each guest's voice was
+attributed to a source via the reconciled `[[speaker]]` map, and join/leave
+instants versus `events.jsonl`. Source ids are opaque track handles
+(`browser:<platform>:<track-slug>`) that embed no participant — attribution is
+judged on the map, never parsed out of a label. Fails on a declared guest that
+never appeared, or an attendee that is neither declared nor a recorded
+observer.
 
 **2. Timing/energy.** Each captured source's RMS envelope cross-correlated
 against every reference WAV, zero-lag. Envelopes rather than raw samples: the

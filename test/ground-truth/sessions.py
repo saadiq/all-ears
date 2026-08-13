@@ -12,7 +12,7 @@ harness exists to buy.
 
 Everything here is therefore a pure function of a `sessions/<uuid>/` directory:
 
-- `session.toml` (schema 3) — roster and source list
+- `session.toml` (schema 3) — roster, reconciled speaker map, and source list
 - `events.jsonl` — attendee_joined / attendee_left, directly scorable against a
   scenario manifest
 - `sources/<id>/chunks.jsonl` + `chunks/` — the structural index and the
@@ -150,6 +150,20 @@ class Attendee:
     joined: datetime | None
     left: datetime | None
     source: str
+    #: "platform" | "synthetic" | "" (unknown — files from before the field
+    #: existed). Synthetic rows are capture track handles (`t3`), not people.
+    origin: str = ""
+
+
+@dataclass
+class Speaker:
+    """One `[[speaker]]` row: the reconciled source → name map transcription
+    labels turns with. Source ids are opaque track handles, so this map — not
+    the label — is where attribution lives (docs/data-formats.md)."""
+
+    source: str
+    name: str
+    confidence: str
 
 
 @dataclass
@@ -158,6 +172,7 @@ class Session:
     directory: Path
     record: dict
     attendees: list[Attendee]
+    speakers: list[Speaker]
     events: list[dict]
     sources: dict[str, Source]
 
@@ -196,8 +211,18 @@ def load_session(directory: Path) -> Session:
             joined=parse_time(a.get("joined", "")),
             left=parse_time(a.get("left", "")),
             source=a.get("source", ""),
+            origin=a.get("origin", ""),
         )
         for a in record.get("attendee", [])
+    ]
+
+    speakers = [
+        Speaker(
+            source=s.get("source", ""),
+            name=s.get("name", ""),
+            confidence=s.get("confidence", ""),
+        )
+        for s in record.get("speaker", [])
     ]
 
     events = []
@@ -217,7 +242,7 @@ def load_session(directory: Path) -> Session:
             if path.is_dir():
                 source = _load_source(path)
                 sources[source.id] = source
-    return Session(directory.name, directory, record, attendees, events, sources)
+    return Session(directory.name, directory, record, attendees, speakers, events, sources)
 
 
 def _load_source(directory: Path) -> Source:

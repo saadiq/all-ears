@@ -113,7 +113,7 @@
       "audio_start_grid_seconds": -30.0,
       "intended_join_grid_seconds": -30.0,
       "intended_leave_grid_seconds": 130.0,
-      "expected_source_id": "browser:meet:<resolved-at-run-time>",
+      "expected_source_id": "browser:meet:<opaque-track-handle>",
       "turns": [
         {
           "slot": 1,
@@ -164,7 +164,7 @@
       "audio_start_grid_seconds": -30.0,
       "intended_join_grid_seconds": -30.0,
       "intended_leave_grid_seconds": null,
-      "expected_source_id": "browser:meet:<resolved-at-run-time>",
+      "expected_source_id": "browser:meet:<opaque-track-handle>",
       "turns": [
         {
           "slot": 2,
@@ -237,7 +237,7 @@
       "audio_start_grid_seconds": 30.0,
       "intended_join_grid_seconds": 36.0,
       "intended_leave_grid_seconds": null,
-      "expected_source_id": "browser:meet:<resolved-at-run-time>",
+      "expected_source_id": "browser:meet:<opaque-track-handle>",
       "turns": [
         {
           "slot": 7,

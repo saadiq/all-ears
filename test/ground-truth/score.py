@@ -10,9 +10,12 @@
 
 Three independent scores, reported separately because they fail differently:
 
-1. **Roster** — the display names typed at join versus `session.toml`'s attendees
-   and the `browser:<platform>:<participant>` source ids, and join/leave instants
-   versus `events.jsonl`.
+1. **Roster** — the display names typed at join versus `session.toml`'s
+   attendees, whether each guest's voice was attributed to a source via the
+   reconciled `[[speaker]]` map, and join/leave instants versus `events.jsonl`.
+   Source ids are opaque track handles (`browser:<platform>:<track-slug>`) and
+   embed no participant — attribution is judged on the map, never parsed out
+   of a label.
 2. **Timing/energy** — each captured source's energy envelope cross-correlated
    against each reference WAV, zero-lag. Needs no ASR, and is the path that
    caught the mic duplication.
@@ -131,6 +134,12 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
     observers = set((manifest.get("run") or {}).get("observers") or [])
 
     seen = {a.display_name: a for a in session.attendees}
+    # The reconciled speaker map is where attribution lives: which sources
+    # carry a participant's voice. One name can own several sources (a rejoin,
+    # a re-established track) — that is normal, not duplication.
+    speaker_sources: dict[str, list[str]] = {}
+    for speaker in session.speakers:
+        speaker_sources.setdefault(speaker.name, []).append(speaker.source)
     matched, missing, unexpected = [], [], []
 
     recorded = ((manifest.get("run") or {}).get("participants") or {})
@@ -143,15 +152,21 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
         if attendee is None:
             missing.append(name)
             continue
+        # Whether this guest's voice was attributed to any source is the whole
+        # point of the identity path. The speaker map is authoritative; the
+        # roster row's own link is kept as supporting evidence (it is the
+        # identity-link upsert the map was derived from).
+        sources = speaker_sources.get(expected) or (
+            [attendee.source] if attendee.source else []
+        )
         matched.append(
             {
                 "display_name": name,
                 "matched_on": expected,
                 "label": spec["label"],
                 "attendee_id": attendee.id,
-                # Whether the roster entry carries a per-participant source is
-                # the whole point of the identity path.
-                "source": attendee.source or None,
+                "sources": sources,
+                "roster_source_link": attendee.source or None,
                 "joined": attendee.joined.isoformat() if attendee.joined else None,
                 "left": attendee.left.isoformat() if attendee.left else None,
                 "anonymous_device_id": bool(re.match(r"spaces/[^/]+/devices/\d+", attendee.id)),
@@ -167,35 +182,43 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
         .get("observed_display_name")
     )
     local_ids = {a.id for a in session.attendees if local_name and a.display_name == local_name}
-    # Provisional ids the extension assigns when identity resolution returns
-    # null (`speaker-<n>`, the universal fallback). One per unresolved track is
-    # normal mid-call; a set of them in a call with no remote participants is a
-    # phantom roster, and is reported as its own failure rather than lumped in
-    # with "unexpected", because the two have completely different causes.
-    # A provisional id WITH a source behind it is not a phantom: it is a real
-    # captured participant whose identity had not resolved yet. Meet exposes no
-    # synchronous identity mechanism, so a track legitimately starts under
-    # `speaker-<n>` and is upgraded once speaking-onset correlation names it —
-    # which starts a fresh source rather than renaming in place. Only a
-    # provisional id with NO source is a phantom.
-    provisional = re.compile(r"^(speaker|graphtap|graphgen|webaudio-track)-\d+$")
+    # Capture-minted rows: the extension enrols one roster row per captured
+    # track under its opaque handle (`t<n>` today; `speaker-<n>` and friends in
+    # older sessions), stamped `origin = "synthetic"` — they name tracks, not
+    # people. One per captured track, with a source behind it, is the normal
+    # shape. A synthetic row with NO source is a phantom (a track that became
+    # an attendee without ever recording), reported as its own failure rather
+    # than lumped in with "unexpected", because the two have completely
+    # different causes. The legacy id regex covers sessions recorded before
+    # `origin` existed.
+    legacy_synthetic = re.compile(r"^(t|speaker|graphtap|graphgen|webaudio-track)-?\d+$")
+
+    def is_track_row(a) -> bool:
+        if a.origin:
+            return a.origin == "synthetic"
+        return bool(legacy_synthetic.match(a.id))
+
     phantom = [
         {"id": a.id, "source": a.source or None,
          "joined": a.joined.isoformat() if a.joined else None}
         for a in session.attendees
-        if provisional.match(a.id) and not a.source
+        if is_track_row(a) and not a.source
     ]
-    upgraded = [
+    track_rows = [
         {"id": a.id, "source": a.source}
         for a in session.attendees
-        if provisional.match(a.id) and a.source
+        if is_track_row(a) and a.source
     ]
     matched_names = {m["matched_on"] for m in matched}
     for attendee in session.attendees:
         name = attendee.display_name
         if name in matched_names:
             continue
-        if attendee.id in local_ids or any(p["id"] == attendee.id for p in phantom):
+        # Track rows are capture bookkeeping, not people; phantoms (track rows
+        # with no source) already fail on their own above.
+        if is_track_row(attendee):
+            continue
+        if attendee.id in local_ids:
             continue
         if name not in declared and name not in observers:
             unexpected.append(name)
@@ -209,8 +232,12 @@ def score_roster(manifest: dict, session: store.Session) -> dict:
         "observers": sorted(observers),
         "local_device_ids": sorted(local_ids),
         "phantom_attendees": phantom,
-        "provisional_with_source": upgraded,
-        "named_sources": sum(1 for m in matched if m["source"]),
+        "track_rows": track_rows,
+        "speaker_map": [
+            {"source": s.source, "name": s.name, "confidence": s.confidence}
+            for s in session.speakers
+        ],
+        "named_sources": sum(1 for m in matched if m["sources"]),
         "attendee_events": len(events),
         "pass": not missing and not unexpected and not phantom,
     }
@@ -428,23 +455,28 @@ def _print(report: dict) -> None:
     roster = report["roster"]
     click.echo(f"\n1. ROSTER  {'pass' if roster['pass'] else 'FAIL'}")
     for m in roster["matched"]:
-        click.echo(f"   {m['display_name']:<12} {m['attendee_id']:<34} source={m['source'] or '—'}")
+        sources = ", ".join(m["sources"]) if m["sources"] else "—"
+        click.echo(f"   {m['display_name']:<12} {m['attendee_id']:<34} sources={sources}")
     if roster["missing"]:
         click.echo(f"   missing from the roster: {roster['missing']}")
     if roster["unexpected"]:
         click.echo(f"   unexpected attendees:    {roster['unexpected']}")
     if roster.get("local_device_ids"):
         click.echo(f"   local device ids:        {roster['local_device_ids']}")
-    if roster.get("provisional_with_source"):
+    if roster.get("speaker_map"):
+        click.echo(f"   speaker map ({len(roster['speaker_map'])} — the reconciled attribution):")
+        for sp in roster["speaker_map"]:
+            click.echo(f"      {sp['source']:<32} -> {sp['name']} ({sp['confidence']})")
+    if roster.get("track_rows"):
         click.echo(
-            f"   pre-upgrade sources ({len(roster['provisional_with_source'])}): captured under a "
-            "provisional id before identity resolved — expected, not duplication")
-        for up in roster["provisional_with_source"]:
-            click.echo(f"      {up['id']:<14} -> {up['source']}")
+            f"   track rows ({len(roster['track_rows'])}): capture-minted roster rows, one per "
+            "recorded track — expected, not duplication")
+        for row in roster["track_rows"]:
+            click.echo(f"      {row['id']:<14} -> {row['source']}")
     if roster.get("phantom_attendees"):
         click.echo(
-            f"   PHANTOM ATTENDEES ({len(roster['phantom_attendees'])}): provisional ids in the "
-            "roster with no source behind them")
+            f"   PHANTOM ATTENDEES ({len(roster['phantom_attendees'])}): capture-minted ids in "
+            "the roster with no source behind them")
         for ph in roster["phantom_attendees"]:
             click.echo(f"      {ph['id']:<14} source={ph['source'] or '—'} joined={ph['joined']}")
 
