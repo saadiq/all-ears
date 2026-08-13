@@ -273,6 +273,11 @@ Rules:
 {
   "schema": 1,
   "diarization": { "enabled": false },        // { enabled, backend? } — mirrors the frontmatter
+  "speakers": [                               // the speaker map this run's turns were labelled
+    { "source": "browser:meet:t3",            //   with — the session's stored [[speaker]] map, or
+      "name": "Jane Doe",                     //   the fresh re-derivation a --session run computed
+      "confidence": "correlated" }            //   (which session.toml never sees, making this its
+  ],                                          //   one durable record); omitted with no session map
   "segments": [
     {
       "start": 604.14, "end": 611.88,          // seconds from range start
