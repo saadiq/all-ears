@@ -16,6 +16,7 @@ No native-messaging host manifest, no extension-id-coupled install, and PCM ship
 - Lazily `ingest.open` a source on the first PCM for a new participant; stream binary frames; `ingest.close` on leave.
 - Maintain the participant → `stream_id` table; discard it on disconnect and re-open lazily as new frames arrive.
 - Ship attribution flight-recorder batches (`ingest.attribution`) when the session tag is known; drop them otherwise — the in-page ring keeps the events exportable.
+- Ship capture-failure reports (`ingest.capture_failed`) when the session tag is known, so the daemon records the gap in the session's `events.jsonl` instead of mistaking it for silence; drop them otherwise — the background console error already said it loudly.
 - Apply backpressure; never buffer unbounded.
 
 It does **not** capture, resample, or inspect audio (it receives finished 16 kHz `pcm_s16le`), and does **not** resolve identity (it receives an already-stable id).
@@ -58,11 +59,20 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 // (window.__earsExportAttribution()).
 {"cmd":"ingest.attribution","id":"3","session":{"platform":"meet","external_id":"abc-defg-hij"},"events":["{\"schema\":1,\"type\":\"dom-burst\",\"t\":1723500000000,\"deviceId\":\"spaces/x/devices/1\"}"]}
 // text <-- {"ok":true,"id":"3","data":{}}
+
+// text --> a source's capture died mid-call (the decoder gave up — issue #22).
+// The daemon appends a `capture_failed` line (with `source` and `reason`) to
+// the tagged session's events.jsonl, so the recorded gap is attributable to a
+// capture failure rather than reading as a quiet speaker. Same best-effort
+// contract as ingest.attribution: the tag is mandatory (no session, no
+// directory), the daemon always acks {"ok":true}, the extension never retries.
+{"cmd":"ingest.capture_failed","id":"4","source":"browser:meet:t3","session":{"platform":"meet","external_id":"abc-defg-hij"},"reason":"decoder gave up after 5 restarts"}
+// text <-- {"ok":true,"id":"4","data":{}}
 ```
 
 ### Correlation ids
 
-Every command may carry an optional `id`: an opaque string, unique among the sender's in-flight requests (the extension stamps a per-socket counter on every `ingest.open`/`ingest.close`/`ingest.attribution`). The daemon echoes it verbatim at the top level of the reply, beside `ok`/`data`/`error`; a request without an `id` gets a reply without one, byte-identical to the pre-id shape.
+Every command may carry an optional `id`: an opaque string, unique among the sender's in-flight requests (the extension stamps a per-socket counter on every `ingest.open`/`ingest.close`/`ingest.attribution`/`ingest.capture_failed`). The daemon echoes it verbatim at the top level of the reply, beside `ok`/`data`/`error`; a request without an `id` gets a reply without one, byte-identical to the pre-id shape.
 
 The field converts a protocol assumption into a checked contract. Without it, replies are matched to requests by arrival order, and one unsolicited, duplicated, or reordered daemon response desynchronises every subsequent open — handing each participant the previous participant's `stream_id` for the rest of the connection. With it, the extension matches a reply that echoes an `id` to exactly that request, and drops (with a log line) any response whose `id` matches nothing in flight.
 
@@ -98,7 +108,7 @@ One captured track → `browser:<platform>:<track-slug>` → one `stream_id` →
 
 Both sides enforce the boundary; neither trusts the other to.
 
-**`earsd` (server):** binds `127.0.0.1` only; validates `Origin` against `[earsd.ingest_ws].allowed_origins` before completing the upgrade (empty allowlist rejects all — fail closed); accepts nothing but `ingest.open`/`ingest.close`/`ingest.attribution` and binary audio, so even an allowed origin cannot drive the daemon from this endpoint.
+**`earsd` (server):** binds `127.0.0.1` only; validates `Origin` against `[earsd.ingest_ws].allowed_origins` before completing the upgrade (empty allowlist rejects all — fail closed); accepts nothing but `ingest.open`/`ingest.close`/`ingest.attribution`/`ingest.capture_failed` and binary audio, so even an allowed origin cannot drive the daemon from this endpoint.
 
 **Extension (client):** connects to loopback only; the WebSocket lives in the background context, never the page realm, so no meeting-page CSP applies and no endpoint or state is exposed to page scripts.
 

@@ -46,7 +46,8 @@ const OPEN_HOLD_LIMIT_MS = 60_000;
 type PendingRequest =
   | { kind: "open"; id: string; participantId: string }
   | { kind: "close"; id: string }
-  | { kind: "attribution"; id: string };
+  | { kind: "attribution"; id: string }
+  | { kind: "capture-failed"; id: string };
 
 /** Per-frame provenance carried from the MAIN world all the way to earsd. */
 export interface FrameStamp {
@@ -341,6 +342,32 @@ export class EarsSocket {
     });
   }
 
+  /**
+   * Report a participant's capture death (`ingest.capture_failed`) so the
+   * daemon records the gap in the tagged session's events.jsonl instead of
+   * mistaking it for silence (issue #22). Best-effort like attribution: with
+   * no session tag or the socket down the report is dropped — the
+   * background's console error already said it loudly.
+   */
+  sendCaptureFailed(
+    participantId: string,
+    platform: Platform,
+    reason: string,
+    meetingExternalId?: string,
+  ): void {
+    if (this.status !== "connected" || !this.ws) return;
+    if (!meetingExternalId) return;
+    const id = String(this.nextRequestId++);
+    this.pending.push({ kind: "capture-failed", id });
+    this.sendText({
+      cmd: "ingest.capture_failed",
+      id,
+      source: sourceLabel(platform, participantId),
+      session: { platform, external_id: meetingExternalId },
+      reason,
+    });
+  }
+
   participantLeft(participantId: string): void {
     const st = this.participants.get(participantId);
     this.participants.delete(participantId);
@@ -393,6 +420,11 @@ export class EarsSocket {
     if (req.kind === "attribution") {
       // Fire-and-forget: the events are already safe in the in-page ring.
       if (!parsed.ok) console.warn(`[ears][transport] ingest.attribution rejected: ${parsed.error ?? "unknown"}`);
+      return;
+    }
+    if (req.kind === "capture-failed") {
+      // Fire-and-forget: the failure was already logged at error level.
+      if (!parsed.ok) console.warn(`[ears][transport] ingest.capture_failed rejected: ${parsed.error ?? "unknown"}`);
       return;
     }
 

@@ -131,6 +131,13 @@ private actor RecordingIngestSink {
   func attribution(_ session: SessionIdentity, _ events: [String]) async {
     attributions.append((session, events))
   }
+
+  private(set) var captureFailures: [(source: String, session: SessionIdentity, reason: String)] =
+    []
+
+  func captureFailed(_ source: SourceID, _ session: SessionIdentity, _ reason: String) async {
+    captureFailures.append((source.rawValue, session, reason))
+  }
 }
 
 private enum TestIngestError: Error { case rejected }
@@ -151,7 +158,10 @@ struct IngestWebSocketServerTests {
       onOpen: { source, format, session in try await sink.open(source, format, session) },
       onPush: { streamID, samples, rate, _ in await sink.push(streamID, samples, rate) },
       onClose: { streamID in await sink.close(streamID) },
-      onAttribution: { session, events in await sink.attribution(session, events) })
+      onAttribution: { session, events in await sink.attribution(session, events) },
+      onCaptureFailed: { source, session, reason in
+        await sink.captureFailed(source, session, reason)
+      })
     return (server, listener)
   }
 
@@ -249,6 +259,44 @@ struct IngestWebSocketServerTests {
     #expect(recorded.count == 1)
     #expect(recorded[0].session == SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
     #expect(recorded[0].events == lines)
+
+    await server.shutdown()
+    _ = await runner.value
+  }
+
+  @Test("ingest.capture_failed dispatches the report with its session tag and acks ok")
+  func captureFailedDispatched() async throws {
+    let sink = RecordingIngestSink()
+    let (server, listener) = makeServer(allowedOrigins: ["chrome-extension://abc"], sink: sink)
+    let runner = Task { await server.run() }
+    let connection = FakeSocketConnection()
+    listener.accept(connection)
+
+    connection.feed(TestWebSocketClient.upgradeRequest(origin: "chrome-extension://abc"))
+    _ = await firstChunk(connection)  // the 101 response
+
+    let request = IngestRequest.captureFailed(
+      source: "browser:meet:t3",
+      session: SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"),
+      reason: "decoder gave up after 5 restarts", id: nil)
+    connection.feed(
+      TestWebSocketClient.text(String(data: try JSONEncoder().encode(request), encoding: .utf8)!))
+
+    guard let replyBytes = await firstChunk(connection), let frame = decodeServerFrame(replyBytes)
+    else {
+      Issue.record("no ingest.capture_failed reply")
+      return
+    }
+    let reply = try JSONDecoder().decode(ControlResponse<EmptyData>.self, from: Data(frame.payload))
+    guard case .success = reply else {
+      Issue.record("expected ingest.capture_failed success")
+      return
+    }
+    let recorded = await sink.captureFailures
+    #expect(recorded.count == 1)
+    #expect(recorded[0].source == "browser:meet:t3")
+    #expect(recorded[0].session == SessionIdentity(platform: "meet", externalID: "kQ0DRVtDaekB"))
+    #expect(recorded[0].reason == "decoder gave up after 5 restarts")
 
     await server.shutdown()
     _ = await runner.value

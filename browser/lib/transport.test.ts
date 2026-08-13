@@ -303,6 +303,29 @@ describe("EarsSocket", () => {
     expect(textSent(ws)).toEqual([]);
   });
 
+  it("ships a capture-failed report as ingest.capture_failed with source and session tag", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+
+    socket.sendCaptureFailed("t3", "meet", "decoder gave up", "kQ0DRVtDaekB");
+    expect(textSent(ws)).toEqual([
+      {
+        cmd: "ingest.capture_failed",
+        id: "1",
+        source: sourceLabel("meet", "t3"),
+        session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
+        reason: "decoder gave up",
+      },
+    ]);
+  });
+
+  it("drops a capture-failed report with no session tag — there is nowhere to file it", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+    socket.sendCaptureFailed("t3", "meet", "decoder gave up", undefined);
+    expect(textSent(ws)).toEqual([]);
+  });
+
   it("matches replies by correlation id, so reordered daemon responses still land on the right open", () => {
     const opened: string[] = [];
     const socket = new EarsSocket(47811);

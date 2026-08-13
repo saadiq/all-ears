@@ -104,7 +104,7 @@ The same command set is served on two transports, dispatched through one handler
 
 ### Audio ingestion (`/ingest` WebSocket)
 
-Browser audio does **not** flow over the control transports — it uses a dedicated loopback WebSocket (`ws://127.0.0.1:<port>/ingest`, `[earsd.ingest_ws]`, off by default), with the same fail-closed Origin allowlist. It is **ingest-only**: `ingest.open`/`ingest.close` as text frames, PCM as binary frames, and every other command (including `subscribe`) rejected — an allowed origin still cannot drive the daemon from here.
+Browser audio does **not** flow over the control transports — it uses a dedicated loopback WebSocket (`ws://127.0.0.1:<port>/ingest`, `[earsd.ingest_ws]`, off by default), with the same fail-closed Origin allowlist. It is **ingest-only**: `ingest.open`/`ingest.close`/`ingest.attribution`/`ingest.capture_failed` as text frames, PCM as binary frames, and every other command (including `subscribe`) rejected — an allowed origin still cannot drive the daemon from here.
 
 ```jsonc
 // text --> declare a stream (the optional `session` tag names the membership)

@@ -74,6 +74,13 @@ export type BackgroundEffect =
       sentAt: number;
     }
   | { kind: "ingest.sendAttribution"; portId: string; platform: Platform; events: string[] }
+  | {
+      kind: "ingest.sendCaptureFailed";
+      portId: string;
+      participantId: string;
+      platform: Platform;
+      reason: string;
+    }
   | { kind: "console"; level: "debug" | "error"; text: string };
 
 /**
@@ -128,10 +135,11 @@ export function reducePortMessage(
     case "capture-failed":
       // A participant's capture died mid-call (e.g. the Meet decoder gave
       // up). The daemon otherwise just sees the source fall silent; log it
-      // loudly here so the recorded gap is attributable to a capture
-      // failure, not a quiet speaker. The participant stays in the roster
-      // (no stream close) — a later renegotiated track re-adopts and
-      // resumes capture on its own.
+      // loudly AND report it over the ingest socket so the daemon records
+      // the gap in the session's events.jsonl (issue #22) — attributable to
+      // a capture failure, not a quiet speaker. The participant stays in
+      // the roster (no stream close) — a later renegotiated track re-adopts
+      // and resumes capture on its own.
       return {
         state,
         effects: [
@@ -139,6 +147,13 @@ export function reducePortMessage(
             kind: "console",
             level: "error",
             text: `[ears][bg] capture failed for ${msg.participantId} (${msg.platform}): ${msg.reason}`,
+          },
+          {
+            kind: "ingest.sendCaptureFailed",
+            portId,
+            participantId: msg.participantId,
+            platform: msg.platform,
+            reason: msg.reason,
           },
         ],
       };
@@ -298,6 +313,14 @@ export interface BackgroundIngestSink {
     stamp: { seq: number; sentAt: number },
   ): void;
   sendAttribution(events: string[], platform: Platform, meetingExternalId: string | undefined): void;
+  /** socket.sendCaptureFailed: report a participant's capture death so the
+   * daemon can record it in the session's events.jsonl. */
+  sendCaptureFailed(
+    participantId: string,
+    platform: Platform,
+    reason: string,
+    meetingExternalId: string | undefined,
+  ): void;
 }
 
 export interface BackgroundSinks {
@@ -370,6 +393,14 @@ export function runBackgroundEffects(effects: BackgroundEffect[], sinks: Backgro
         sinks.ingest.sendAttribution(
           effect.events,
           effect.platform,
+          sinks.sessions.externalIdFor(effect.portId, effect.platform),
+        );
+        break;
+      case "ingest.sendCaptureFailed":
+        sinks.ingest.sendCaptureFailed(
+          effect.participantId,
+          effect.platform,
+          effect.reason,
           sinks.sessions.externalIdFor(effect.portId, effect.platform),
         );
         break;

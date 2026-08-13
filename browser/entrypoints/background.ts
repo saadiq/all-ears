@@ -198,6 +198,8 @@ export default defineBackground(() => {
         socket.sendPcm(participantId, platform, pcm, externalId, stamp),
       sendAttribution: (events, platform, externalId) =>
         socket.sendAttribution(events, platform, externalId),
+      sendCaptureFailed: (participantId, platform, reason, externalId) =>
+        socket.sendCaptureFailed(participantId, platform, reason, externalId),
     },
   };
 

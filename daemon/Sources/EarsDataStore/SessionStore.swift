@@ -68,8 +68,8 @@ public enum SessionStore {
 public enum SessionEventLog {
   /// One `events.jsonl` line. `event` is one of `started`,
   /// `interval_opened`, `interval_closed`, `attendee_joined`,
-  /// `attendee_left`, `renamed`, `ended`; the optional fields carry the
-  /// event's own detail.
+  /// `attendee_left`, `renamed`, `capture_failed`, `ended`; the optional
+  /// fields carry the event's own detail.
   public struct Entry: Sendable, Hashable, Codable {
     public var t: String
     public var event: String
@@ -77,18 +77,22 @@ public enum SessionEventLog {
     public var attendee: String?
     /// `renamed`: the new title.
     public var title: String?
+    /// `capture_failed`: the source whose capture died mid-call.
+    public var source: String?
     /// `ended`: `"client"` for an explicit `session.end`, `"ingest-idle"`
-    /// for the orphan grace timer.
+    /// for the orphan grace timer. `capture_failed`: the capture client's
+    /// stated cause.
     public var reason: String?
 
     public init(
       t: String, event: String, attendee: String? = nil, title: String? = nil,
-      reason: String? = nil
+      source: String? = nil, reason: String? = nil
     ) {
       self.t = t
       self.event = event
       self.attendee = attendee
       self.title = title
+      self.source = source
       self.reason = reason
     }
   }

@@ -95,7 +95,7 @@ describe("reducePortMessage", () => {
     expect(r.state.participantPorts.has("t1")).toBe(false);
   });
 
-  it("capture-failed logs loudly but closes nothing — the participant stays", () => {
+  it("capture-failed logs loudly and reports to the daemon, but closes nothing", () => {
     const seeded = reduceAll([pcmMsg("t1")]);
     const r = reducePortMessage(seeded.state, "pcm-0", {
       type: "capture-failed",
@@ -109,7 +109,16 @@ describe("reducePortMessage", () => {
         level: "error",
         text: "[ears][bg] capture failed for t1 (meet): decoder gave up",
       },
+      {
+        kind: "ingest.sendCaptureFailed",
+        portId: "pcm-0",
+        participantId: "t1",
+        platform: "meet",
+        reason: "decoder gave up",
+      },
     ]);
+    // The participant stays (no stream close) — a later renegotiated track
+    // re-adopts and resumes capture on its own.
     expect(r.state.participantPorts.get("t1")).toBe("pcm-0");
   });
 
@@ -277,6 +286,7 @@ function recordingSinks(externalId?: string): { calls: Call[]; sinks: Background
       closeStream: rec("ingest.closeStream"),
       sendPcm: rec("ingest.sendPcm"),
       sendAttribution: rec("ingest.sendAttribution"),
+      sendCaptureFailed: rec("ingest.sendCaptureFailed"),
     },
   };
   return { calls, sinks };
@@ -296,6 +306,17 @@ describe("runBackgroundEffects", () => {
     expect(sendPcm?.args[4]).toEqual({ seq: 0, sentAt: 1000 });
     const sendAttr = calls.find((c) => c.fn === "ingest.sendAttribution");
     expect(sendAttr?.args).toEqual([["{}"], "meet", "abc-defg-hij"]);
+  });
+
+  it("resolves the session tag at send time for a capture-failed report", () => {
+    const { calls, sinks } = recordingSinks("abc-defg-hij");
+    const seeded = reduceAll([
+      pcmMsg("t1"),
+      { type: "capture-failed", participantId: "t1", platform: "meet", reason: "decoder gave up" },
+    ]);
+    runBackgroundEffects(seeded.effects, sinks);
+    const report = calls.find((c) => c.fn === "ingest.sendCaptureFailed");
+    expect(report?.args).toEqual(["t1", "meet", "decoder gave up", "abc-defg-hij"]);
   });
 
   it("dispatches each effect to its collaborator once, in order", () => {

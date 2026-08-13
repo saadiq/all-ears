@@ -583,6 +583,9 @@ public actor EarsDaemon {
       },
       onAttribution: { [weak self] session, events in
         await self?.appendAttributionEvents(session: session, events: events)
+      },
+      onCaptureFailed: { [weak self] source, session, reason in
+        await self?.recordCaptureFailure(source: source, session: session, reason: reason)
       })
     ingestWebSocketServer = ingestServer
     ingestServerRunTask = Task { await ingestServer.run() }
@@ -813,6 +816,37 @@ public actor EarsDaemon {
       }
     } catch {
       log("session \(sessionID): attribution.jsonl append failed: \(error)")
+    }
+  }
+
+  /// `ingest.capture_failed`: record that a source's capture died mid-call in
+  /// the tagged session's `events.jsonl` timeline — the aim of issue #22.
+  /// Without this record, a decoder that gave up leaves a recorded gap
+  /// indistinguishable from the speaker going quiet; with it, the gap is
+  /// attributable where the session's other domain events already live.
+  ///
+  /// Best-effort like every `events.jsonl` append: a tag resolving to no live
+  /// session drops the report with a log line rather than erroring (matching
+  /// `ingest.attribution` — evidence a beat ahead of `session.start` is
+  /// expected, not a fault).
+  public func recordCaptureFailure(
+    source: SourceID, session: SessionIdentity, reason: String
+  ) async {
+    guard let sessionID = await sessionRegistry?.sessionID(for: session) else {
+      log(
+        "ingest.capture_failed dropped: no live session for "
+          + "\(session.platform)/\(session.externalID) (source \(source.rawValue))")
+      return
+    }
+    log(
+      "⚠ capture failed: session=\(sessionID) source=\(source.rawValue) reason=\(reason)")
+    let entry = SessionEventLog.Entry(
+      t: ISO8601InstantCodec.format(clock.now()), event: "capture_failed",
+      source: source.rawValue, reason: reason)
+    do {
+      try SessionEventLog.append(entry, dataRoot: configuration.dataRoot, sessionID: sessionID)
+    } catch {
+      log("session \(sessionID): events.jsonl capture_failed append failed: \(error)")
     }
   }
 

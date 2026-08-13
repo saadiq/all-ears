@@ -446,6 +446,49 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
+  @Test("an ingest.capture_failed report lands in events.jsonl under the right session")
+  func captureFailureLandsInSessionTimeline() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
+
+    let configuration = EarsDaemonConfiguration(
+      sources: [],
+      dataRoot: dataRoot,
+      socketPath: tempSocketPath())
+
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in SyntheticCaptureBackend(source: descriptor.id, buffers: []) },
+      clock: clock)
+    try await daemon.start()
+
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(
+        platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
+
+    await daemon.recordCaptureFailure(
+      source: "browser:meet:t3",
+      session: SessionIdentity(platform: "meet", externalID: "abc"),
+      reason: "decoder gave up after 5 restarts")
+
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
+    let failure = timeline.first { $0.event == "capture_failed" }
+    #expect(failure != nil)
+    #expect(failure?.source == "browser:meet:t3")
+    #expect(failure?.reason == "decoder gave up after 5 restarts")
+
+    // A tag naming no live session drops the report without creating anything.
+    await daemon.recordCaptureFailure(
+      source: "browser:meet:t3",
+      session: SessionIdentity(platform: "meet", externalID: "never-started"),
+      reason: "decoder gave up")
+    let sessionsDir = DataStoreLayout.sessionsDirectory(dataRoot: dataRoot)
+    let sessionDirs = try FileManager.default.contentsOfDirectory(atPath: sessionsDir.path)
+    #expect(Set(sessionDirs) == Set([session.id]))
+
+    await daemon.stop()
+  }
+
   @Test(
     "reopening the same label after a close resumes the same on-disk source rather than a fresh one"
   )

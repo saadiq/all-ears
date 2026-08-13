@@ -42,6 +42,20 @@ struct IngestCorrelationIDTests {
     #expect(attribution.correlationID == "9")
   }
 
+  @Test("decodes the golden ingest.capture_failed shape")
+  func decodesCaptureFailed() throws {
+    let json =
+      #"{"cmd":"ingest.capture_failed","id":"11","source":"browser:meet:t3","#
+      + #""session":{"platform":"meet","external_id":"kQ0"},"reason":"decoder gave up"}"#
+    let request = try JSONDecoder().decode(IngestRequest.self, from: Data(json.utf8))
+    #expect(
+      request
+        == .captureFailed(
+          source: "browser:meet:t3",
+          session: SessionIdentity(platform: "meet", externalID: "kQ0"),
+          reason: "decoder gave up", id: "11"))
+  }
+
   @Test("a request without an id decodes with a nil correlation id — the pre-id shape")
   func decodesLegacyRequestWithoutID() throws {
     let request = try JSONDecoder().decode(
@@ -58,6 +72,10 @@ struct IngestCorrelationIDTests {
       .close(streamID: "s7", id: nil),
       .attribution(
         session: SessionIdentity(platform: "meet", externalID: "kQ0"), events: ["{}"], id: "9"),
+      .captureFailed(
+        source: "browser:meet:t3",
+        session: SessionIdentity(platform: "meet", externalID: "kQ0"),
+        reason: "decoder gave up", id: "11"),
     ]
     for request in requests {
       let data = try JSONEncoder().encode(request)

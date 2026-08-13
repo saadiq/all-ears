@@ -8,6 +8,7 @@
 /// {"cmd":"ingest.open","id":"7","source":"browser:meet:dev-2","format":{…},"session":{"platform":"meet","external_id":"kQ0DRVtDaekB"}}
 /// {"cmd":"ingest.close","id":"8","stream_id":"s7"}
 /// {"cmd":"ingest.attribution","session":{…},"events":["{\"schema\":1,…}",…]}
+/// {"cmd":"ingest.capture_failed","id":"9","source":"browser:meet:t3","session":{…},"reason":"decoder gave up"}
 /// ```
 ///
 /// `id` is the client's optional correlation id (an opaque string). The
@@ -28,6 +29,12 @@
 /// is one pre-encoded JSONL line the daemon appends verbatim to the tagged
 /// session's `attribution.jsonl`. The tag is mandatory here — a batch with no
 /// session has no directory to land in.
+///
+/// `capture_failed` reports that a source's capture died mid-call (the
+/// extension's decoder gave up — issue #22): the daemon records it in the
+/// tagged session's `events.jsonl`, so the recorded gap is attributable to a
+/// capture failure rather than reading as silence. The tag is mandatory for
+/// the same reason as `attribution`'s.
 public enum IngestRequest: Sendable, Hashable {
   /// Begin pushing audio for a `browser:<label>` source; declares its format
   /// and (optionally) the session identity the source belongs to.
@@ -36,11 +43,14 @@ public enum IngestRequest: Sendable, Hashable {
   case close(streamID: String, id: String?)
   /// A batch of attribution flight-recorder lines for the tagged session.
   case attribution(session: SessionIdentity, events: [String], id: String?)
+  /// A source's capture died mid-call; `reason` is the client's stated cause.
+  case captureFailed(source: SourceID, session: SessionIdentity, reason: String, id: String?)
 
   /// The correlation id to echo on this request's reply, when the client sent one.
   public var correlationID: String? {
     switch self {
-    case .open(_, _, _, let id), .close(_, let id), .attribution(_, _, let id):
+    case .open(_, _, _, let id), .close(_, let id), .attribution(_, _, let id),
+      .captureFailed(_, _, _, let id):
       return id
     }
   }
@@ -52,6 +62,7 @@ extension IngestRequest: Codable {
     case session
     case streamID = "stream_id"
     case events
+    case reason
     case id
   }
 
@@ -59,6 +70,7 @@ extension IngestRequest: Codable {
     case open = "ingest.open"
     case close = "ingest.close"
     case attribution = "ingest.attribution"
+    case captureFailed = "ingest.capture_failed"
   }
 
   public init(from decoder: any Decoder) throws {
@@ -77,6 +89,12 @@ extension IngestRequest: Codable {
       self = .attribution(
         session: try container.decode(SessionIdentity.self, forKey: .session),
         events: try container.decode([String].self, forKey: .events),
+        id: id)
+    case .captureFailed:
+      self = .captureFailed(
+        source: try container.decode(SourceID.self, forKey: .source),
+        session: try container.decode(SessionIdentity.self, forKey: .session),
+        reason: try container.decode(String.self, forKey: .reason),
         id: id)
     }
   }
@@ -97,6 +115,11 @@ extension IngestRequest: Codable {
       try container.encode(Tag.attribution, forKey: .cmd)
       try container.encode(session, forKey: .session)
       try container.encode(events, forKey: .events)
+    case .captureFailed(let source, let session, let reason, _):
+      try container.encode(Tag.captureFailed, forKey: .cmd)
+      try container.encode(source, forKey: .source)
+      try container.encode(session, forKey: .session)
+      try container.encode(reason, forKey: .reason)
     }
   }
 }
