@@ -2,7 +2,7 @@
 
 ## One job
 
-Stream per-participant PCM from the extension to `earsd`'s loopback WebSocket ingest endpoint, mapping each participant to a distinct `browser:<label>` source and its `stream_id`. One WebSocket, held in the background context, with one piece of state: the participant → `stream_id` table.
+Stream per-track PCM from the extension to `earsd`'s loopback WebSocket ingest endpoint, mapping each captured track to a distinct `browser:<label>` source and its `stream_id`. One WebSocket, held in the background context, with one piece of state: the capture-participant → `stream_id` table.
 
 The extension's control traffic (the session lifecycle verbs, status) rides the separate `/control` WebSocket via `lib/control-transport.ts`, which speaks the same v2 protocol as the Unix socket — see the [capture-daemon spec](../capture-daemon.md#transports). This document covers the audio leg (`lib/transport.ts`).
 
@@ -39,7 +39,7 @@ Control is text frames, reusing `earsd`'s `ControlRequest`/`ControlResponse` typ
 // at open time. The daemon uses it to link the source into the session
 // server-side, keeping the ingest-idle grace sound across service-worker
 // respawns.
-{"cmd":"ingest.open","id":"1","source":"browser:meet:jane-a1b2","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"session":{"platform":"meet","external_id":"abc-defg-hij"}}
+{"cmd":"ingest.open","id":"1","source":"browser:meet:t3","format":{"sample_rate":16000,"channels":1,"encoding":"pcm_s16le"},"session":{"platform":"meet","external_id":"abc-defg-hij"}}
 // text <-- {"ok":true,"id":"1","data":{"stream_id":"s7"}}
 
 // text --> end the stream (participant left / track ended)
@@ -81,7 +81,7 @@ At ~10 frames/s/participant (~3 KB each), message size is never a concern.
 
 ### Source labeling
 
-One participant → `browser:<platform>:<participant>` → one `stream_id` → one independently-recorded, independently-transcribed `earsd` source. `<platform>` is `meet` | `zoom` | `teams`; `<participant>` is the sanitized id from the [extension spec](./extension.md#platform-adapters). Fallback ids become e.g. `browser:teams:speaker-3` — stable within the call, honest about provenance.
+One captured track → `browser:<platform>:<track-slug>` → one `stream_id` → one independently-recorded, independently-transcribed `earsd` source. `<platform>` is `meet` | `zoom` | `teams`; `<track-slug>` is a short opaque handle (`t3`) minted once per admitted track and **never changed for the track's life** — it names a captured track, not a person. Whose voice a source carries is carried separately, by `session.attendee` upserts whose `source` field links the label ([extension spec](./extension.md#platform-adapters)); a source whose owner never resolves simply stays anonymous. Downstream consumers must treat the whole label as an opaque source id — nothing may parse identity out of it, because none is in there.
 
 ## State & lifecycle
 

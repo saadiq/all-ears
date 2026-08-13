@@ -2,13 +2,13 @@
 
 ## One job
 
-Intercept the meeting page's `RTCPeerConnection`s, isolate each remote participant's audio into its own 16 kHz mono PCM stream tagged with a stable participant id, and forward those streams to the background context, which streams them to `earsd`. Identity resolution is the only platform-specific part; everything else is shared.
+Intercept the meeting page's `RTCPeerConnection`s, isolate each remote participant's audio into its own 16 kHz mono PCM stream tagged with a stable per-track handle, and forward those streams to the background context, which streams them to `earsd`. Whose voice a handle carries is resolved separately — platform identities flow as attendee upserts linking the handle's source, never into the source id itself. Identity resolution is the only platform-specific part; everything else is shared.
 
 ### Responsibilities
 
 - Install an `RTCPeerConnection` constructor wrapper in the page's main world **before the page constructs its first connection**.
 - Capture every remote audio track (added at join or mid-call), one isolated pipeline per track, surviving mute/replace/re-subscribe.
-- Resolve each track to a stable participant id via the active platform adapter, degrading to `speaker-<n>` rather than blocking audio.
+- Mint each admitted track a stable, opaque source handle (`t<n>`), and resolve its owner's platform identity via the active platform adapter — at admission when the platform allows it, by speaking-onset correlation later otherwise, or never; audio flows under the handle regardless.
 - Convert each stream to 16 kHz mono `pcm_s16le` off the main thread, without ever playing it back.
 - Relay tagged PCM frames and participant lifecycle events to the background context, which owns the sockets to `earsd`.
 
@@ -53,13 +53,12 @@ The hook is a `world: "MAIN"`, `runAt: "document_start"` content script — the 
 
 ## Track isolation & lifecycle
 
-`lib/audio-tap.ts` owns a map keyed on the live `MediaStreamTrack` object — N tracks, N independent pipelines — plus a per-participant generation counter:
+`lib/audio-tap.ts` owns a map keyed on the live `MediaStreamTrack` object — N tracks, N independent pipelines — plus a per-handle generation counter:
 
-- **Start** (on `track`): resolve identity, bump the participant's generation, build the frame source, store it. A gone-and-back participant starts a fresh segment under the same id — never mutate a live pipeline across a drop.
+- **Start** (on `track`): mint (or re-use) the track's source handle, bump its generation, build the frame source, store it. A gone-and-back track starts a fresh segment under the same handle — never mutate a live pipeline across a drop.
 - **Stop:** on `track.onended`, delete from the map before stopping, so a late frame can't resurrect a dead entry.
 - **Mute/replace:** `onmute`/`onunmute` gate emission. Teams delivers tracks `muted=true` until first speech — accept enabled-but-muted tracks.
-- An async identity upgrade (see Meet below) restarts the track's pipeline as a new segment under the upgraded id rather than renaming in place.
-- An identity that confirms **after its track has ended** can't restart anything; it is sent as a `participant-renamed` message instead (adapter `onRename`). The background upserts the dead track's source label onto the *named* attendee (`session.attendee` with `id=<device>` + `source=browser:<platform>:<fallback>`), so audio already recorded under a `speaker-<n>` source is still transcript-labeled by the participant's name.
+- A platform identity — resolved at admission (`identify()`) or confirmed later by correlation (adapter `onIdentity`) — is forwarded as a `participant-identified` message: a `session.attendee` upsert with `id=<platform id>`, the display name when resolved, and `source=browser:<platform>:<handle>`. The pipeline is never restarted for an identity, no frames are lost, and the message is identical whether the track is live or already ended — late identity is just another upsert.
 
 ## Platform adapters
 
@@ -68,28 +67,36 @@ Identity is the fragile part; it lives entirely behind `lib/identity/adapter.ts`
 ```ts
 export interface PlatformAdapter {
   readonly platform: "meet" | "zoom" | "teams";
-  /** Best-effort stable id for a remote track. null → caller assigns speaker-<n>. */
-  identify(track: MediaStreamTrack, stream: MediaStream, transceiver: RTCRtpTransceiver): ParticipantId | null;
-  displayName?(id: ParticipantId): string | undefined;
+  /** Best-effort platform id for a remote track at admission. null → the source stays anonymous until (unless) a later identity confirms. */
+  identify(track: MediaStreamTrack, stream: MediaStream, transceiver: RTCRtpTransceiver): PlatformParticipantId | null;
+  displayName?(id: PlatformParticipantId): string | undefined;
   /** Called on every track's decoded-audio speaking edge. */
   onTrackSpeaking?(track: MediaStreamTrack, speaking: boolean): void;
-  /** Register a callback for a later async identity upgrade of an already-resolved track. */
-  onIdentify?(cb: (track: MediaStreamTrack, id: ParticipantId) => void): void;
+  /** Called on every track's "unmute" (RTP resumed). */
+  onTrackUnmute?(track: MediaStreamTrack): void;
+  /** A platform-DOM speaking indicator fired for a device id. */
+  onDeviceSpeaking?(deviceId: string, at: number): void;
+  /** Register a callback for a platform identity confirmed asynchronously for a captured track — forwarded as an attendee upsert linking the track's source handle; nothing restarts, and it may fire after the track ended. */
+  onIdentity?(cb: (trackId: string, id: PlatformParticipantId) => void): void;
+  /** Register a callback for batches of (id → display name) resolved from the platform roster/UI. */
+  onRoster?(cb: (entries: RosterEntry[]) => void): void;
+  /** Re-scan the identity source (called by the periodic capture reconciler). */
+  pollIdentities?(): void;
   dispose?(): void;
 }
 ```
 
 - **Zoom** — the participant id is parsed from the track's MSID (`decodeURIComponent(streamId).match(/^(\d+)\+/)`, then `>> 10 << 10`, gated on `+CS+`). Intrinsic to the track, stable across mute/re-subscribe.
-- **Meet** — no synchronous mechanism exists on the current build: tiles expose no per-participant media elements, and CSRC/SSRC values don't bridge to tiles (all verified dead live). `identify()` therefore returns `null`, and identity arrives **asynchronously by speaking-onset correlation**: Meet's `collections` `RTCDataChannel` carries a gzip+protobuf message on every speaking-state transition embedding the participant's stable `spaces/<space>/devices/<device>` id and a start/stop flag (`lib/identity/meet-collections.ts`, field paths `1.2.3.2.6` and `1.2.3.2.10.1`). `meet-correlator.ts` pairs a device id's speaking onset with the one live track whose decoded audio onset falls within ~200 ms; after one confirming turn the adapter pushes the upgraded id via `onIdentify`. There is no way to resolve a participant before their first speaking turn.
+- **Meet** — no synchronous mechanism exists on the current build: tiles expose no per-participant media elements, and CSRC/SSRC values don't bridge to tiles (all verified dead live). `identify()` therefore returns `null`, and identity arrives **asynchronously by speaking-onset correlation**: Meet's `collections` `RTCDataChannel` carries a gzip+protobuf message on every speaking-state transition embedding the participant's stable `spaces/<space>/devices/<device>` id and a start/stop flag (`lib/identity/meet-collections.ts`, field paths `1.2.3.2.6` and `1.2.3.2.10.1`). `meet-correlator.ts` pairs a device id's speaking onset with the one live track whose decoded audio onset falls within ~200 ms; after the confirming turns the adapter pushes the confirmed id via `onIdentity`, and it lands as an attendee upsert linking the track's source. There is no way to resolve a participant before their first speaking turn.
 - **Teams** — one mixed track, no usable CSRCs. Buffered frames are attributed to the app's reported dominant speaker, emitting `Speaker N`. This is attribution, not isolation — never presented as per-participant fidelity.
-- **Universal fallback:** on `null`, assign a stable `speaker-<n>` keyed to the track. Identity is best-effort; audio is not.
+- **Universal fallback is the default:** every source is already a stable anonymous handle, so an identity that never resolves costs nothing but the name. Identity is best-effort; audio is not.
 
 ### The collections exception
 
 Decoding an app's private protobuf/Redux internals is prohibited in general (versioned, undocumented wire formats — the biggest maintenance sink). The Meet `collections` parser is the one narrow exception, bounded by these guardrails:
 
 - Only the two documented fields (device id, speaking flag) are decoded; nothing depends on any other field.
-- Parsing is defensive: any shape mismatch degrades to `speaker-<n>`, never throws or blocks audio, and a schema self-check warns when real traffic stops matching the expected shape (plus a debug-gated structure dump for diagnosing drift).
+- Parsing is defensive: any shape mismatch degrades to an unnamed source, never throws or blocks audio, and a schema self-check warns when real traffic stops matching the expected shape (plus a debug-gated structure dump for diagnosing drift).
 - Tests carry real captured wire-byte fixtures, not just synthetic ones.
 
 This does not license decoding anything else on `collections`, or Zoom's `__reduxStore`, or any other private store.
