@@ -101,6 +101,33 @@ struct SessionDescriptorTOMLTests {
     }
   }
 
+  @Test(
+    "an identity with only one of platform/external_id is rejected, not silently dropped",
+    arguments: ["platform", "external_id"])
+  func partialIdentityIsRejected(blankedKey: String) throws {
+    // A file carrying half an identity is corrupt, not manual: decoding it to
+    // a nil identity would silently break `session.start` idempotency and the
+    // default-title comparison for every consumer of the reloaded record.
+    guard case .table(var table) = SessionDescriptorTOML.encode(Self.referenceSession()) else {
+      Issue.record("encode did not produce a table")
+      return
+    }
+    table[blankedKey] = .string("")  // the suite's absent sentinel
+
+    #expect(throws: DescriptorTOMLError.invalidField(blankedKey)) {
+      try SessionDescriptorTOML.decode(.table(table))
+    }
+  }
+
+  @Test("a manual session (no identity at all) still decodes to a nil identity")
+  func absentIdentityStaysManual() throws {
+    var manual = Self.referenceSession()
+    manual.identity = nil
+
+    let decoded = try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(manual))
+    #expect(decoded.identity == nil)
+  }
+
   @Test("a session.toml without reconciler_version decodes to version 0")
   func absentReconcilerVersionMeansZero() throws {
     // Exactly what encode produced before the field existed: strip it, as an

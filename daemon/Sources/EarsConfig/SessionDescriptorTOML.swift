@@ -117,13 +117,20 @@ public enum SessionDescriptorTOML {
       transcriptCompleted = nil
     }
 
+    // An identity is both halves or neither. Half an identity is a corrupt
+    // file, not a manual session — decoding it to nil would silently break
+    // `session.start` idempotency for the reloaded record, so it is rejected
+    // like any other invalid field, naming the half that is missing.
     let identity: SessionIdentity?
-    if let platform = fields.optionalString("platform"),
-      let externalID = fields.optionalString("external_id")
-    {
+    switch (fields.optionalString("platform"), fields.optionalString("external_id")) {
+    case (let platform?, let externalID?):
       identity = SessionIdentity(platform: platform, externalID: externalID)
-    } else {
+    case (nil, nil):
       identity = nil
+    case (.some, nil):
+      throw .invalidField("external_id")
+    case (nil, .some):
+      throw .invalidField("platform")
     }
 
     var sources: [SourceID] = []
