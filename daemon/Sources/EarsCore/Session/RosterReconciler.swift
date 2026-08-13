@@ -49,6 +49,18 @@
 /// is recoverable, a confidently mislabelled one is not.
 public enum RosterReconciler {
 
+  /// The version of this derivation, persisted as `reconciler_version` in
+  /// `session.toml` beside the `[[speaker]]` map it produced.
+  ///
+  /// Bumped whenever a change here can produce a different map from the same
+  /// roster — new invariants, changed tie-breaking. `transcribe` compares a
+  /// stored map's version against this and re-derives when the stored one is
+  /// older, which is what turns a reconciler bug fix into a repair for every
+  /// past session instead of only future ones. A file without the field is
+  /// version 0: reconciled (or captured) before versioning existed, and
+  /// therefore always stale.
+  public static let version = 1
+
   /// How far after a session's start an attendee may join and still be taken
   /// for the local participant by ``inferLocalAttendee(_:sessionStart:)``.
   ///

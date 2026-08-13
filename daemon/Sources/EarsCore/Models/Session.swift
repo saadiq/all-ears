@@ -41,6 +41,14 @@ public struct Session: Sendable, Hashable {
   /// carried into the transcript's frontmatter and the note itself, so a
   /// degraded run is visible where the user reads rather than only in a log.
   public var warnings: [String]
+  /// Which ``RosterReconciler`` version derived ``speakers`` — see
+  /// `RosterReconciler.version`. 0 until the session is reconciled, and for
+  /// any `session.toml` written before the field existed; `transcribe`
+  /// re-derives a map whose version is older than the current reconciler's,
+  /// which is what makes a reconciler fix repair past sessions. Persisted in
+  /// `session.toml` only, never on the wire: clients consume the map, not
+  /// the provenance of its derivation.
+  public var reconcilerVersion: Int
   /// Every source involved in this session — what transcription reads, and
   /// (for `browser:*` entries) what the orphan grace timer watches.
   public var sources: [SourceID]
@@ -71,6 +79,7 @@ public struct Session: Sendable, Hashable {
     sources: [SourceID] = [],
     trigger: TriggerKind = .manual,
     transcriptCompleted: Instant? = nil,
+    reconcilerVersion: Int = 0,
     rev: Int = 0
   ) {
     self.id = id
@@ -86,6 +95,7 @@ public struct Session: Sendable, Hashable {
     self.sources = sources
     self.trigger = trigger
     self.transcriptCompleted = transcriptCompleted
+    self.reconcilerVersion = reconcilerVersion
     self.rev = rev
   }
 
@@ -224,6 +234,9 @@ extension Session: Codable {
     sources = try container.decodeIfPresent([SourceID].self, forKey: .sources) ?? []
     trigger = try container.decode(TriggerKind.self, forKey: .trigger)
     transcriptCompleted = try container.decodeISO8601InstantIfPresent(forKey: .transcriptCompleted)
+    // TOML-only (see the property's doc comment): the wire shape neither
+    // carries nor needs it, so decoding always starts it at 0.
+    reconcilerVersion = 0
     rev = try container.decodeIfPresent(Int.self, forKey: .rev) ?? 0
   }
 

@@ -46,6 +46,16 @@ struct TOMLFieldReader {
     return value
   }
 
+  /// An optional integer field: an absent key (or one of the wrong kind)
+  /// decodes to 0 — for counters added to a schema after files were already
+  /// written under it. `reconciler_version` is the motivating case: version 0
+  /// means "before reconciliation was versioned", which is exactly what an
+  /// old file is.
+  func optionalInt(_ key: String) -> Int {
+    guard case .int(let value)? = table[key] else { return 0 }
+    return value
+  }
+
   /// An optional boolean field: an absent key (or one of the wrong kind)
   /// decodes to `false`.
   func optionalBool(_ key: String) -> Bool {

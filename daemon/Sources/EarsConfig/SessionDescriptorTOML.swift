@@ -54,6 +54,11 @@ public enum SessionDescriptorTOML {
             "self": .bool(attendee.isLocal),
           ])
         }),
+      // Which reconciler derived the `speaker` map below — 0 for a session
+      // never reconciled. `transcribe` re-derives a map older than the
+      // current `RosterReconciler.version`, so a reconciler fix repairs past
+      // sessions instead of only future ones.
+      "reconciler_version": .int(session.reconcilerVersion),
       // The reconciled derivation, kept beside the roster it came from rather
       // than replacing it: `attendee` stays the observed record, `speaker` is
       // what `RosterReconciler` concluded, and having both on disk is what
@@ -189,7 +194,10 @@ public enum SessionDescriptorTOML {
       warnings: warnings,
       sources: sources,
       trigger: trigger,
-      transcriptCompleted: transcriptCompleted)
+      transcriptCompleted: transcriptCompleted,
+      // Absent = 0: a file from before reconciliation was versioned, which
+      // every consumer treats as "older than any current reconciler".
+      reconcilerVersion: fields.optionalInt("reconciler_version"))
   }
 
   /// Standard colon-separated ISO-8601 UTC, whole seconds.

@@ -831,6 +831,10 @@ public actor SessionRegistry {
       attendees: session.attendees, sources: session.sources, sessionStart: session.started)
     session.speakers = outcome.speakers
     session.warnings = outcome.warnings
+    // Stamp which derivation produced this map, so `transcribe` can tell a
+    // current map from one a since-fixed reconciler left behind and re-derive
+    // the stale one.
+    session.reconcilerVersion = RosterReconciler.version
     // An inferred local participant is written back onto the roster, so
     // `session.toml` records the conclusion and not just the evidence for it.
     // Downstream only has to read `self`, and a re-reconciliation of this

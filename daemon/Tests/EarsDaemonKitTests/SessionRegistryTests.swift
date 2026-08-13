@@ -930,6 +930,9 @@ struct SessionRegistryReconciliationTests {
     #expect(ended.speakers.map { $0.source.rawValue } == ["browser:meet:devices-404"])
     #expect(ended.attendees.first { $0.id == "devices/404" }?.isLocal == true)
     #expect(!ended.warnings.isEmpty)
+    // The map records which reconciler produced it, so a later `transcribe`
+    // can tell a current map from one an older derivation left behind.
+    #expect(ended.reconcilerVersion == RosterReconciler.version)
   }
 
   @Test("an unnamed session is titled from the roster rather than the meeting id")
@@ -967,5 +970,6 @@ struct SessionRegistryReconciliationTests {
     #expect(recovered.speakers == ended.speakers)
     #expect(recovered.warnings == ended.warnings)
     #expect(recovered.title == "Matthew Barras")
+    #expect(recovered.reconcilerVersion == RosterReconciler.version)
   }
 }
