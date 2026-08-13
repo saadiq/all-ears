@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CONFIRM_THRESHOLD,
   MeetAdapter,
@@ -382,11 +382,11 @@ describe("MeetAdapter track ↔ device binding", () => {
 
   /** One clean turn: the track's audio onset, then that device's ring burst
    * 50ms later. Turns are 5s apart — clear of the 1s onset debounce and of the
-   * 3s history that holds consumed pairings. */
+   * 3s history that holds consumed pairings. Timestamps are plain arguments —
+   * the adapter's entry points take the caller's clock, no timers to fake. */
   function turn(adapter: MeetAdapter, track: FakeTrack, deviceId: string): void {
     clock += 5000;
-    vi.setSystemTime(clock);
-    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true);
+    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true, clock);
     adapter.onDeviceSpeaking(deviceId, clock + 50);
   }
 
@@ -403,12 +403,7 @@ describe("MeetAdapter track ↔ device binding", () => {
 
   beforeEach(() => {
     clock = 100_000;
-    vi.useFakeTimers();
     (globalThis as { window?: unknown }).window ??= {};
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   it("refuses to rebind a track that already carries a device (the 86-generation flip-flop)", () => {
@@ -538,19 +533,16 @@ describe("MeetAdapter local-participant exclusion", () => {
 
   function turn(adapter: MeetAdapter, track: { id: string }, deviceId: string): void {
     clock += 5000;
-    vi.setSystemTime(clock);
-    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true);
+    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true, clock);
     adapter.onDeviceSpeaking(deviceId, clock + 50);
   }
 
   beforeEach(() => {
     clock = 100_000;
-    vi.useFakeTimers();
     (globalThis as { window?: unknown }).window ??= {};
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     delete (globalThis as { document?: unknown }).document;
   });
 
@@ -611,10 +603,10 @@ describe("MeetAdapter local-participant exclusion", () => {
     // Drive the unmute correlator: track unmute + the local device's mic-open.
     for (let i = 0; i < 6; i++) {
       clock += 5000;
-      vi.setSystemTime(clock);
-      adapter.onTrackUnmute({ id: "track-remote" } as unknown as MediaStreamTrack);
-      (adapter as unknown as { onCollectionsEvent(e: { deviceId: string; micOpen: boolean }): void })
-        .onCollectionsEvent({ deviceId: "devices/107", micOpen: true });
+      adapter.onTrackUnmute({ id: "track-remote" } as unknown as MediaStreamTrack, clock);
+      (adapter as unknown as {
+        onCollectionsEvent(e: { deviceId: string; micOpen: boolean }, at: number): void;
+      }).onCollectionsEvent({ deviceId: "devices/107", micOpen: true }, clock);
     }
 
     expect(joins).toEqual([]);

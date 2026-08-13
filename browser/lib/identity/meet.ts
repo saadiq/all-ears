@@ -505,26 +505,28 @@ export class MeetAdapter implements PlatformAdapter {
    * would otherwise never reach the daemon — issue #23). Best-effort: a broken
    * DOM degrades to no roster, never throws into the capture path.
    */
-  pollIdentities(): void {
+  pollIdentities(at: number = Date.now()): void {
     if (this.disposed) return;
     try {
       this.tilesDirty = true; // force a re-scan even when no mutation fired since last poll
-      this.refreshNamesIfDirty();
+      this.refreshNamesIfDirty(at);
     } catch {
       // best-effort — identity harvesting must never affect capture
     }
   }
 
   /** audio-tap.ts calls this unconditionally on every track's audio-domain
-   * speaking edge. Best-effort: never throws into the capture path. */
-  onTrackSpeaking(track: MediaStreamTrack, speaking: boolean): void {
+   * speaking edge. Best-effort: never throws into the capture path. `at` is
+   * the observation's epoch-ms timestamp; it defaults to the wall clock only
+   * because the PlatformAdapter callback carries no timestamp — every decision
+   * downstream takes the caller's `at`, never reads a clock itself. */
+  onTrackSpeaking(track: MediaStreamTrack, speaking: boolean, at: number = Date.now()): void {
     if (this.disposed) return;
     try {
       this.liveTracksById.set(track.id, track);
       if (!speaking) return; // only onsets feed the correlator (see meet-correlator.ts)
-      const now = Date.now();
-      this.applyMatch(this.correlator.recordAudioOnset(track.id, now), "collections", now);
-      this.applyMatch(this.domCorrelator.recordAudioOnset(track.id, now), "dom", now);
+      this.applyMatch(this.correlator.recordAudioOnset(track.id, at), "collections", at);
+      this.applyMatch(this.domCorrelator.recordAudioOnset(track.id, at), "dom", at);
     } catch {
       // best-effort — a broken correlation must never affect capture
     }
@@ -572,26 +574,24 @@ export class MeetAdapter implements PlatformAdapter {
    * no collections edge; those unmutes just age out of the correlator's
    * history, and its distinct-tracks ambiguity rule holds when one coincides
    * with someone else's toggle.) */
-  onTrackUnmute(track: MediaStreamTrack): void {
+  onTrackUnmute(track: MediaStreamTrack, at: number = Date.now()): void {
     if (this.disposed) return;
     try {
       this.liveTracksById.set(track.id, track);
-      const now = Date.now();
-      this.applyMatch(this.unmuteCorrelator.recordAudioOnset(track.id, now), "unmute", now);
+      this.applyMatch(this.unmuteCorrelator.recordAudioOnset(track.id, at), "unmute", at);
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
   }
 
-  private onCollectionsEvent(event: CollectionsMuteEvent): void {
+  private onCollectionsEvent(event: CollectionsMuteEvent, at: number = Date.now()): void {
     if (this.disposed) return;
     try {
-      const now = Date.now();
-      this.deviceState.set(event.deviceId, { micOpen: event.micOpen, lastSeen: now });
+      this.deviceState.set(event.deviceId, { micOpen: event.micOpen, lastSeen: at });
       if (!event.micOpen) return; // only the mic-open edge is a correlatable onset
       if (this.isLocalDevice(event.deviceId)) return; // the user's own mic toggle, not a remote's
-      this.applyMatch(this.correlator.recordDeviceOnset(event.deviceId, now), "collections", now);
-      this.applyMatch(this.unmuteCorrelator.recordDeviceOnset(event.deviceId, now), "unmute", now);
+      this.applyMatch(this.correlator.recordDeviceOnset(event.deviceId, at), "collections", at);
+      this.applyMatch(this.unmuteCorrelator.recordDeviceOnset(event.deviceId, at), "unmute", at);
     } catch {
       // best-effort — same contract as onTrackSpeaking
     }
@@ -745,7 +745,7 @@ export class MeetAdapter implements PlatformAdapter {
     });
   }
 
-  private refreshNamesIfDirty(): void {
+  private refreshNamesIfDirty(at: number = Date.now()): void {
     if (!this.tilesDirty || this.disposed || typeof document === "undefined") return;
     this.tilesDirty = false;
     for (const tile of document.querySelectorAll(TILE_SELECTOR)) {
@@ -754,8 +754,8 @@ export class MeetAdapter implements PlatformAdapter {
       const name = extractDisplayName(tile);
       if (name) this.names.set(id, name);
     }
-    this.resolveLocalDevice();
-    this.emitRoster();
+    this.resolveLocalDevice(at);
+    this.emitRoster(at);
   }
 
   /**
@@ -766,7 +766,7 @@ export class MeetAdapter implements PlatformAdapter {
    * moment the roster populates, but a mid-call DOM churn that briefly empties
    * the tile set would otherwise clear an exclusion we already rely on.
    */
-  private resolveLocalDevice(): void {
+  private resolveLocalDevice(at: number): void {
     if (this.localDeviceId !== undefined) return;
     const found = findLocalDeviceId(document);
     if (found) {
@@ -780,7 +780,7 @@ export class MeetAdapter implements PlatformAdapter {
       // now carrying `isLocal` — without it the daemon never learns which
       // roster row is the user and falls back to inferring it.
       this.emittedNames.delete(found);
-      this.emitRoster();
+      this.emitRoster(at);
       return;
     }
     // MUST-NOT #13: a build or locale that never renders the marker must not
@@ -798,7 +798,7 @@ export class MeetAdapter implements PlatformAdapter {
   /** Forward newly-resolved (id → name) pairs to the roster callback, once
    * each. Logs every resolution (device id → display name) per issue #23's
    * debug-logging requirement. */
-  private emitRoster(): void {
+  private emitRoster(at: number): void {
     const fresh = rosterDelta(this.names, this.emittedNames);
     if (fresh.length === 0) return;
     // Mark the local participant on the way out. The roster is the only
@@ -820,7 +820,7 @@ export class MeetAdapter implements PlatformAdapter {
     // the local-device exclusion.
     recordAttribution({
       type: "roster-delta",
-      t: Date.now(),
+      t: at,
       entries: fresh.map((e) => ({
         participantId: e.participantId,
         displayName: e.displayName,
