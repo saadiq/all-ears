@@ -29,15 +29,10 @@ import { looksLikeCaptureDevice } from "./capture-seams";
 // tracks) and never touch transceiver.direction or SDP (the crash class). The
 // hook is a passive listener on the `track` event plus an ontrack-setter wrap.
 
-export type TrackSink = (
-  track: MediaStreamTrack,
-  stream: MediaStream,
-  transceiver: RTCRtpTransceiver,
-) => void;
+export type TrackSink = (track: MediaStreamTrack, stream: MediaStream) => void;
 
 export interface TrackRecord {
   stream: MediaStream;
-  transceiver: RTCRtpTransceiver;
 }
 
 /** The raw pre-decode RTP frame shape delivered by createEncodedStreams()'s readable. */
@@ -100,14 +95,14 @@ function dispatchTrack(e: RTCTrackEvent): void {
   if (e.track.kind !== "audio") return;
   registerTrackProvenance(e.track.id, "remote", "ontrack");
   const stream = e.streams[0] ?? new MediaStream([e.track]);
-  const record: TrackRecord = { stream, transceiver: e.transceiver };
+  const record: TrackRecord = { stream };
   const registry = liveTracks();
   registry.set(e.track, record);
   // Keep the registry honest so a later epoch's replay never resurrects a dead
   // track. Deleting here is safe: the sink also handles its own onended.
   e.track.addEventListener("ended", () => registry.delete(e.track));
   if (location.host === "meet.google.com") noteMeetAudioTrackLive();
-  hw().__earsOnTrack?.(e.track, stream, e.transceiver);
+  hw().__earsOnTrack?.(e.track, stream);
 }
 
 function onPeerConnection(pc: RTCPeerConnection): void {

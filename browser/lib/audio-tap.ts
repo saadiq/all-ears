@@ -57,7 +57,7 @@ const RING_CAPACITY = 50;
  */
 interface PipelineOrigin {
   seam: SeamId;
-  rtc?: { stream: MediaStream; transceiver: RTCRtpTransceiver };
+  rtc?: { stream: MediaStream };
   /** Source track id when the captured track is a clone (non-receiver seams). */
   sourceTrackId?: string;
 }
@@ -214,7 +214,7 @@ export function initCapture(config: CaptureConfig): void {
 
   // Catch-up: adopt tracks that were already live when this epoch loaded.
   for (const [track, rec] of liveTracks()) {
-    sink(track, rec.stream, rec.transceiver);
+    sink(track, rec.stream);
   }
 
   // Arm the reconciler for this epoch (prevTeardown cleared any prior timer).
@@ -331,11 +331,7 @@ const deferredMutedTracks = new Map<MediaStreamTrack, () => void>();
 
 /** Start once `track` unmutes, so a never-filled transceiver never becomes an
  * attendee. Idempotent per track; self-cleaning on unmute, end, or teardown. */
-function deferUntilUnmuted(
-  track: MediaStreamTrack,
-  stream: MediaStream,
-  transceiver: RTCRtpTransceiver,
-): void {
+function deferUntilUnmuted(track: MediaStreamTrack, stream: MediaStream): void {
   if (deferredMutedTracks.has(track)) return;
   const epoch = cfg.epoch;
   const cleanup = (): void => {
@@ -352,7 +348,7 @@ function deferUntilUnmuted(
     if (!isCurrentEpoch(epoch)) return;
     const seam = activeSeam();
     if (admitReceiverTrack(seam, { muted: false, alreadyCapturing: pipelines.has(track) }) !== "start") return;
-    startPipeline(track, { seam, rtc: { stream, transceiver } });
+    startPipeline(track, { seam, rtc: { stream } });
   }
   function onEnded(): void {
     cleanup();
@@ -375,7 +371,7 @@ function deferUntilUnmuted(
   console.debug(`[ears][capture] deferring muted receiver track ${track.id} until it unmutes`);
 }
 
-const sink: TrackSink = (track, stream, transceiver) => {
+const sink: TrackSink = (track, stream) => {
   if (!isCurrentEpoch(cfg.epoch)) return; // a newer epoch owns capture
   const seam = activeSeam();
   noteTrackAppeared(track, seam);
@@ -383,9 +379,9 @@ const sink: TrackSink = (track, stream, transceiver) => {
     case "skip":
       return;
     case "defer-until-unmute":
-      return deferUntilUnmuted(track, stream, transceiver);
+      return deferUntilUnmuted(track, stream);
     case "start":
-      return startPipeline(track, { seam, rtc: { stream, transceiver } });
+      return startPipeline(track, { seam, rtc: { stream } });
   }
 };
 
@@ -539,7 +535,7 @@ function escalateSeam(from: SeamId, to: SeamId): void {
   // gets its full grace — tracks can appear later when a participant joins,
   // and the arbiter re-arms on the next unmute either way.
   if (seamUsesReceiverTracks(to)) {
-    for (const [track, rec] of liveTracks()) sink(track, rec.stream, rec.transceiver);
+    for (const [track, rec] of liveTracks()) sink(track, rec.stream);
   } else {
     adoptSeamTracks();
   }
@@ -560,7 +556,7 @@ function startPipeline(track: MediaStreamTrack, origin: PipelineOrigin): void {
   // upsert — once speaking correlation resolves them.
   const platformId =
     origin.rtc && seamUsesReceiverTracks(origin.seam)
-      ? (cfg.adapter?.identify(track, origin.rtc.stream, origin.rtc.transceiver) ?? null)
+      ? (cfg.adapter?.identify(track, origin.rtc.stream) ?? null)
       : null;
 
   // The active seam selects the frame source. Every track-shaped seam shares
@@ -660,7 +656,7 @@ function reconcile(): void {
   const next = arbiter?.tick(Date.now());
   if (next) escalateSeam(before, next as SeamId);
   for (const [track, rec] of liveTracks()) {
-    if (!pipelines.has(track)) sink(track, rec.stream, rec.transceiver);
+    if (!pipelines.has(track)) sink(track, rec.stream);
   }
   adoptSeamTracks();
   cfg.adapter?.pollIdentities?.();

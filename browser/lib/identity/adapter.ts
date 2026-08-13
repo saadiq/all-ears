@@ -17,11 +17,7 @@ export interface PlatformAdapter {
   /** Best-effort platform id for a remote track at admission. null → the
    * source simply stays anonymous until (unless) a later identity confirms;
    * audio is captured under the track handle either way. */
-  identify(
-    track: MediaStreamTrack,
-    stream: MediaStream,
-    transceiver: RTCRtpTransceiver,
-  ): PlatformParticipantId | null;
+  identify(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null;
   /** Optional: human label for a participant id, for logs/UI. */
   displayName?(id: PlatformParticipantId): string | undefined;
   /**

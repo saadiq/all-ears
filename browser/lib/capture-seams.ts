@@ -60,7 +60,7 @@ export const SEAM_ESCALATION_GRACE_MS = 4_000;
  * Seams to try for `platform`, most-preferred first.
  *
  * `receiver-track` leads everywhere because it is the only seam whose tracks
- * carry identity directly (the transceiver and stream reach the adapter's
+ * carry identity directly (the track and its stream reach the adapter's
  * `identify()`). Falling past it costs attribution quality, so it is never
  * skipped speculatively — only after it demonstrably fails to produce a frame.
  */
@@ -85,7 +85,7 @@ export function seamOrderFor(platform: Platform): SeamId[] {
  * This one predicate answers both questions that matter, because they have the
  * same answer. Such a seam (a) takes its tracks from the hook's live registry
  * rather than discovering its own, and (b) carries identity, since the
- * transceiver and stream reach the adapter's `identify()`.
+ * track and its stream reach the adapter's `identify()`.
  *
  * `meet-encoded-tee` counts: the tee fires on the receiver and its pipeline is
  * keyed on the receiver track — only the *frames* come from the decoder. That

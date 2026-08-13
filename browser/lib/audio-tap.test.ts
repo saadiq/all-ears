@@ -531,7 +531,6 @@ describe("track-scoped source handles (R3)", () => {
   function registerLive(track: FakeMediaTrack): void {
     liveTracks().set(track as unknown as MediaStreamTrack, {
       stream: { id: `stream-${track.id}` } as unknown as MediaStream,
-      transceiver: {} as RTCRtpTransceiver,
     });
   }
 
