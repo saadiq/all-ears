@@ -623,14 +623,15 @@ export class MeetAdapter implements PlatformAdapter {
   }
 
   /**
-   * Disconnect the observer and drop caches. Idempotent. Nothing calls
-   * adapter.dispose() yet — epoch teardown in audio-tap.ts only stops
-   * pipelines (pre-existing gap, outside Phase 4's scope) — but this is ready
-   * for when it does. Deliberately does NOT call setCollectionsListener(null):
-   * a newer epoch's MeetAdapter may already have re-registered itself by the
-   * time an older one disposes, and clearing unconditionally would clobber
-   * that registration — the disposed-guard in onCollectionsEvent/
-   * onTrackSpeaking is what actually stops a disposed adapter from acting.
+   * Disconnect the observer and drop caches. Idempotent. Called by epoch
+   * teardown (audio-tap.ts initCapture's supersede chain): adapters are
+   * minted per epoch by hook.content.ts, so disposal ends this instance — and
+   * its engine — for good. Deliberately does NOT call
+   * setCollectionsListener(null): a newer epoch's MeetAdapter may already
+   * have re-registered itself by the time an older one disposes, and clearing
+   * unconditionally would clobber that registration — the disposed-guard in
+   * onCollectionsEvent/onTrackSpeaking is what actually stops a disposed
+   * adapter from acting.
    */
   dispose(): void {
     this.disposed = true;

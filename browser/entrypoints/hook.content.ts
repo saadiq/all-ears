@@ -78,7 +78,13 @@ export default defineContentScript({
     });
 
     const host = location.host;
-    const adapter = selectAdapter(host);
+    // Adapters are per-epoch: each startEpoch mints a fresh one, and the
+    // epoch's teardown (audio-tap.ts initCapture's supersede chain) disposes
+    // it, so identity state is epoch-scoped rather than page-lifetime
+    // (attribution refactor R2; bug B10). This page-load instance only
+    // establishes the platform and the missing-adapter warning — the first
+    // epoch replaces it.
+    let adapter = selectAdapter(host);
     const platform = platformForHost(host, adapter);
     if (!adapter) console.warn(`[ears][hook] no identity adapter for ${host} — using speaker-<n>`);
 
@@ -152,6 +158,9 @@ export default defineContentScript({
       if (msg.kind !== "capture-state" || msg.enabled === captureOn) return;
       captureOn = msg.enabled;
       if (captureOn) {
+        // Fresh adapter for the fresh epoch — the previous epoch's teardown
+        // disposed its adapter, and a disposed adapter is inert by contract.
+        adapter = selectAdapter(host);
         startEpoch(platform, adapter);
         stopMeetingWatch = startMeetingWatch(platform, (id) => {
           lastMeetingId = id;
@@ -162,7 +171,9 @@ export default defineContentScript({
         if (platform === "meet" && adapter?.onDeviceSpeaking) {
           stopSpeakingWatch = startMeetSpeakingWatch((deviceId, at) => {
             try {
-              adapter.onDeviceSpeaking?.(deviceId, at);
+              // Reads the current binding, not a capture: a dev re-inject
+              // swaps the adapter without restarting this watch.
+              adapter?.onDeviceSpeaking?.(deviceId, at);
             } catch {
               // identity is best-effort; a bad onset must never reach the page
             }
@@ -187,7 +198,11 @@ export default defineContentScript({
         __earsDevCapture?: (stream: MediaStream, id: string) => void;
       };
       dev.__earsDevReinit = () => {
-        if (captureOn) startEpoch(platform, adapter);
+        if (!captureOn) return;
+        // Same per-epoch adapter rule as the real toggle path: the superseded
+        // epoch's teardown disposes the adapter it was given.
+        adapter = selectAdapter(host);
+        startEpoch(platform, adapter);
       };
       dev.__earsDevCapture = (stream, id) => __devCaptureStream(stream, id);
     }

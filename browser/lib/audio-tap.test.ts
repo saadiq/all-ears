@@ -3,6 +3,7 @@ import {
   DECODER_HEALTHY_FRAMES,
   DECODER_MAX_RESTARTS,
   DECODER_RESTART_COOLDOWN_MS,
+  initCapture,
   LinearResampler,
   MeetDecodeSource,
   RingBuffer,
@@ -12,6 +13,8 @@ import {
   unwrapRedPayload,
   type MeetDecodeDeps,
 } from "./audio-tap";
+import { claimEpoch } from "./epoch";
+import type { PlatformAdapter } from "./identity/adapter";
 import type { EncodedAudioListener } from "./rtc-hook";
 
 describe("LinearResampler", () => {
@@ -451,5 +454,58 @@ describe("MeetDecodeSource decoder recovery", () => {
     s.start();
     expect(fatals).toEqual(["AudioDecoder/EncodedAudioChunk unavailable — cannot decode Meet audio"]);
     expect(FakeDecoder.instances).toHaveLength(0);
+  });
+});
+
+describe("initCapture epoch teardown", () => {
+  beforeEach(() => {
+    // initCapture touches only postMessage on window (status messages); the
+    // epoch counter and track registry live as window globals and start clean
+    // on a fresh stub.
+    (globalThis as { window?: unknown }).window = { postMessage: () => {} };
+  });
+
+  afterEach(() => {
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("disposes each epoch's adapter when the epoch is superseded or stopped (B10)", () => {
+    const disposed: string[] = [];
+    const makeAdapter = (name: string): PlatformAdapter =>
+      ({
+        platform: "meet",
+        identify: () => null,
+        dispose: () => disposed.push(name),
+      }) as unknown as PlatformAdapter;
+
+    initCapture({ epoch: claimEpoch(), platform: "meet", adapter: makeAdapter("first") });
+    expect(disposed).toEqual([]); // the live epoch's adapter stays alive
+
+    // A new epoch (re-inject / toggle cycle) supersedes: the old epoch's
+    // teardown chain must dispose the old adapter, never the new one.
+    initCapture({ epoch: claimEpoch(), platform: "meet", adapter: makeAdapter("second") });
+    expect(disposed).toEqual(["first"]);
+
+    // Toggling capture off tears down the final epoch via __earsTeardown.
+    (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.();
+    expect(disposed).toEqual(["first", "second"]);
+  });
+
+  it("survives an adapter without dispose, and a dispose that throws", () => {
+    const noDispose = { platform: "zoom", identify: () => null } as unknown as PlatformAdapter;
+    initCapture({ epoch: claimEpoch(), platform: "zoom", adapter: noDispose });
+
+    const throwing = {
+      platform: "meet",
+      identify: () => null,
+      dispose: () => {
+        throw new Error("identity teardown must never break capture teardown");
+      },
+    } as unknown as PlatformAdapter;
+    initCapture({ epoch: claimEpoch(), platform: "meet", adapter: throwing });
+
+    expect(() =>
+      (window as unknown as { __earsTeardown?: () => void }).__earsTeardown?.(),
+    ).not.toThrow();
   });
 });

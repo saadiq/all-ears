@@ -168,7 +168,22 @@ export function initCapture(config: CaptureConfig): void {
 
   const g = window as unknown as TeardownWindow;
   const prevTeardown = g.__earsTeardown;
-  g.__earsTeardown = teardownAll;
+  const epochAdapter = config.adapter;
+  g.__earsTeardown = (): void => {
+    teardownAll();
+    // The epoch owns its adapter: hook.content.ts mints a fresh one per epoch,
+    // and tearing the epoch down disposes it, so identity state (the Meet
+    // engine's bindings, roster, correlators) never outlives the capture it
+    // served (refactor plan R2; bug B10). Captured in this closure, not read
+    // from `cfg` — by the time a superseding initCapture runs this teardown,
+    // `cfg` already names the NEW epoch's adapter. After teardownAll so the
+    // final attribution flush precedes disposal.
+    try {
+      epochAdapter?.dispose?.();
+    } catch {
+      // best-effort — identity teardown must never affect capture teardown
+    }
+  };
   prevTeardown?.(); // stop the superseded epoch before we start emitting
 
   arbiter = new SeamArbiter(seamOrderFor(config.platform));
