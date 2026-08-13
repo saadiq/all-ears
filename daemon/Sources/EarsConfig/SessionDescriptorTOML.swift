@@ -51,6 +51,11 @@ public enum SessionDescriptorTOML {
             "joined": .string(attendee.joined.map(formatInstant) ?? ""),
             "left": .string(attendee.left.map(formatInstant) ?? ""),
             "source": .string(attendee.source?.rawValue ?? ""),
+            // "" = unknown (the suite's absent sentinel): a roster row
+            // recorded before provenance existed, or an id whose join the
+            // client never saw. Readers treat unknown exactly as pre-origin
+            // rows — see `RosterReconciler.namedRemoteAttendees`.
+            "origin": .string(attendee.origin?.rawValue ?? ""),
             "self": .bool(attendee.isLocal),
           ])
         }),
@@ -148,6 +153,18 @@ public enum SessionDescriptorTOML {
     for element in try fields.array("attendee") {
       guard case .table(let attendeeTable) = element else { throw .invalidField("attendee") }
       let attendeeFields = TOMLFieldReader(table: attendeeTable)
+      // Absent (or "") = unknown, for every file written before the field
+      // existed; a present-but-unrecognised value is rejected like any other
+      // enum field rather than being quietly read as unknown.
+      let origin: AttendeeOrigin?
+      if let originRaw = attendeeFields.optionalString("origin") {
+        guard let parsed = AttendeeOrigin(rawValue: originRaw) else {
+          throw .invalidField("attendee.origin")
+        }
+        origin = parsed
+      } else {
+        origin = nil
+      }
       attendees.append(
         SessionAttendee(
           id: try attendeeFields.string("id"),
@@ -155,6 +172,7 @@ public enum SessionDescriptorTOML {
           joined: attendeeFields.optionalString("joined").flatMap(parseInstant),
           left: attendeeFields.optionalString("left").flatMap(parseInstant),
           source: attendeeFields.optionalString("source").map { SourceID($0) },
+          origin: origin,
           isLocal: attendeeFields.optionalBool("self")))
     }
 

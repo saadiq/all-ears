@@ -25,7 +25,13 @@ struct SessionDescriptorTOMLTests {
       attendees: [
         SessionAttendee(
           id: "spaces/x/devices/y", displayName: "Jane Doe", joined: started.advanced(by: 12),
-          source: SourceID("browser:meet:jane-a1b2"))
+          source: SourceID("browser:meet:jane-a1b2"), origin: .platform),
+        SessionAttendee(
+          id: "speaker-1", joined: started.advanced(by: 40),
+          source: SourceID("browser:meet:speaker-1"), origin: .synthetic),
+        SessionAttendee(
+          id: "speaker-2", joined: started.advanced(by: 90),
+          source: SourceID("browser:meet:speaker-2")),
       ],
       speakers: [
         SessionSpeaker(
@@ -44,6 +50,55 @@ struct SessionDescriptorTOMLTests {
 
     #expect(decoded.reconcilerVersion == RosterReconciler.version)
     #expect(decoded == Self.referenceSession(reconcilerVersion: RosterReconciler.version))
+  }
+
+  @Test("attendee origin round-trips: platform, synthetic, and unknown-as-absent")
+  func attendeeOriginRoundTrips() throws {
+    let encoded = SessionDescriptorTOML.encode(Self.referenceSession())
+    let decoded = try SessionDescriptorTOML.decode(encoded)
+
+    #expect(decoded.attendees.map(\.origin) == [.platform, .synthetic, nil])
+    #expect(decoded.attendees == Self.referenceSession().attendees)
+  }
+
+  @Test("an attendee table without origin decodes to unknown (old files)")
+  func absentAttendeeOriginMeansUnknown() throws {
+    // Exactly what encode produced before the field existed.
+    guard case .table(var table) = SessionDescriptorTOML.encode(Self.referenceSession()),
+      case .array(let attendees) = table["attendee"]
+    else {
+      Issue.record("encode did not produce an attendee array")
+      return
+    }
+    let stripped = attendees.map { element -> ConfigValue in
+      guard case .table(var attendeeTable) = element else { return element }
+      attendeeTable.removeValue(forKey: "origin")
+      return .table(attendeeTable)
+    }
+    table["attendee"] = .array(stripped)
+
+    let decoded = try SessionDescriptorTOML.decode(.table(table))
+    #expect(decoded.attendees.allSatisfy { $0.origin == nil })
+    // The rest of each row is untouched by the field's absence.
+    #expect(decoded.attendees.map(\.id) == ["spaces/x/devices/y", "speaker-1", "speaker-2"])
+  }
+
+  @Test("an unrecognised attendee origin is rejected, not guessed")
+  func invalidAttendeeOriginIsRejected() throws {
+    guard case .table(var table) = SessionDescriptorTOML.encode(Self.referenceSession()),
+      case .array(var attendees) = table["attendee"],
+      case .table(var first) = attendees[0]
+    else {
+      Issue.record("encode did not produce an attendee array")
+      return
+    }
+    first["origin"] = .string("telepathy")
+    attendees[0] = .table(first)
+    table["attendee"] = .array(attendees)
+
+    #expect(throws: DescriptorTOMLError.self) {
+      try SessionDescriptorTOML.decode(.table(table))
+    }
   }
 
   @Test("a session.toml without reconciler_version decodes to version 0")

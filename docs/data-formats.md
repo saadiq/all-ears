@@ -153,6 +153,12 @@ display_name = "Jane Doe"
 joined = "2026-07-19T10:00:12Z"
 left = ""
 source = "browser:meet:jane-a1b2"       # optional link to a per-participant source
+origin = "platform"                     # where `id` was minted: "platform" (the
+                                        #   platform's own id) | "synthetic" (a
+                                        #   capture stand-in like speaker-<n> that
+                                        #   names a track, not a person); "" or
+                                        #   absent = unknown (files from before
+                                        #   the field existed)
 self = false                            # true on the local participant — you
 
 [[speaker]]                             # the *reconciled* source → name map,
