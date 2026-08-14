@@ -45,9 +45,11 @@ let package = Package(
       exclude: ["README.md"]
     ),
 
+    // EarsDataStore is here for `DataStoreLayout`'s path vocabulary alone —
+    // the menu locates a session's raw transcript, it never reads the store.
     .target(
       name: "EarsMenuKit",
-      dependencies: ["EarsCore"]
+      dependencies: ["EarsCore", "EarsDataStore"]
     ),
 
     // Shared bootstrap glue for the five executable stubs: config

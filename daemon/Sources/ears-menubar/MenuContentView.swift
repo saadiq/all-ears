@@ -42,8 +42,12 @@ struct MenuContentView: View {
             .disabled(item.summaries.isEmpty)
           Button("Open Transcript") { open(item.clean ?? item.transcript) }
             .disabled(item.clean == nil && item.transcript == nil)
-          Button("Show in Finder") { reveal(item.transcript ?? item.summaries.first ?? item.clean) }
-            .disabled(item.transcript == nil && item.summaries.isEmpty && item.clean == nil)
+          // Reveals the published tier first — the cleaned transcript and
+          // the summaries are the files a user files and syncs. The raw
+          // transcript is an intermediate in the hidden data store, so it
+          // is the last resort, not the first.
+          Button("Show in Finder") { reveal(item.clean ?? item.summaries.first ?? item.transcript) }
+            .disabled(item.clean == nil && item.summaries.isEmpty && item.transcript == nil)
         }
       }
     }

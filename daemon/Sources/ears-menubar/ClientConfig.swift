@@ -16,14 +16,19 @@ struct ConfigResolutionError: Error, CustomStringConvertible, Sendable {
 /// Resolves the same config layers every tool honors: defaults → TOML →
 /// EARS_* env. Mirrors ears' ControlClientRuntime (internal there).
 ///
-/// Loaded against `earsd`'s own schema and defaults rather than Phase 0's:
-/// starting a session means naming the sources the daemon captures, so the
-/// menu needs the `[[earsd.source]]` slice — including its built-in default
-/// (one enabled `mic`), which a zero-config install never spells out.
+/// Loaded against ``FullConfigSchema`` rather than one tool's slice, because
+/// the menu spans two tools' settings: starting a session needs `earsd`'s
+/// `[[earsd.source]]` — including its built-in default (one enabled `mic`),
+/// which a zero-config install never spells out — and finding what the
+/// on-end chain wrote needs the LLM stages' `[cleanup] output` and
+/// `[[summarize.preset]]`. No tool validates against the full schema, but
+/// nothing here writes config; it only needs to read every slice the menu
+/// surfaces.
 struct ClientConfig: Sendable {
   var socketPath: String
   var dataRoot: String
-  var outputRoot: String
+  /// Where the on-end chain publishes — see ``PublishingSettings``.
+  var publishing: PublishingSettings
   /// The sources a manually started session declares — see
   /// ``ManualSessionSources``.
   var sources: [SourceID]
@@ -36,8 +41,7 @@ struct ClientConfig: Sendable {
       environment: ProcessInfo.processInfo.environment,
       homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
     switch loadConfig(
-      inputs, defaults: EarsdConfigSchema.effectiveDefaults,
-      schema: EarsdConfigSchema.effectiveSchema)
+      inputs, defaults: FullConfigSchema.defaults, schema: FullConfigSchema.schema)
     {
     case .failure(let error):
       return .failure(ConfigResolutionError(description: "config load failed: \(error)"))
@@ -52,7 +56,7 @@ struct ClientConfig: Sendable {
       return .success(
         ClientConfig(
           socketPath: socketPath, dataRoot: dataRoot,
-          outputRoot: string(loaded.value, "output_root"),
+          publishing: PublishingSettings.resolve(from: loaded.value),
           sources: ManualSessionSources.resolve(from: loaded.value),
           onEndStages: ManualSessionStages.resolve(from: loaded.value)))
     }

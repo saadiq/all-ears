@@ -21,7 +21,6 @@ import os
   private(set) var notifications: NotificationAvailability = .authorized
   let configError: String?
   let dataRoot: String
-  let outputRoot: String
 
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
@@ -45,24 +44,23 @@ import os
   ) {
     configError = nil
     dataRoot = config.dataRoot
-    outputRoot = config.outputRoot
     sources = config.sources
     onEndStages = config.onEndStages
     self.reloadConfig = reloadConfig
     connection = DaemonConnection(socketPath: config.socketPath)
     recentsProvider = RecentSessionsProvider(
-      dataRoot: config.dataRoot, outputRoot: config.outputRoot)
+      dataRoot: config.dataRoot, publishing: config.publishing)
   }
 
   init(configError message: String) {
     configError = message
     dataRoot = ""
-    outputRoot = ""
     sources = []
     onEndStages = []
     reloadConfig = { nil }
     connection = nil
-    recentsProvider = RecentSessionsProvider(dataRoot: "", outputRoot: "")
+    recentsProvider = RecentSessionsProvider(
+      dataRoot: "", publishing: PublishingSettings.resolve(from: .table([:])))
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }
 
