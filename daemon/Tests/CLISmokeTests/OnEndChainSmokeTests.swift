@@ -1,5 +1,6 @@
 import EarsCore
 import EarsIPC
+import EarsMenuKit
 import Foundation
 import Testing
 
@@ -291,6 +292,31 @@ struct OnEndChainSmokeTests {
     #expect(
       Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
       "the data store must hold intermediates only, never a published clean transcript")
+
+    // The menu bar app resolves these same paths from config and the session
+    // record alone — it never sees a stage's envelope. That agreement is a
+    // real seam between two modules and it has broken silently once already,
+    // when the published layout changed and the menu went on looking in the
+    // old one; asserting the exact paths here is what makes the next such
+    // change fail the build instead of the Recent Sessions menu.
+    let publishing = PublishingSettings(
+      outputRoot: outputRoot, cleanupOutput: LLMStagesConfigSchema.defaultCleanupOutput,
+      weekNumbering: .us, presets: [PublishingSettings.Preset(name: "brief")])
+    let located = SessionArtifactLocator.published(for: ended, settings: publishing)
+    #expect(
+      FileManager.default.fileExists(atPath: located.clean.path),
+      "the menu locates the published transcript at \(located.clean.path), which does not exist")
+    #expect(
+      SessionArtifactLocator.rawTranscript(dataRoot: dataRoot, sessionID: session.id).path
+        == URL(fileURLWithPath: dataRoot)
+        .appendingPathComponent("sessions/\(session.id)/transcript.md").path)
+    let summaries = SessionArtifactLocator.siblingSummaries(
+      filenames: (try? FileManager.default.contentsOfDirectory(
+        atPath: located.summaryDirectory.path)) ?? [],
+      stem: located.summaryStem)
+    #expect(
+      summaries == ["\(located.summaryStem).summary.md"],
+      "the menu sweeps summaries out of \(located.summaryDirectory.path); found \(summaries)")
   }
 
   @Test(

@@ -342,9 +342,14 @@ let package = Package(
       // of the session-end hook, and `ears` deliberately has no flag for that
       // trigger, so the test speaks `session.start` over the live socket
       // itself.
+      // `EarsMenuKit` lets that same test assert the menu bar app resolves the
+      // chain's published paths to exactly the files it wrote. The menu never
+      // sees a stage envelope — it derives paths from config and the session
+      // record — so that agreement is a cross-module seam with no compiler
+      // check behind it, and it has already broken silently once.
       dependencies: [
-        "EarsCore", "EarsDataStore", "EarsIPC", "earsd", "ears", "transcribe", "cleanup",
-        "summarize",
+        "EarsCore", "EarsDataStore", "EarsIPC", "EarsMenuKit", "earsd", "ears", "transcribe",
+        "cleanup", "summarize",
       ]
     ),
     .testTarget(
