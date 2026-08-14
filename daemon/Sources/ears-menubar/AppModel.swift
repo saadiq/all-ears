@@ -178,10 +178,15 @@ import os
       report("No capture sources are configured — see [[earsd.source]] in your config.")
       return
     }
-    let title = DefaultSessionTitle.forManualStart(at: Self.now())
+    // No title: the daemon stamps an unnamed manual session with its own
+    // start (`Session.defaultTitle`), and it detects "unnamed" by recomputing
+    // that string and comparing. Sending one of our own would read as a
+    // deliberate name, so a later rename — or any derivation that defers to a
+    // title the user chose — would be looking at a placeholder we invented.
+    //
     // Declared, never inferred: the daemon runs no chain for a manual session
     // that doesn't ask, so "Stop → summary" is this app's promise to make.
-    let params = SessionStartParams(title: title, sources: sources, onEndStages: onEndStages)
+    let params = SessionStartParams(sources: sources, onEndStages: onEndStages)
     send(.sessionStart(params), connection)
   }
 
