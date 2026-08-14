@@ -7,3 +7,8 @@ docs/**/journal.db-shm
 docs/**/journal.db-wal
 .claude/worktrees/
 .superpowers/
+
+# Local secrets
+.env
+.env.*
+!.env.example

@@ -123,10 +123,10 @@ struct TranscribeRunSummarySmokeTests {
     // The premature `status=ok` this fix removes must never appear.
     #expect(!summaries.contains { ($0["status"] as? String) == "ok" })
 
-    // A batch run writes into the configured output root, so `run.start`
-    // reports it (contrast with the `--file` run below, which omits it).
+    // No transcribe run writes into `output_root` any more — raw transcripts
+    // are intermediates in the data store — so `run.start` never advertises it.
     let start = try #require(objects.first { ($0["event"] as? String) == "run.start" })
-    #expect(start["output_root"] != nil)
+    #expect(start["output_root"] == nil)
   }
 
   @Test(

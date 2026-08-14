@@ -94,7 +94,7 @@ struct IngestWebSocketServerRealSocketTests {
 
     let format = AudioFormatSpec(sampleRate: 16000, channels: 1, encoding: "pcm_s16le")
     let openRequest = IngestRequest.open(
-      source: "browser:meet:real-socket-test", format: format, session: nil)
+      source: "browser:meet:real-socket-test", format: format, session: nil, id: nil)
     let requestText = String(data: try JSONEncoder().encode(openRequest), encoding: .utf8)!
     try await client.send(TestWebSocketClient.text(requestText))
 

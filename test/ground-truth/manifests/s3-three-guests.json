@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "scenario": "s3-three-guests",
+  "shape": "1 local participant + 3 guests, all joined before speech starts",
+  "corpus_fingerprint": "4f44ff93ada4d11ad5257049325ddbfab1ddd89009e02ce3a3e0a86f897dbf52",
+  "grid": {
+    "sample_rate": 48000,
+    "slot_seconds": 12.0,
+    "tone_seconds": 0.5,
+    "tone_gap_seconds": 0.3,
+    "tone_amplitude": 0.25,
+    "passage_peak_dbfs": -3.0,
+    "preroll_seconds": 30.0,
+    "rounds": 3,
+    "slots": 13,
+    "grid_end_seconds": 156.0,
+    "guard_seconds": 3.677
+  },
+  "tts": {
+    "model": "eleven_multilingual_v2",
+    "output_format": "mp3_44100_128",
+    "seed": 20260806,
+    "voice_settings": {
+      "stability": 0.5,
+      "use_speaker_boost": true,
+      "similarity_boost": 0.75,
+      "style": 0.0
+    }
+  },
+  "overlap": {
+    "pair": [
+      "bravo",
+      "charlie"
+    ],
+    "slots": [
+      12
+    ]
+  },
+  "participants": [
+    {
+      "label": "host",
+      "display_name": "GT-Host",
+      "role": "local",
+      "wav": "build/s3-three-guests/host.wav",
+      "wav_sha256": "78ef9aa97e68f8271bcb87904e308cb7e32148db16a0582e61bd3deb4ac664d6",
+      "wav_duration_seconds": 309.0,
+      "scored_end_seconds": 189.0,
+      "head_tone_hz": 383,
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "mic",
+      "turns": [
+        {
+          "slot": 0,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 0.0,
+          "grid_end_seconds": 12.0,
+          "audio_start_seconds": 30.0,
+          "audio_end_seconds": 42.0,
+          "text": "The clay under the back border stays wet all winter, so I forked in leaf mould and coarse grit last autumn.",
+          "raw_sha256": "eda381be27e14007c5d25134bb51b52edffef08694113e1965ded8bb6a292e1f"
+        },
+        {
+          "slot": 4,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 48.0,
+          "grid_end_seconds": 60.0,
+          "audio_start_seconds": 78.0,
+          "audio_end_seconds": 90.0,
+          "text": "Slugs shredded the young hostas again, but the copper ring around the raised bed seems to be holding them off.",
+          "raw_sha256": "18ca0e4f904dc52d4c82328cbd245622eeed76aa81854fd16245c65021137572"
+        },
+        {
+          "slot": 8,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 96.0,
+          "grid_end_seconds": 108.0,
+          "audio_start_seconds": 126.0,
+          "audio_end_seconds": 138.0,
+          "text": "I moved the compost heap nearer the shed and turned it twice, and the middle is already warm enough to steam.",
+          "raw_sha256": "ca029f6fdf2e3ac97ea189cd624e21b0558ccf37422822fca444d704b86c02c4"
+        }
+      ]
+    },
+    {
+      "label": "alpha",
+      "display_name": "GT-Alpha",
+      "role": "guest",
+      "wav": "build/s3-three-guests/alpha.wav",
+      "wav_sha256": "e114636b45371d855ee86027246c01ca99241a7c3d8172b2bd82a518c48768cf",
+      "wav_duration_seconds": 309.0,
+      "scored_end_seconds": 189.0,
+      "head_tone_hz": 521,
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "browser:meet:<opaque-track-handle>",
+      "turns": [
+        {
+          "slot": 1,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 12.0,
+          "grid_end_seconds": 24.0,
+          "audio_start_seconds": 42.0,
+          "audio_end_seconds": 54.0,
+          "text": "We reefed early because the forecast promised gusts through the afternoon, and the swell was already stacking up outside the harbour.",
+          "raw_sha256": "28d0bec9f9b74d812feaab19e864b4810d7c2dc9a741b4f210e6b07d9315b520"
+        },
+        {
+          "slot": 5,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 60.0,
+          "grid_end_seconds": 72.0,
+          "audio_start_seconds": 90.0,
+          "audio_end_seconds": 102.0,
+          "text": "The tide turned against us near the headland, so we ferry glided across and let the current do the work.",
+          "raw_sha256": "a478add77d7fdb0c2d2ab009617df59192fb9b4b42061552de505413328fb6b3"
+        },
+        {
+          "slot": 9,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 108.0,
+          "grid_end_seconds": 120.0,
+          "audio_start_seconds": 138.0,
+          "audio_end_seconds": 150.0,
+          "text": "Halyards slap all night in the marina, which is why I lash them away from the mast before turning in.",
+          "raw_sha256": "0c516decb72f3f1ba41fcb40cc95c04da2fdc25aeef9782130a73732fab8c76d"
+        }
+      ]
+    },
+    {
+      "label": "bravo",
+      "display_name": "GT-Bravo",
+      "role": "guest",
+      "wav": "build/s3-three-guests/bravo.wav",
+      "wav_sha256": "3d14904a97043e5e92e7219eaaa6e9a2d16660151feb7e6f6359da8af6423bfd",
+      "wav_duration_seconds": 309.0,
+      "scored_end_seconds": 189.0,
+      "head_tone_hz": 673,
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "browser:meet:<opaque-track-handle>",
+      "turns": [
+        {
+          "slot": 2,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 24.0,
+          "grid_end_seconds": 36.0,
+          "audio_start_seconds": 54.0,
+          "audio_end_seconds": 66.0,
+          "text": "My starter doubles overnight now, which means the kitchen has finally warmed up enough for a decent rise.",
+          "raw_sha256": "fd9ab8bdc4864fc6c7a1fd8c81507cc07bcbc3a1e85bc514ce8d1093ade468ee"
+        },
+        {
+          "slot": 6,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 72.0,
+          "grid_end_seconds": 84.0,
+          "audio_start_seconds": 102.0,
+          "audio_end_seconds": 114.0,
+          "text": "Scoring the loaf deeper gave a much better ear, though the crumb is still tighter than I would like.",
+          "raw_sha256": "0732df5ca387ac5671e187284cf0e30ffda336e44c904e5b114dc5c0fdee2ef4"
+        },
+        {
+          "slot": 10,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 120.0,
+          "grid_end_seconds": 132.0,
+          "audio_start_seconds": 150.0,
+          "audio_end_seconds": 162.0,
+          "text": "I switched to a wetter dough and stretched it in the bowl instead of kneading it on the counter.",
+          "raw_sha256": "0b4fea42cec944386479b55b85e6c1204bdece76a7a3dfd23a60497bbaedbfcc"
+        },
+        {
+          "slot": 12,
+          "passage": "ov",
+          "overlap": true,
+          "grid_start_seconds": 144.0,
+          "grid_end_seconds": 156.0,
+          "audio_start_seconds": 174.0,
+          "audio_end_seconds": 186.0,
+          "text": "Rye behaves nothing like wheat, it goes sticky under the hands and needs a far shorter proof.",
+          "raw_sha256": "cee9b18bea24e4837efd239333a9faea5b4da04c4d926baeaacc9811727f9269"
+        }
+      ]
+    },
+    {
+      "label": "charlie",
+      "display_name": "GT-Charlie",
+      "role": "guest",
+      "wav": "build/s3-three-guests/charlie.wav",
+      "wav_sha256": "87c9fcdae6cc4fa1a0809a00391799f4ff0269a32fc93e011784ed3cad95d406",
+      "wav_duration_seconds": 309.0,
+      "scored_end_seconds": 189.0,
+      "head_tone_hz": 947,
+      "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+      "tts_model": "eleven_multilingual_v2",
+      "audio_start_grid_seconds": -30.0,
+      "intended_join_grid_seconds": -30.0,
+      "intended_leave_grid_seconds": null,
+      "expected_source_id": "browser:meet:<opaque-track-handle>",
+      "turns": [
+        {
+          "slot": 3,
+          "passage": "p1",
+          "overlap": false,
+          "grid_start_seconds": 36.0,
+          "grid_end_seconds": 48.0,
+          "audio_start_seconds": 66.0,
+          "audio_end_seconds": 78.0,
+          "text": "Collimation drifts every time I carry the scope down the stairs, so I check the secondary mirror before anything else.",
+          "raw_sha256": "3e5aaa5b3d112e41eace88ed64aafcc76f77f43d8c3e7ee0dd02c8327337e302"
+        },
+        {
+          "slot": 7,
+          "passage": "p2",
+          "overlap": false,
+          "grid_start_seconds": 84.0,
+          "grid_end_seconds": 96.0,
+          "audio_start_seconds": 114.0,
+          "audio_end_seconds": 126.0,
+          "text": "Seeing was poor last night, the planet boiled at high magnification and only settled during a few brief gaps.",
+          "raw_sha256": "841ed22b7a1bbc7a5ffca4e1773009df02db14f84bbb026541ac3566a8a6706d"
+        },
+        {
+          "slot": 11,
+          "passage": "p3",
+          "overlap": false,
+          "grid_start_seconds": 132.0,
+          "grid_end_seconds": 144.0,
+          "audio_start_seconds": 162.0,
+          "audio_end_seconds": 174.0,
+          "text": "Light pollution washes out the fainter galaxies, but the narrowband filter still pulls the nebula out of the glow.",
+          "raw_sha256": "e93680635ef05338c5b874c92aa351c04cc13738d35b2db3acdc3d6bc9de2aa1"
+        },
+        {
+          "slot": 12,
+          "passage": "ov",
+          "overlap": true,
+          "grid_start_seconds": 144.0,
+          "grid_end_seconds": 156.0,
+          "audio_start_seconds": 174.0,
+          "audio_end_seconds": 186.0,
+          "text": "Dew on the corrector plate ends the session faster than cloud, so the heater strip goes on early.",
+          "raw_sha256": "4d9fe86d73cf2675600a6a93f4cef7cc1f5ef32a79ca517d2cf192f870dd0b90"
+        }
+      ]
+    }
+  ],
+  "run": null
+}

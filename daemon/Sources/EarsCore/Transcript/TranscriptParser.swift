@@ -151,6 +151,17 @@ public enum TranscriptParser {
     // `session:`, a plain range transcript only `range_run:`.
     let rangeRun = fields["range_run"].map(unquote)
     let session = fields["session"].map(unquote)
+    // The path-template context (see `TranscriptFrontmatter.title`/`started`):
+    // both optional, both absent on a document with no session context.
+    let title = fields["title"].map(unquote)
+    // Round-tripped rather than dropped: a `cleanup` rerun over a transcript
+    // `summarize` has already linked must not silently unlink it.
+    let note = fields["note"].map(unquote)
+    // Both post-date the original schema, so both are optional: a transcript
+    // written before they existed parses unchanged.
+    let attendees = try fields["attendees"].map(splitFlowArray)?.map(unquote) ?? []
+    let warnings = try fields["warnings"].map(splitFlowArray)?.map(unquote) ?? []
+    let started = try fields["started"].map { try instant("started", $0) }
     let sources = try splitFlowArray(field("sources")).map { SourceID(unquote($0)) }
 
     let rangeMapping = try flowMappingFields(field("range"))
@@ -192,6 +203,11 @@ public enum TranscriptParser {
       kind: kind,
       rangeRun: rangeRun,
       session: session,
+      title: title,
+      started: started,
+      note: note,
+      attendees: attendees,
+      warnings: warnings,
       sources: sources,
       range: range,
       model: model,
@@ -269,42 +285,97 @@ public enum TranscriptParser {
     guard !body.isEmpty else { return [] }
 
     let blocks = body.components(separatedBy: "\n\n")
-    return try blocks.map { block -> TranscriptSegment in
-      let lines = block.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-      guard let headingLine = lines.first, headingLine.hasPrefix("## [") else {
+    var segments: [TranscriptSegment] = []
+    for block in blocks {
+      // A block is one turn plus any backchannels attached beneath it. The
+      // turn's own text may not contain a line beginning "> [", which is the
+      // reserved backchannel form (see ``MarkdownBodyRenderer``).
+      var lines = block.components(separatedBy: "\n")
+      guard !lines.isEmpty else {
         throw TranscriptParsingError.malformedField(field: "segment heading", value: block)
       }
-      let text = lines.count > 1 ? String(lines[1]) : ""
-
-      guard let closeBracket = headingLine.firstIndex(of: "]") else {
-        throw TranscriptParsingError.malformedField(
-          field: "segment heading", value: String(headingLine))
+      let labelLine = lines.removeFirst()
+      var backchannelLines: [String] = []
+      while let last = lines.last, last.hasPrefix("> [") {
+        backchannelLines.insert(lines.removeLast(), at: 0)
       }
-      let timeString = headingLine[
-        headingLine.index(headingLine.startIndex, offsetBy: 4)..<closeBracket]
-      var rest = headingLine[headingLine.index(after: closeBracket)...].trimmingCharacters(
-        in: .whitespaces)
 
-      var source = fallbackSource
-      var sourceProvenance = false
-      if let commentRange = rest.range(of: "<!-- source: ") {
-        let afterMarker = rest[commentRange.upperBound...]
-        if let endMarker = afterMarker.range(of: " -->") {
-          source = SourceID(String(afterMarker[afterMarker.startIndex..<endMarker.lowerBound]))
-          sourceProvenance = true
-        }
-        rest = String(rest[rest.startIndex..<commentRange.lowerBound]).trimmingCharacters(
-          in: .whitespaces)
+      segments.append(
+        try turn(
+          label: labelLine, text: lines.joined(separator: "\n"), rangeStart: rangeStart,
+          fallbackSource: fallbackSource))
+      for line in backchannelLines {
+        segments.append(
+          try backchannel(line, rangeStart: rangeStart, fallbackSource: fallbackSource))
       }
-      let speaker = rest
-
-      let startOffset = try timeOfDayOffset(timeString, rangeStart: rangeStart)
-      return TranscriptSegment(
-        source: source,
-        speaker: speaker,
-        segment: Segment(start: startOffset, end: startOffset, text: text),
-        sourceProvenance: sourceProvenance)
     }
+    return segments
+  }
+
+  /// One turn from its label line and body text. Accepts both the current
+  /// `**[HH:MM:SS] speaker**` form and the `## [HH:MM:SS] speaker` heading
+  /// written before that change, so transcripts already on disk keep parsing.
+  private static func turn(
+    label: String, text: String, rangeStart: Instant, fallbackSource: SourceID
+  ) throws -> TranscriptSegment {
+    let marker: String
+    if label.hasPrefix("**[") {
+      marker = "**["
+    } else if label.hasPrefix("## [") {
+      marker = "## ["
+    } else {
+      throw TranscriptParsingError.malformedField(field: "segment heading", value: label)
+    }
+
+    guard let closeBracket = label.firstIndex(of: "]") else {
+      throw TranscriptParsingError.malformedField(field: "segment heading", value: label)
+    }
+    let timeString = label[label.index(label.startIndex, offsetBy: marker.count)..<closeBracket]
+    var rest = label[label.index(after: closeBracket)...].trimmingCharacters(in: .whitespaces)
+
+    var source = fallbackSource
+    var sourceProvenance = false
+    if let commentRange = rest.range(of: "<!-- source: ") {
+      let afterMarker = rest[commentRange.upperBound...]
+      if let endMarker = afterMarker.range(of: " -->") {
+        source = SourceID(String(afterMarker[afterMarker.startIndex..<endMarker.lowerBound]))
+        sourceProvenance = true
+      }
+      rest = String(rest[rest.startIndex..<commentRange.lowerBound]).trimmingCharacters(
+        in: .whitespaces)
+    }
+    // The bold form closes with `**`; the heading form has no trailing marker.
+    if rest.hasSuffix("**") { rest = String(rest.dropLast(2)).trimmingCharacters(in: .whitespaces) }
+
+    let startOffset = try timeOfDayOffset(timeString, rangeStart: rangeStart)
+    return TranscriptSegment(
+      source: source,
+      speaker: rest,
+      segment: Segment(start: startOffset, end: startOffset, text: text),
+      sourceProvenance: sourceProvenance)
+  }
+
+  /// One backchannel from its `> [HH:MM:SS] speaker: text` line.
+  private static func backchannel(
+    _ line: String, rangeStart: Instant, fallbackSource: SourceID
+  ) throws -> TranscriptSegment {
+    guard let closeBracket = line.firstIndex(of: "]") else {
+      throw TranscriptParsingError.malformedField(field: "backchannel", value: line)
+    }
+    let timeString = line[line.index(line.startIndex, offsetBy: 3)..<closeBracket]
+    let rest = line[line.index(after: closeBracket)...].trimmingCharacters(in: .whitespaces)
+    guard let colon = rest.firstIndex(of: ":") else {
+      throw TranscriptParsingError.malformedField(field: "backchannel", value: line)
+    }
+    let speaker = String(rest[rest.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+    let text = String(rest[rest.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+
+    let startOffset = try timeOfDayOffset(timeString, rangeStart: rangeStart)
+    return TranscriptSegment(
+      source: fallbackSource,
+      speaker: speaker,
+      segment: Segment(start: startOffset, end: startOffset, text: text),
+      isBackchannel: true)
   }
 
   /// Resolves a Markdown heading's `HH:MM:SS` time-of-day back to a seconds
@@ -335,16 +406,47 @@ public enum TranscriptParser {
     return (key, value)
   }
 
-  /// Splits a `[a, "b:c"]`-shaped flow array's inner elements. Safe here
-  /// (not a general YAML list parser) because none of this schema's array
-  /// elements (source ids, vocab names) ever contain a literal comma.
+  /// Splits a `[a, "b:c"]`-shaped flow array's inner elements, treating a
+  /// comma inside a double-quoted element as content rather than a separator.
+  ///
+  /// Still not a general YAML list parser — it knows only this schema's
+  /// grammar of plain and double-quoted scalars. Quote-awareness became load
+  /// bearing with `warnings:`, whose elements are prose written for a human
+  /// and routinely contain commas; the earlier naive split was correct only
+  /// while every array held ids and single words.
   private static func splitFlowArray(_ raw: String) throws -> [String] {
     guard raw.hasPrefix("["), raw.hasSuffix("]") else {
       throw TranscriptParsingError.malformedField(field: "flow array", value: raw)
     }
     let inner = raw.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
     guard !inner.isEmpty else { return [] }
-    return inner.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+
+    var elements: [String] = []
+    var current = ""
+    var inQuotes = false
+    var escaped = false
+    for character in inner {
+      if escaped {
+        current.append(character)
+        escaped = false
+        continue
+      }
+      switch character {
+      case "\\" where inQuotes:
+        current.append(character)
+        escaped = true
+      case "\"":
+        inQuotes.toggle()
+        current.append(character)
+      case "," where !inQuotes:
+        elements.append(current.trimmingCharacters(in: .whitespaces))
+        current = ""
+      default:
+        current.append(character)
+      }
+    }
+    elements.append(current.trimmingCharacters(in: .whitespaces))
+    return elements
   }
 
   /// Splits a `{ k: v, k2: v2 }`-shaped flow mapping into its key/value pairs.

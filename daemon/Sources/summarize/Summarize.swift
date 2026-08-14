@@ -56,6 +56,12 @@ struct Summarize: AsyncParsableCommand {
   )
   var verbose = false
 
+  @Option(
+    name: .customLong("session"),
+    help: "Summarize a session by id: its cleaned transcript, or its raw one if none was published."
+  )
+  var session: String?
+
   @Option(name: .customLong("preset"), help: "Preset(s) to run; repeatable.")
   var preset: [String] = []
 
@@ -64,6 +70,11 @@ struct Summarize: AsyncParsableCommand {
 
   @Option(name: .customLong("out"), help: "Override the output path (single-preset runs only).")
   var out: String?
+
+  @Option(
+    name: .customLong("notes"),
+    help: "Path to a companion notes file, read as plain Markdown (single-preset runs only).")
+  var notes: String?
 
   @Option(name: .customLong("model"), help: "Override the LLM model for this run.")
   var model: String?
@@ -106,9 +117,11 @@ struct Summarize: AsyncParsableCommand {
 
     // Snapshot the flags into locals the `@Sendable` work closure captures.
     let transcripts = self.transcripts
+    let session = self.session
     let preset = self.preset
     let allPresets = self.allPresets
     let out = self.out
+    let notes = self.notes
     let model = self.model
     let json = self.json
 
@@ -121,22 +134,31 @@ struct Summarize: AsyncParsableCommand {
     let exitCode = await EarsCLI.run(
       tool: "summarize", version: "0.1.0", arguments: arguments
     ) { _ in
-      guard !transcripts.isEmpty else {
-        // A usage error, but checked here (not by ArgumentParser) because
-        // `--print-config`/`--config-path` must work with no positional at
-        // all — so it adopts the same EX_USAGE code ArgumentParser exits with.
-        let message = "error: at least one transcript path is required"
-        FileHandle.standardError.write(Data((message + "\n").utf8))
-        diagnostics.recordError(message)
-        return RunOutcome(class: .usage, error: message)
+      // Usage errors, but checked here (not by ArgumentParser) because
+      // `--print-config`/`--config-path` must work with no positional at
+      // all — so they adopt the same EX_USAGE code ArgumentParser exits with.
+      // Paths and `--session` name the inputs two ways, so requiring exactly
+      // one is a precise error rather than a silent precedence rule.
+      let usageError: String? =
+        switch (transcripts.isEmpty, session) {
+        case (true, nil): "error: at least one transcript path, or --session, is required"
+        case (false, .some): "error: transcript paths cannot be combined with --session"
+        default: nil
+        }
+      if let usageError {
+        FileHandle.standardError.write(Data((usageError + "\n").utf8))
+        diagnostics.recordError(usageError)
+        return RunOutcome(class: .usage, error: usageError)
       }
       return await SummarizeRuntime.run(
         arguments: arguments,
         inputs: SummarizeCLIInputs(
           transcriptPaths: transcripts,
+          sessionID: session,
           presetNames: preset,
           allPresets: allPresets,
           out: out,
+          notes: notes,
           model: model
         ),
         diagnostics: diagnostics,

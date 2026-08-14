@@ -8,8 +8,15 @@ import Foundation
 /// "cleanup" section: read a `.transcript.md` (+ JSON sidecar if present),
 /// run each segment through the LLM guardrail chain (skip high-confidence
 /// utterances, build a minimal-change prompt, validate the candidate against
-/// the original), and write `<...>.clean.md` atomically with `kind: clean`
-/// and `derived_from` naming the source transcript.
+/// the original), and write the result atomically with `kind: clean` and
+/// `derived_from` naming the source transcript.
+///
+/// **This is the publishing stage.** `transcribe` leaves an intermediate in
+/// the data store; the cleaned transcript is the first artifact a user is
+/// meant to open, so it lands wherever `[cleanup] output`'s
+/// ``PathTemplate`` resolves to — by default a date-foldered
+/// `<date> - <title>.md` under `output_root`. The JSON sidecar follows the
+/// Markdown wherever it goes.
 ///
 /// Split the same way `transcribe`'s `TranscribePipeline`/`TranscribeRuntime`
 /// are: this type takes already-resolved inputs (an injected `LLMBackend`,
@@ -80,13 +87,23 @@ enum CleanupPipeline {
     /// Path to the source `.transcript.md` (or `.clean.md` — any rendered
     /// transcript document; cleanup doesn't care which stage produced it).
     var transcriptPath: String
+    /// `--out`: overrides the template verbatim.
     var out: String?
+    /// `[cleanup] output` — where the cleaned transcript is *published*.
+    var outputTemplate: PathTemplate
+    /// The configured `output_root`, already `~`-expanded: what the
+    /// template's `{output_root}` expands to.
+    var outputRoot: String
+    var weekNumbering: WeekNumbering
     /// The cleanup system prompt to use, or `nil` for
     /// `CleanupPromptBuilder`'s built-in default.
     var systemPrompt: String?
     /// Already-read, merged vocabulary terms (global + `--vocab`), or empty
     /// when vocab is disabled (`--no-vocab` / `[cleanup].use_vocab = false`).
     var vocabulary: [String]
+    /// `[cleanup] chunk_seconds` — how much *spoken* time one LLM call
+    /// covers. See ``CleanupChunker`` for why turns are batched at all.
+    var chunkSeconds: Double = 300
   }
 
   static func run(inputs: Inputs, dependencies: Dependencies) async -> Int32 {
@@ -120,50 +137,88 @@ enum CleanupPipeline {
     var skipped = 0
     var accepted = 0
     var fellBack = 0
-    var cleanedSegments: [TranscriptSegment] = []
-    cleanedSegments.reserveCapacity(document.segments.count)
+    // Start from the originals and overwrite only what the LLM returns *and*
+    // the validator accepts: order, count, timings, and speakers are then
+    // structurally impossible for a batched response to disturb — the worst a
+    // bad response can do is leave a turn as it came in.
+    var cleanedSegments = document.segments
 
-    for turn in document.segments {
+    // Skipped turns are passed through without reaching the model, and are
+    // left out of the chunks entirely rather than sent as unlabelled context:
+    // the model only ever sees turns it is being asked to correct.
+    var attempts: [(offset: Int, turn: TranscriptSegment)] = []
+    for (offset, turn) in document.segments.enumerated() {
       if dependencies.skipPolicy.shouldSkip(turn.segment) {
         skipped += 1
-        cleanedSegments.append(turn)
-        continue
+      } else {
+        attempts.append((offset, turn))
+      }
+    }
+
+    let chunker = CleanupChunker(maxSpokenSeconds: inputs.chunkSeconds)
+    let chunkRanges = chunker.chunks(of: attempts.map(\.turn))
+
+    for range in chunkRanges {
+      let batch = Array(attempts[range])
+      // Markers are 1-based *within the chunk*, so they stay short and a
+      // parse can't be confused by a number from a neighbouring chunk.
+      let payload = batch.enumerated().map { position, entry in
+        CleanupChunkTurn(
+          index: position + 1, speaker: entry.turn.speaker, text: entry.turn.segment.text)
       }
 
-      let prompt = promptBuilder.build(transcript: turn.segment.text)
       let candidateText: String
       do {
-        candidateText = try await dependencies.llmBackend.complete(prompt).text
+        candidateText = try await dependencies.llmBackend.complete(
+          promptBuilder.build(chunk: payload)
+        ).text
       } catch {
-        // A timeout is an upstream outage, not a per-segment degrade: every
-        // remaining segment would stall against the same wall (each waiting
+        // A timeout is an upstream outage, not a per-chunk degrade: every
+        // remaining chunk would stall against the same wall (each waiting
         // the full timeout), so the run aborts with the retryable class a
         // future retry policy keys on (issue #61). Every *other* LLM failure
-        // keeps the per-segment fallback — one crashed completion shouldn't
-        // discard the rest of a mostly-successful pass.
+        // keeps the fallback — one crashed completion shouldn't discard the
+        // rest of a mostly-successful pass.
         if ExitClass.classifying(llmError: error) == .retryableUpstream {
           dependencies.writeStderr(
             "error: LLM call timed out; aborting cleanup as retryable: \(error)")
           return ExitClass.retryableUpstream.code
         }
         dependencies.log(
-          "LLM call failed for a segment, keeping the original text: \(error)")
-        fellBack += 1
-        cleanedSegments.append(turn)
+          "LLM call failed for a chunk of \(batch.count) turn(s), keeping the original text: \(error)"
+        )
+        fellBack += batch.count
         continue
       }
 
-      switch dependencies.validator.validate(original: turn.segment.text, candidate: candidateText)
-      {
-      case .accept(let cleaned):
-        accepted += 1
-        var cleanedTurn = turn
-        cleanedTurn.segment.text = cleaned
-        cleanedSegments.append(cleanedTurn)
-      case .fallback(let reason):
-        fellBack += 1
-        dependencies.log("rejected a cleanup candidate (\(reason)), keeping the original text")
-        cleanedSegments.append(turn)
+      let parsed = CleanupPromptBuilder.parseChunkResponse(candidateText)
+      if parsed.count != payload.count {
+        // Worth saying once per chunk: the per-turn outcomes below still hold
+        // the line, but a systematic marker mismatch is a prompt/model problem
+        // the counts alone would not name.
+        dependencies.log(
+          "chunk response returned \(parsed.count) marked turn(s) for \(payload.count) sent; "
+            + "unmatched turns keep their original text")
+      }
+
+      for (position, entry) in batch.enumerated() {
+        guard let candidate = parsed[position + 1] else {
+          fellBack += 1
+          continue
+        }
+        // Every turn is still validated against its *own* original, so a
+        // merged or shifted response degrades to a fallback rather than
+        // putting one turn's words on another.
+        switch dependencies.validator.validate(
+          original: entry.turn.segment.text, candidate: candidate)
+        {
+        case .accept(let cleaned):
+          accepted += 1
+          cleanedSegments[entry.offset].segment.text = cleaned
+        case .fallback(let reason):
+          fellBack += 1
+          dependencies.log("rejected a cleanup candidate (\(reason)), keeping the original text")
+        }
       }
     }
 
@@ -193,8 +248,13 @@ enum CleanupPipeline {
 
     let cleanedDocument = TranscriptDocument(frontmatter: frontmatter, segments: cleanedSegments)
 
+    // Publishing: `--out` verbatim, otherwise `[cleanup] output`'s template
+    // expanded against the *input document's* own context. Reading the
+    // context from the document rather than from flags is what makes a
+    // manual rerun land exactly where the daemon-spawned run did.
     let outputURL =
-      inputs.out.map { URL(fileURLWithPath: $0) } ?? cleanOutputURL(for: transcriptURL)
+      inputs.out.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+      ?? URL(fileURLWithPath: inputs.outputTemplate.expand(templateContext(inputs, document)))
     let outputSidecarURL = sidecarURL(for: outputURL)
 
     do {
@@ -213,13 +273,17 @@ enum CleanupPipeline {
 
     dependencies.log(
       "run.summary: segments=\(document.segments.count) accepted=\(accepted) "
-        + "fallback=\(fellBack) skipped=\(skipped) output=\(outputURL.path)"
+        + "fallback=\(fellBack) skipped=\(skipped) chunks=\(chunkRanges.count) "
+        + "output=\(outputURL.path)"
     )
     dependencies.onSummary?([
       LogField("segments", .int(document.segments.count)),
       LogField("accepted", .int(accepted)),
       LogField("fallback", .int(fellBack)),
       LogField("skipped", .int(skipped)),
+      // How many LLM calls the run actually made — the number that tells a
+      // slow run's story, and the one that changes when chunk_seconds does.
+      LogField("chunks", .int(chunkRanges.count)),
       LogField("output", .string(outputURL.path)),
     ])
     // The stdout path contract (see Dependencies.writeStdout): emitted only
@@ -238,17 +302,38 @@ enum CleanupPipeline {
     markdownURL.deletingPathExtension().appendingPathExtension("json")
   }
 
-  /// `<...>.transcript.md` → `<...>.clean.md`; any other name gets `.clean.md`
-  /// appended after stripping its extension, so `cleanup` still produces a
-  /// sensible sibling file when pointed at a non-standard filename.
-  private static func cleanOutputURL(for transcriptURL: URL) -> URL {
-    let name = transcriptURL.lastPathComponent
-    let directory = transcriptURL.deletingLastPathComponent()
-    if name.hasSuffix(".transcript.md") {
-      let stem = String(name.dropLast(".transcript.md".count))
-      return directory.appendingPathComponent("\(stem).clean.md")
+  /// The path-template context for this run, assembled from the input
+  /// document's frontmatter:
+  ///
+  /// - `{title}` is the session title the transcript recorded; absent (a
+  ///   plain range run, a `--file` run) it degrades to `{slug}`.
+  /// - `{slug}` is the document's path-safe source list — which, for a
+  ///   `--file` transcript, *is* the input file's basename, since
+  ///   `transcribe --file` names its source after the file.
+  /// - dates come from `started:` when the transcript carries it, so a
+  ///   narrowed rerun still files under the day the session began.
+  private static func templateContext(_ inputs: Inputs, _ document: TranscriptDocument)
+    -> PathTemplate.Context
+  {
+    let frontmatter = document.frontmatter
+    return PathTemplate.Context(
+      outputRoot: inputs.outputRoot,
+      start: frontmatter.started ?? frontmatter.range.start,
+      weekNumbering: inputs.weekNumbering,
+      session: frontmatter.session,
+      slug: frontmatter.sources.map(\.pathSafe).joined(separator: "_"),
+      title: frontmatter.title,
+      fallbackName: documentStem(URL(fileURLWithPath: inputs.transcriptPath)))
+  }
+
+  /// The input's basename with any known transcript suffix stripped, the
+  /// last-resort stand-in when a document carries neither a title nor
+  /// sources: `standup.transcript.md` → `standup`.
+  private static func documentStem(_ url: URL) -> String {
+    let name = url.lastPathComponent
+    for suffix in [".transcript.md", ".clean.md", ".summary.md"] where name.hasSuffix(suffix) {
+      return String(name.dropLast(suffix.count))
     }
-    let stem = transcriptURL.deletingPathExtension().lastPathComponent
-    return directory.appendingPathComponent("\(stem).clean.md")
+    return url.deletingPathExtension().lastPathComponent
   }
 }

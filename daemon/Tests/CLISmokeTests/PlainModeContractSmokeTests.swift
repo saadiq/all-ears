@@ -189,11 +189,20 @@ struct PlainModeContractSmokeTests {
 
   /// Writes a real `.transcript.md` (+ JSON sidecar) through the production
   /// renderers, mirroring `CleanupPipelineTests.writeFixtureTranscript`.
-  private static func writeFixtureTranscript(in temp: TempDirectory) throws -> String {
+  private static func writeFixtureTranscript(
+    in temp: TempDirectory,
+    at markdownURL: URL? = nil,
+    session: String? = nil,
+    title: String? = nil,
+    started: Instant? = nil
+  ) throws -> String {
     let frontmatter = TranscriptFrontmatter(
       schema: 1,
       kind: .transcript,
-      rangeRun: "2026-07-17T10-30-00Z_standup",
+      rangeRun: session == nil ? "2026-07-17T10-30-00Z_standup" : nil,
+      session: session,
+      title: title,
+      started: started,
       sources: ["mic"],
       range: TimeRange(start: Instant(secondsSinceEpoch: 0), end: Instant(secondsSinceEpoch: 60)),
       model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
@@ -211,25 +220,36 @@ struct PlainModeContractSmokeTests {
           source: "mic", speaker: "You",
           segment: Segment(start: 0, end: 3, text: fixtureUtterance))
       ])
-    let markdownURL = temp.url.appendingPathComponent("standup.transcript.md")
+    let markdownURL = markdownURL ?? temp.url.appendingPathComponent("standup.transcript.md")
+    try FileManager.default.createDirectory(
+      at: markdownURL.deletingLastPathComponent(), withIntermediateDirectories: true)
     try TranscriptRenderer.renderMarkdown(document).write(
       to: markdownURL, atomically: true, encoding: .utf8)
-    let jsonURL = temp.url.appendingPathComponent("standup.transcript.json")
+    let jsonURL = markdownURL.deletingPathExtension().appendingPathExtension("json")
     try TranscriptRenderer.renderJSON(document).write(
       to: jsonURL, atomically: true, encoding: .utf8)
     return markdownURL.path
   }
 
-  /// Writes the scripted `[llm] command`: a shell script that drains its
-  /// stdin (the prompt) and prints the fixture utterance — a deterministic,
-  /// network-free stand-in for a real LLM. Absolute tool paths inside, since
-  /// the spawned stage runs with an empty environment (no `PATH`).
+  /// Writes the scripted `[llm] command`: a deterministic, network-free
+  /// stand-in for a real LLM. Absolute tool paths inside, since the spawned
+  /// stage runs with an empty environment (no `PATH`).
+  ///
+  /// Two shapes, because two stages send two prompts. A `cleanup` prompt ends
+  /// in `CleanupPromptBuilder`'s marked turn lines, and the script echoes
+  /// those back unchanged — a perfect no-op cleaner, which is what exercises
+  /// the marker round-trip end to end through the real binary. Anything else
+  /// (a `summarize` prompt) gets the fixture utterance as before.
   private static func writeFakeLLMScript(in temp: TempDirectory) throws -> String {
     let scriptURL = temp.url.appendingPathComponent("fake-llm.sh")
     let script = """
       #!/bin/sh
-      /bin/cat >/dev/null
-      printf '%s' '\(fixtureUtterance)'
+      marked=$(/bin/cat | /usr/bin/grep '^\\[\\[')
+      if [ -n "$marked" ]; then
+        printf '%s' "$marked"
+      else
+        printf '%s' '\(fixtureUtterance)'
+      fi
       """
     try script.write(to: scriptURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes(
@@ -285,7 +305,10 @@ struct PlainModeContractSmokeTests {
         + mode.extraArguments,
       environment: ["ALLEARS_TRANSCRIBE_BACKEND": "null"])
 
-    Self.expectSingleResultLine(result, suffix: ".transcript.md", mode: mode)
+    // A session run's raw transcript is an intermediate: `sessions/<id>/
+    // transcript.md` in the data store, never under `output_root`.
+    Self.expectSingleResultLine(
+      result, suffix: "/sessions/\(sessionID)/transcript.md", mode: mode)
     if mode == .verbose {
       // Diagnostics exist and land on stderr — never on stdout.
       #expect(!result.stderr.isEmpty)
@@ -318,7 +341,7 @@ struct PlainModeContractSmokeTests {
   // MARK: - cleanup
 
   @Test(
-    "cleanup success: stdout is exactly one line, the absolute .clean.md path",
+    "cleanup success: stdout is exactly one line, the absolute published path",
     arguments: Mode.allCases)
   func cleanupSuccess(mode: Mode) throws {
     let temp = TempDirectory()
@@ -327,6 +350,7 @@ struct PlainModeContractSmokeTests {
     let configPath = temp.write(
       """
       data_root = "\(temp.url.path)/data"
+      output_root = "\(temp.url.path)/out"
 
       [llm]
       backend = "command"
@@ -339,10 +363,53 @@ struct PlainModeContractSmokeTests {
       "cleanup",
       ["--config", configPath, "--log-file", logPath, transcriptPath] + mode.extraArguments)
 
-    Self.expectSingleResultLine(result, suffix: ".clean.md", mode: mode)
+    // The cleaned transcript is the *published* artifact: `[cleanup] output`'s
+    // default template puts it under `output_root`, date-foldered, named from
+    // the transcript's own context (no title here, so `{title}` degrades to
+    // the `mic` slug; the fixture's range starts at the epoch).
+    Self.expectSingleResultLine(
+      result, suffix: "/out/1970/01/01/1970-01-01 - mic.md", mode: mode)
     if mode == .verbose {
       #expect(!result.stderr.isEmpty)
     }
+  }
+
+  @Test("cleanup --session resolves the session's stored transcript and publishes it by title")
+  func cleanupBySessionID() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let sessionID = "0d5e7f6a-1111-2222-3333-444455556666"
+    // The intermediate `transcribe` would have left behind, at exactly the
+    // path `--session` resolves.
+    _ = try Self.writeFixtureTranscript(
+      in: temp,
+      at: dataRoot.appendingPathComponent("sessions/\(sessionID)/transcript.md"),
+      session: sessionID,
+      title: "Kevin Weekly",
+      // 2026-08-05T09:04:07Z.
+      started: Instant(secondsSinceEpoch: 1_785_920_647))
+    let scriptPath = try Self.writeFakeLLMScript(in: temp)
+    let configPath = temp.write(
+      """
+      data_root = "\(dataRoot.path)"
+      output_root = "\(temp.url.path)/out"
+
+      [llm]
+      backend = "command"
+      command = "\(scriptPath)"
+      """,
+      named: "config.toml")
+
+    let result = try Self.run(
+      "cleanup",
+      [
+        "--config", configPath,
+        "--log-file", temp.url.appendingPathComponent("cleanup.jsonl").path,
+        "--session", sessionID,
+      ])
+
+    Self.expectSingleResultLine(
+      result, suffix: "/out/2026/08/05/2026-08-05 - Kevin Weekly.md", mode: .plain)
   }
 
   @Test(
@@ -411,6 +478,66 @@ struct PlainModeContractSmokeTests {
     if mode == .verbose {
       #expect(!result.stderr.isEmpty)
     }
+  }
+
+  @Test("summarize --session reads the notes beside the published transcript and writes back")
+  func summarizeBySessionWithNotes() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let outputRoot = temp.url.appendingPathComponent("out")
+    let sessionID = "0d5e7f6a-aaaa-bbbb-cccc-ddddeeeeffff"
+    // The session's stored intermediate — what `--session` resolves from.
+    _ = try Self.writeFixtureTranscript(
+      in: temp,
+      at: dataRoot.appendingPathComponent("sessions/\(sessionID)/transcript.md"),
+      session: sessionID,
+      title: "Kevin Weekly",
+      // 2026-08-05T09:04:07Z — US week 32.
+      started: Instant(secondsSinceEpoch: 1_785_920_647))
+    // The jotted daily note the preset reads and writes back over.
+    let notesURL = outputRoot.appendingPathComponent(
+      "daily-notes/2026/08/32/2026-08-05/2026-08-05 - Kevin Weekly.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted beforehand\n".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let scriptPath = try Self.writeFakeLLMScript(in: temp)
+    let configPath = temp.write(
+      """
+      data_root = "\(dataRoot.path)"
+      output_root = "\(outputRoot.path)"
+
+      [llm]
+      backend = "command"
+      command = "\(scriptPath)"
+
+      [[summarize.preset]]
+      name = "meeting-notes"
+      notes = "{output_root}/daily-notes/{year}/{month}/{week}/{date}/{date} - {title}.md"
+      out = "{notes}"
+      frontmatter = false
+      """,
+      named: "config.toml")
+
+    let result = try Self.run(
+      "summarize",
+      [
+        "--config", configPath,
+        "--log-file", temp.url.appendingPathComponent("summarize.jsonl").path,
+        "--session", sessionID, "--preset", "meeting-notes",
+      ])
+
+    #expect(
+      result.exitCode == 0,
+      "expected exit 0, got \(result.exitCode); stderr:\n\(result.stderr)")
+    // The note now holds the LLM's output verbatim — no ears frontmatter to
+    // collide with the vault's own, and no stray sidecar beside it.
+    let written = try String(contentsOf: notesURL, encoding: .utf8)
+    #expect(written == Self.fixtureUtterance + "\n")
+    #expect(!written.contains("kind: summary"))
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: notesURL.deletingPathExtension().appendingPathExtension("json").path))
   }
 
   @Test(

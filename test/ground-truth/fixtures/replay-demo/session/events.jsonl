@@ -1,0 +1,4 @@
+{"t":"started","at":"2026-08-13T10:00:00Z"}
+{"t":"attendee_joined","at":"2026-08-13T10:00:00Z","id":"spaces/demo/devices/1","display_name":"GT-Host"}
+{"t":"attendee_joined","at":"2026-08-13T10:00:10Z","id":"spaces/demo/devices/2","display_name":"GT-Alpha"}
+{"t":"ended","at":"2026-08-13T10:02:00Z","reason":"client"}

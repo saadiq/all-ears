@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { parseZoomParticipantId } from "./zoom";
+import { parseZoomMeetingId, parseZoomParticipantId } from "./zoom";
+
+describe("parseZoomMeetingId", () => {
+  it("reads the id from the web-client path", () => {
+    // The shape observed live on app.zoom.us (journal #151).
+    expect(parseZoomMeetingId("/wc/87973734905/join")).toBe("87973734905");
+  });
+
+  it("reads the /wc/join/<id> entry-flow shape", () => {
+    expect(parseZoomMeetingId("/wc/join/87973734905")).toBe("87973734905");
+  });
+
+  it("accepts other web-client sub-paths", () => {
+    expect(parseZoomMeetingId("/wc/87973734905/start")).toBe("87973734905");
+  });
+
+  it("ignores the /j/ landing page, which never hosts a call", () => {
+    // Declaring here would start a session for a meeting nobody joined.
+    expect(parseZoomMeetingId("/j/87973734905")).toBeNull();
+  });
+
+  it("ignores non-meeting paths", () => {
+    expect(parseZoomMeetingId("/")).toBeNull();
+    expect(parseZoomMeetingId("/profile")).toBeNull();
+    expect(parseZoomMeetingId("/wc/join")).toBeNull();
+  });
+
+  it("returns null on empty/nullish input", () => {
+    expect(parseZoomMeetingId("")).toBeNull();
+    expect(parseZoomMeetingId(null)).toBeNull();
+    expect(parseZoomMeetingId(undefined)).toBeNull();
+  });
+});
 
 describe("parseZoomParticipantId", () => {
   it("masks the low 10 bits to a stable participant node", () => {

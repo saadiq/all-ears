@@ -182,10 +182,20 @@ public struct SessionAttendeeParams: Sendable, Hashable {
   public var joined: Instant?
   public var left: Instant?
   public var source: SourceID?
+  /// Where `id` was minted — see ``AttendeeOrigin``. Omitted means the
+  /// client doesn't know (or predates the field) and leaves the stored value
+  /// untouched, so an id's provenance survives upserts that don't carry it.
+  public var origin: AttendeeOrigin?
+  /// `self`: this attendee is the local participant. Omitted leaves the
+  /// stored flag alone, so a client that never learns which row is its own
+  /// user simply never sets it (and the daemon infers instead) — see
+  /// ``SessionAttendee/isLocal``.
+  public var isLocal: Bool?
 
   public init(
     session: String, id: String, displayName: String? = nil,
-    joined: Instant? = nil, left: Instant? = nil, source: SourceID? = nil
+    joined: Instant? = nil, left: Instant? = nil, source: SourceID? = nil,
+    origin: AttendeeOrigin? = nil, isLocal: Bool? = nil
   ) {
     self.session = session
     self.id = id
@@ -193,14 +203,17 @@ public struct SessionAttendeeParams: Sendable, Hashable {
     self.joined = joined
     self.left = left
     self.source = source
+    self.origin = origin
+    self.isLocal = isLocal
   }
 }
 
 extension SessionAttendeeParams: Codable {
   private enum CodingKeys: String, CodingKey {
     case session
-    case id, joined, left, source
+    case id, joined, left, source, origin
     case displayName = "display_name"
+    case isLocal = "self"
   }
 
   public init(from decoder: any Decoder) throws {
@@ -211,6 +224,8 @@ extension SessionAttendeeParams: Codable {
     joined = try container.decodeISO8601InstantIfPresent(forKey: .joined)
     left = try container.decodeISO8601InstantIfPresent(forKey: .left)
     source = try container.decodeIfPresent(SourceID.self, forKey: .source)
+    origin = try container.decodeIfPresent(AttendeeOrigin.self, forKey: .origin)
+    isLocal = try container.decodeIfPresent(Bool.self, forKey: .isLocal)
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -221,6 +236,8 @@ extension SessionAttendeeParams: Codable {
     try container.encodeISO8601InstantIfPresent(joined, forKey: .joined)
     try container.encodeISO8601InstantIfPresent(left, forKey: .left)
     try container.encodeIfPresent(source, forKey: .source)
+    try container.encodeIfPresent(origin, forKey: .origin)
+    try container.encodeIfPresent(isLocal, forKey: .isLocal)
   }
 }
 

@@ -1,4 +1,5 @@
 import EarsCore
+import Synchronization
 import Testing
 
 @testable import EarsDaemonKit
@@ -139,6 +140,26 @@ struct PowerObserverTests {
 
     #expect(await fake.pauseCount == 1)
     #expect(await fake.resumeCount == 1)
+  }
+
+  @Test("a capture actor added after observing starts is still paused and resumed")
+  func actsOnDynamicallyAddedActors() async {
+    // The daemon's real wiring: `activeCaptureActors` reads the live actor
+    // map, so a `browser:*` source built by a later ingest.open joins the
+    // pause/resume set. Pinned against the old snapshot design, which froze
+    // the (empty-at-start) set and missed every dynamically-added source.
+    let store = Mutex<[any SuspendablePauseResume]>([])
+    let observer = PowerObserver(activeCaptureActors: { store.withLock { $0 } })
+
+    // Built only after the observer exists — an ingest.open mid-call.
+    let dynamic = FakePauseResume()
+    store.withLock { $0.append(dynamic) }
+
+    await observer.update { $0.withSystemAsleep(true) }
+    await observer.update { $0.withSystemAsleep(false) }
+
+    #expect(await dynamic.pauseCount == 1)
+    #expect(await dynamic.resumeCount == 1)
   }
 
   @Test("every registered actor is paused and resumed")

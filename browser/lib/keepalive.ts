@@ -1,4 +1,4 @@
-import type { ParticipantId, Platform } from "./protocol";
+import type { Platform } from "./protocol";
 
 // Keepalive tracking for the background context (extension.md §Messaging,
 // transport.md §Per-browser lifetime).
@@ -75,7 +75,7 @@ export interface StorageAreaLike {
 export class KeepaliveTracker {
   // portId → (participantId → platform). A participant belongs to the port
   // (tab) its PCM arrives on.
-  private readonly byPort = new Map<string, Map<ParticipantId, Platform>>();
+  private readonly byPort = new Map<string, Map<string, Platform>>();
 
   constructor(
     private readonly alarms: AlarmsLike,
@@ -102,7 +102,7 @@ export class KeepaliveTracker {
   }
 
   /** First PCM (or explicit join) seen for a participant on a port. */
-  participantActive(portId: string, participantId: ParticipantId, platform: Platform): void {
+  participantActive(portId: string, participantId: string, platform: Platform): void {
     let m = this.byPort.get(portId);
     if (!m) {
       m = new Map();
@@ -114,7 +114,7 @@ export class KeepaliveTracker {
     if (wasIdle) this.activate(platform);
   }
 
-  participantLeft(portId: string, participantId: ParticipantId): void {
+  participantLeft(portId: string, participantId: string): void {
     const m = this.byPort.get(portId);
     if (!m?.delete(participantId)) return;
     if (this.total() === 0) this.deactivate();
@@ -124,7 +124,7 @@ export class KeepaliveTracker {
    * Port gone (tab closed, page navigated). Returns the participants that were
    * still live on it so the caller can ingest.close their streams.
    */
-  portDisconnected(portId: string): ParticipantId[] {
+  portDisconnected(portId: string): string[] {
     const m = this.byPort.get(portId);
     this.byPort.delete(portId);
     const ids = m ? [...m.keys()] : [];

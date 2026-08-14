@@ -39,10 +39,22 @@ public enum UTCCalendar {
   }
 
   /// `YYYY-MM-DDTHH:MM:SSZ`.
-  static func iso8601(_ instant: Instant) -> String {
+  ///
+  /// `public` for the same reason ``timeOfDay(_:)`` is: `summarize` stamps the
+  /// conversation's start onto the transcript text it sends an LLM, and a
+  /// second epoch-seconds → civil conversion living in that module would be
+  /// the same math spelled twice.
+  public static func iso8601(_ instant: Instant) -> String {
     let c = civilTime(for: instant)
     return "\(pad(c.year, 4))-\(pad(c.month, 2))-\(pad(c.day, 2))T"
       + "\(pad(c.hour, 2)):\(pad(c.minute, 2)):\(pad(c.second, 2))Z"
+  }
+
+  /// `YYYY-MM-DD` — the day a vault files a note under, and the same string
+  /// `PathTemplate`'s `{date}` token expands to.
+  public static func isoDate(_ instant: Instant) -> String {
+    let c = civilTime(for: instant)
+    return "\(pad(c.year, 4))-\(pad(c.month, 2))-\(pad(c.day, 2))"
   }
 
   /// `HH:MM:SS`.
@@ -55,6 +67,19 @@ public enum UTCCalendar {
     let digits = String(value)
     guard digits.count < width else { return digits }
     return String(repeating: "0", count: width - digits.count) + digits
+  }
+
+  /// Howard Hinnant's `days_from_civil`: the inverse of ``civilFromDays(_:)``,
+  /// converting a proleptic Gregorian date into a day count since the Unix
+  /// epoch. ``WeekNumbering`` uses it to derive a date's ordinal day of year
+  /// and its weekday, both of which are day-count arithmetic.
+  static func daysFromCivil(year: Int, month: Int, day: Int) -> Int {
+    let y = year - (month <= 2 ? 1 : 0)
+    let era = (y >= 0 ? y : y - 399) / 400
+    let yearOfEra = y - era * 400  // [0, 399]
+    let dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1  // [0, 365]
+    let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear  // [0, 146096]
+    return era * 146_097 + dayOfEra - 719_468
   }
 
   /// Howard Hinnant's `civil_from_days`: converts a day count since the Unix

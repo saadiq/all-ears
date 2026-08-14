@@ -586,7 +586,8 @@ struct SessionRegistryTests {
     let session = try await registry.start(SessionStartParams(platform: "meet", externalID: "a"))
 
     _ = try await registry.upsertAttendee(
-      SessionAttendeeParams(session: session.id, id: "p1", displayName: "Jane Doe"))
+      SessionAttendeeParams(
+        session: session.id, id: "p1", displayName: "Jane Doe", origin: .platform))
     clock.advance(by: 60)
     let linked = try await registry.upsertAttendee(
       SessionAttendeeParams(session: session.id, id: "p1", source: "browser:meet:jane"))
@@ -595,6 +596,8 @@ struct SessionRegistryTests {
     let attendee = linked.attendees[0]
     #expect(attendee.displayName == "Jane Doe")  // earlier field kept
     #expect(attendee.source == "browser:meet:jane")
+    // An upsert that omits `origin` leaves the declared provenance alone.
+    #expect(attendee.origin == .platform)
     #expect(attendee.joined == base)  // stamped at first upsert
     #expect(linked.sources.contains("browser:meet:jane"))
 
@@ -701,6 +704,50 @@ struct SessionRegistryTests {
     #expect(redeclared.id == started.id)
   }
 
+  @Test("boot repairs an unparseable session.toml so its audio re-enters retention")
+  func bootRepairsCorruptDescriptor() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+
+    // A session directory left behind with recorded audio and a descriptor
+    // that no longer parses (torn write, disk fault, hand edit).
+    let sessionRoot = DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: "corrupt-1")
+    let audioDirectory = sessionRoot.appendingPathComponent("sources/mic/asr")
+    try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: audioDirectory.appendingPathComponent("chunk.m4a"))
+    try Data("schema = [not toml".utf8).write(
+      to: sessionRoot.appendingPathComponent("session.toml"))
+
+    let registry = makeRegistry(dataRoot: dataRoot, clock: clock)
+    await registry.loadFromDisk()
+
+    // The unreadable original is preserved for diagnosis…
+    #expect(
+      FileManager.default.fileExists(
+        atPath: sessionRoot.appendingPathComponent("session.toml.corrupt").path))
+    // …and a minimal ended record takes its place, stamped with the boot
+    // instant and a warning naming the repair.
+    let repaired = try SessionStore.read(sessionID: "corrupt-1", dataRoot: dataRoot)
+    #expect(repaired.state == .ended)
+    #expect(repaired.ended == base)
+    #expect(repaired.warnings.contains { $0.contains("session.toml.corrupt") })
+
+    // Which is exactly what puts the audio back inside retention: a sweep past
+    // the max audio age now evicts it.
+    let sweeper = EvictionSweeper(
+      dataRoot: dataRoot,
+      clock: ManualClock(base.advanced(by: 2_000)),
+      intervalSeconds: 60,
+      evictAfterTranscriptSeconds: 100,
+      maxAudioAgeSeconds: 1_000,
+      log: { _ in })
+    await sweeper.sweepOnce()
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: sessionRoot.appendingPathComponent("sources").path))
+  }
+
   // MARK: - orphan grace
 
   @Test("a browser session ends with reason ingest-idle once the grace elapses")
@@ -801,6 +848,36 @@ struct SessionRegistryTests {
     await waitUntil { try await registry.get(id: session.id).state == .ended }
     let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
     #expect(timeline.last?.reason == "ingest-idle")
+  }
+
+  @Test("a foreign tagged stream's close does not start another session's grace clock")
+  func foreignTaggedCloseDoesNotScheduleGrace() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let gate = SleepGate()
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, graceSeconds: 120,
+      sleep: { seconds in await gate.wait(seconds) })
+
+    // Session A, live, naming a slot-style (non-unique) source label.
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "abc", sources: ["browser:meet:speaker-1"],
+        trigger: .browserExtension))
+
+    // Another call's stream reuses the same slot label, tagged with its own
+    // identity — whose session.start never arrives (tab closed early). Its
+    // close belongs to that identity, not to session A.
+    let foreign = SessionIdentity(platform: "meet", externalID: "zzz")
+    await registry.ingestStreamOpened(source: "browser:meet:speaker-1", session: foreign)
+    await registry.ingestStreamClosed(source: "browser:meet:speaker-1", session: foreign)
+
+    await gate.releaseAll()
+    // Give any (wrongly) scheduled expiry a chance to run — it must not exist.
+    for _ in 0..<50 { await Task.yield() }
+
+    #expect(try await registry.get(id: session.id).state == .active)
   }
 
   @Test("a tagged stream opened before session.start is claimed at start")
@@ -957,5 +1034,203 @@ private func waitUntil(
   for _ in 0..<1_000 {
     if (try? await condition()) == true { return }
     await Task.yield()
+  }
+}
+
+/// Reconciliation at `session.end`: the derivation that used to be an
+/// implicit, irreversible side effect of whichever live correlation won a
+/// race now runs once, over the final roster, and is persisted.
+@Suite("SessionRegistry roster reconciliation")
+struct SessionRegistryReconciliationTests {
+  private let base = Instant(secondsSinceEpoch: 1_784_284_200)
+
+  private func makeRegistry(_ clock: ManualClock, dataRoot: URL) -> SessionRegistry {
+    SessionRegistry(
+      dataRoot: dataRoot, clock: clock, makeID: { "session-1" }, graceSeconds: 120,
+      sleep: { _ in }, knownSourceIDs: { [] })
+  }
+
+  private func makeDataRoot() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "SessionRegistryReconcile-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  /// A browser session in the shape the 2026-08-12 call had: you join first,
+  /// one other person joins, and a remote track ends up bound to your device.
+  private func endMisattributedCall(
+    title: String? = nil, dataRoot: URL, clock: ManualClock
+  ) async throws -> Session {
+    let registry = makeRegistry(clock, dataRoot: dataRoot)
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "wUE9lE2sg5YB", title: title,
+        trigger: .browserExtension))
+    clock.advance(by: 3)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404", displayName: "Tom Elliot",
+        joined: clock.now()))
+    clock.advance(by: 50)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/403", displayName: "Matthew Barras",
+        joined: clock.now()))
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404",
+        source: SourceID("browser:meet:devices-404")))
+    clock.advance(by: 2000)
+    return try await registry.end(id: session.id)
+  }
+
+  @Test("session.end reconciles the roster and persists the speaker map")
+  func reconcilesAtEnd() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let ended = try await endMisattributedCall(dataRoot: dataRoot, clock: ManualClock(base))
+
+    #expect(ended.speakers.map { $0.name } == ["Matthew Barras"])
+    #expect(ended.speakers.map { $0.source.rawValue } == ["browser:meet:devices-404"])
+    #expect(ended.attendees.first { $0.id == "devices/404" }?.isLocal == true)
+    #expect(!ended.warnings.isEmpty)
+    // The map records which reconciler produced it, so a later `transcribe`
+    // can tell a current map from one an older derivation left behind.
+    #expect(ended.reconcilerVersion == RosterReconciler.version)
+  }
+
+  @Test("a wrong self latch is revised at session end, with the evidence persisted")
+  func revisesWrongSelfLatch() async throws {
+    // The upsert latch is set-once by design (a client omitting `self` must
+    // not un-flag anyone), so a flag that landed on the wrong row used to be
+    // wrong forever. Reconciliation is the one place with the evidence to
+    // revise it: here the *remote* participant arrives flagged as you.
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let registry = makeRegistry(clock, dataRoot: dataRoot)
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "wUE9lE2sg5YB", trigger: .browserExtension))
+    clock.advance(by: 3)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404", displayName: "Tom Elliot",
+        joined: clock.now()))
+    clock.advance(by: 50)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/403", displayName: "Matthew Barras",
+        joined: clock.now(), source: SourceID("browser:meet:devices-403"), isLocal: true))
+    clock.advance(by: 2000)
+    let ended = try await registry.end(id: session.id)
+
+    // The latch moved: the flag lands on the actual local participant and is
+    // cleared from the row the client mis-flagged.
+    #expect(ended.attendees.first { $0.id == "devices/404" }?.isLocal == true)
+    #expect(ended.attendees.first { $0.id == "devices/403" }?.isLocal == false)
+    // The correct binding survives, so the call is attributed to the person
+    // actually speaking on the track.
+    #expect(
+      ended.speakers.contains {
+        $0.source == SourceID("browser:meet:devices-403") && $0.name == "Matthew Barras"
+      })
+    // The evidence for the revision is persisted with the session.
+    #expect(ended.warnings.contains { $0.contains("marked Matthew Barras as you") })
+  }
+
+  @Test("an unnamed session is titled from the roster rather than the meeting id")
+  func titlesFromRoster() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let ended = try await endMisattributedCall(dataRoot: dataRoot, clock: ManualClock(base))
+
+    #expect(ended.title == "Matthew Barras")
+  }
+
+  /// The window title is the first preference: a name scraped from the tab
+  /// (or typed by hand) reached the session as a title, and the roster
+  /// fallback exists only for a session that never got one.
+  @Test("a title the meeting already had is never replaced by the roster's")
+  func keepsAnEstablishedTitle() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let ended = try await endMisattributedCall(
+      title: "Matt / Tom weekly 1:1", dataRoot: dataRoot, clock: ManualClock(base))
+
+    #expect(ended.title == "Matt / Tom weekly 1:1")
+  }
+
+  @Test("session.end consumes the attribution log's binding hints for track-handle sources")
+  func consumesAttributionHints() async throws {
+    // Track-scoped sources (R3) with THREE people on the call: counting can
+    // force nothing, so only the attribution log's identity links can name
+    // the sources.
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let registry = makeRegistry(clock, dataRoot: dataRoot)
+    let identity = SessionIdentity(platform: "meet", externalID: "wUE9lE2sg5YB")
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "meet", externalID: "wUE9lE2sg5YB", trigger: .browserExtension))
+    clock.advance(by: 3)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/404", displayName: "Tom Elliot",
+        joined: clock.now(), origin: .platform, isLocal: true))
+    clock.advance(by: 50)
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/403", displayName: "Ana Flores",
+        joined: clock.now(), origin: .platform))
+    _ = try await registry.upsertAttendee(
+      SessionAttendeeParams(
+        session: session.id, id: "devices/402", displayName: "Bram Okafor",
+        joined: clock.now(), origin: .platform))
+    // The capture layer's track-handle rows and their sources.
+    for handle in ["t1", "t2"] {
+      _ = try await registry.upsertAttendee(
+        SessionAttendeeParams(
+          session: session.id, id: handle, joined: clock.now(), origin: .synthetic))
+      await registry.ingestStreamOpened(
+        source: SourceID("browser:meet:\(handle)"), session: identity)
+    }
+    // The flight recorder's identity links, as the browser shipped them.
+    try SessionAttributionLog.append(
+      lines: [
+        #"{"schema":1,"type":"provisional-binding","t":1723500000100,"trackId":"trk-1","deviceId":"devices/403","correlator":"dom","confirmations":2,"outcome":"bound"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000200,"trackId":"trk-1","captureId":"t1","participantId":"devices/403"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000300,"trackId":"trk-2","captureId":"t2","participantId":"devices/402"}"#,
+      ], dataRoot: dataRoot, sessionID: session.id)
+    clock.advance(by: 2000)
+    let ended = try await registry.end(id: session.id)
+
+    #expect(
+      ended.speakers.contains {
+        $0.source == SourceID("browser:meet:t1") && $0.name == "Ana Flores"
+          && $0.confidence == .correlated
+      })
+    #expect(
+      ended.speakers.contains {
+        $0.source == SourceID("browser:meet:t2") && $0.name == "Bram Okafor"
+      })
+  }
+
+  @Test("the reconciled session round-trips through session.toml")
+  func persistsAcrossReload() async throws {
+    let dataRoot = try makeDataRoot()
+    defer { try? FileManager.default.removeItem(at: dataRoot) }
+    let clock = ManualClock(base)
+    let ended = try await endMisattributedCall(dataRoot: dataRoot, clock: clock)
+
+    let reloaded = makeRegistry(clock, dataRoot: dataRoot)
+    await reloaded.loadFromDisk()
+    let recovered = try await reloaded.get(id: ended.id)
+    #expect(recovered.speakers == ended.speakers)
+    #expect(recovered.warnings == ended.warnings)
+    #expect(recovered.title == "Matthew Barras")
+    #expect(recovered.reconcilerVersion == RosterReconciler.version)
   }
 }

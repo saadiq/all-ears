@@ -13,24 +13,31 @@ Two separate tools, each one job, built on a shared LLM backend interface.
 ## `cleanup`
 
 ### One job
-Turn a raw transcript into a clean, readable one, correcting mis-transcriptions and formatting with an LLM, guided by the known-word list.
+Turn a raw transcript into a clean, readable one, correcting mis-transcriptions and formatting with an LLM, guided by the known-word list — and **publish** it: this is the stage that turns a hidden intermediate into the file you open.
 
 ### Behaviour
-1. Read a `.transcript.md`.
-2. Build the prompt: the built-in cleanup prompt (or `[cleanup].prompt_file`), plus the merged vocabulary (global + session) as an explicit correction list.
-3. Correct homophones/mis-hearings against the vocabulary and fix punctuation/casing, **without** altering meaning, timestamps, or speaker turns.
-4. Write `<...>.clean.md` atomically, frontmatter `kind: clean` with `derived_from` naming the source transcript.
+1. Read a `.transcript.md` — a path, or `--session <id>` to resolve the session's stored transcript from the data store.
+2. Batch turns into chunks of `[cleanup] chunk_seconds` **spoken** seconds (300 by default), one LLM call each.
+3. Build the prompt: the built-in cleanup prompt (or `[cleanup].prompt_file`), plus the merged vocabulary (global + session) as an explicit correction list, plus the chunk's turns rendered one per line behind a `[[n|Speaker]]` marker.
+4. Correct homophones/mis-hearings against the vocabulary and fix punctuation/casing, **without** altering meaning, timestamps, or speaker turns.
+5. Write the result atomically to wherever `[cleanup] output`'s path template resolves to — by default `{output_root}/{year}/{month}/{day}/{date} - {title}.md` — with frontmatter `kind: clean` and `derived_from` naming the source transcript. The JSON sidecar is an extension-swapped sibling of wherever the Markdown lands.
+
+The template expands against the **input document's own frontmatter** (`title:`, `started:`, `session:`, `sources:`), not against flags, so a manual rerun files exactly where the daemon-spawned run did. See [configuration](../configuration.md#path-templates).
 
 ### Guardrails
 Cleanup must improve readability without hallucinating or over-editing:
 
-- **Accept/fallback validation:** if a cleaned segment diverges from the source beyond bounds (length ratio, structural drift), reject it and keep the original rather than shipping a hallucination.
+- **Accept/fallback validation:** if a cleaned segment diverges from the source beyond bounds (length ratio, structural drift), reject it and keep the original rather than shipping a hallucination. Validation is **per turn even though the call is batched**, so a response that merges, reorders, or invents turns degrades to per-turn fallbacks instead of shifting one speaker's words onto another.
+- **Turn-for-turn correspondence:** a chunk's response is matched back by marker number, and a turn the model dropped keeps its original text. Cleanup starts from the originals and overwrites only what both parses and validates, so turn count, order, timings, and speakers cannot be disturbed by a bad response.
 - **Minimal-change prompting:** the smallest edit that fixes errors; filler words are kept unless removal is configured.
 - Timestamps and segment/turn structure are preserved; cleanup never invents or drops turns. Frontmatter records model + settings for reproducibility.
 
+### Why batch
+Per-turn calls made the stage both slow and context-free: a 42-minute meeting is ~2,500 VAD-bounded turns, which at a few seconds per call runs for hours while the daemon's on-end chain (and so `summarize`) waits behind it — and each turn was corrected with no sight of the conversation around it, which is exactly what resolves a homophone or a name. Batching by *spoken* time keeps a chunk's context comparable across transcripts; turn count varies with VAD aggressiveness and character count tracks speaking rate. `[cleanup] model` defaults to a cheap model for the same reason: this is bulk mechanical correction over every turn of every recording, and it should not share `summarize`'s model choice.
+
 ### CLI
 ```
-cleanup <transcript.md> [--out <clean.md>] [--prompt <file>] [--vocab <path>] [--model <name>] [--no-vocab]
+cleanup (<transcript.md> | --session <id>) [--out <path>] [--prompt <file>] [--vocab <path>] [--model <name>] [--no-vocab]
 ```
 
 ## `summarize`
@@ -39,16 +46,56 @@ cleanup <transcript.md> [--out <clean.md>] [--prompt <file>] [--vocab <path>] [-
 Produce one or more summaries of one or more transcripts from configurable prompt presets.
 
 ### Behaviour
-1. Read one or more transcripts (cleaned preferred if both exist).
-2. For each selected preset (`[[summarize.preset]]`), run its prompt over the transcript(s).
-3. Write `<...>.summary.md` (or `<...>.<preset>.summary.md` when multiple), frontmatter `kind: summary` with `preset` and `derived_from`.
+1. Read the transcripts named — explicit paths, or `--session <id>` to resolve the session's *cleaned* transcript (falling back to its raw one if none was published). No sibling redirection: the caller names its input, and the daemon chain passes cleanup's output forward.
 
-Presets are named prompt files, so summary styles (brief, decisions, action items) are user configuration, not code.
+   An input that doesn't parse as an ears document is **summarized anyway**, from its text, with a warning. The stage's job is "summarize the transcript at this path", and a vault holds plenty of Markdown transcripts this pipeline never produced — exports from other tools, hand-written notes of a call. The parse exists to recover metadata a foreign transcript simply lacks, so what its absence costs is the header (no title, start or speaker roll-call), not the summary. A `frontmatter = true` preset's summary then records `model: { name: unknown, … }` and a zero range: ignorance stated, rather than this pipeline's ASR claimed for a transcript it never touched.
+2. Read each selected preset's companion `notes` file, if it configures one — as plain Markdown, no frontmatter parsing, no sidecar. Every input is read before any write. The template's own path is used when it exists; otherwise the note is **searched for** (see "Finding the notes" below).
+3. For each selected preset (`[[summarize.preset]]`), run its prompt over the result. With notes present the LLM input is labelled — `## Jotted notes` then `## Transcript` — so a prompt can address each; with no notes the transcript is sent bare.
+
+   Each transcript is rendered as a short `title:` / `started:` / `transcript:` / `speakers:` header followed by one `[HH:MM:SS] Speaker: text` line per turn. The header is not decoration: without it a preset asked to date the conversation or link its transcript has nothing to date or link it *from*, and answers by flagging the note or inventing a path. `speakers:` marks every speaker captured on `mic` as `(me)`, which is how a prompt tells the note's author from its subject — a display name cannot, as a mislabelled remote track will happily carry the local participant's name. Nobody is marked when *every* speaker resolves to the mic, since that is equally the shape of a single-source room recording and of a Markdown parse with no sidecar to separate them.
+4. Write `<...>.summary.md` (or `<...>.<preset>.summary.md` when multiple), frontmatter `kind: summary` with `preset` and `derived_from`.
+5. Stamp `note:` into each input transcript's frontmatter, naming the summary just written — the inverse of the `transcript:` link the summary carries, so the pair is navigable from either end.
+
+   This is the one place `summarize` writes to its own input, and it happens only after that input is fully read and the summary is on disk, so the read-before-write ordering `out = "{notes}"` depends on still holds. The edit is a text splice into the YAML block (`TranscriptFrontmatterEditor`), not a parse/render round trip: a transcript's turns are never rewritten to add a link. A multi-preset run leaves the last preset's destination there. Failure to write it is a warning, never the preset's failure — the summary exists and is correct, and losing it over an unwritable source file would be the worse outcome.
+
+   A transcript with no frontmatter block at all gets one holding just this field. Adding a link is not the same act as inventing capture metadata: it is a fact about the file, known for certain at the moment it is written, and a foreign transcript is the case that most needs it — nothing else in the file records where its summary went.
+
+   Link targets are vault-relative when the destination sits inside an Obsidian vault and absolute otherwise (`VaultPath`, which detects a vault by its `.obsidian` marker rather than taking a config key — the fact is already on disk, and a stale key would produce links resolving to nothing). The absolute fallback is deliberately still a path: a bare filename would *look* like a working wikilink while resolving to nothing, or to an unrelated note sharing the name.
+
+Presets are named prompt files, so summary styles (brief, decisions, action items) are user configuration, not code. Three optional keys let a preset publish on its own terms:
+
+- **`notes`** — a path template for a companion notes file, treated as the ideal location rather than the only one (see "Finding the notes"). A configured notes file that is neither there nor findable is **a warning, not a failure**: the preset runs with an empty `## Jotted notes` section, so a call with nothing jotted still gets summarized from its transcript. (This failed the preset until it turned out the common case is the opposite one — most captured calls have no note waiting at the templated path, and failing there left every such session with a transcript and no summary.)
+- **`out`** — a path template for this preset's destination, overriding the default sibling naming. It may reference `{notes}` to write back over the notes file; overwrite is the intended semantics, and the prompt is responsible for carrying the jotted notes forward into its output. Safe because every input is read first and writes are atomic. There is no append or section-merge mode. `--out` on the command line outranks this template (as `--notes` outranks `notes`), which is how a one-off run redirects a `{notes}` preset away from the note it would otherwise overwrite.
+- **`frontmatter = false`** — emit the summary body alone: no YAML block, and no JSON sidecar either. The artifact is then plain Markdown rather than an ears document, which is what writing into a vault that owns its own frontmatter needs.
+
+### Finding the notes
+
+A path template is a good way to write a file and a poor way to find one, and `notes` is doing the second job: an exact-match lookup for a file a human created and named, keyed on a string a machine generated on the other side of the call. Anything that moves either side misses — a session whose title never resolved past the platform's meeting id, a vault whose filing convention grew a directory level, a note named "Matt Barras" for an attendee the roster calls "Matthew Barras" — and the miss is silent: the fold-in prompt runs with an empty notes section and the jottings are absent from the note that replaces them.
+
+So when the template's path isn't there, `NotesLocator` searches its directory and one level below, scoring each `.md` file on the signals a person would use to recognise their own note:
+
+- **filed under the right day** — in the filename or in a directory component. A precondition, not a score: a note from another day is not this call's notes however well it scores otherwise.
+- **names someone who was on the call** — matched against the transcript's `attendees:` (excluding the local participant, since a note is named after the other person), token by token, so "Matt" finds "Matthew".
+- **edited while the call was running** — close to decisive on its own; few files are touched during any given meeting.
+
+A candidate with no positive signal is not returned, and a tie between the top two returns nothing: an unmatched note leaves the run where it was, while a wrongly matched one overwrites a note about something else. A match found this way is reported, and the note says so.
+
+### Overwrite safety
+
+Any destination that already exists is copied to `~/.local/state/ears-note-backups/<stem>.handnotes.md` before it is written. The fold-in pattern reads hand-typed jottings and replaces them with a summary; when that goes wrong — a prompt needing another pass, a transcript whose speakers were mislabelled — the input is gone, and hand-typed notes exist nowhere else. An existing backup is never replaced, only numbered past, so the *original* jottings survive however many times a preset is re-run while a prompt is iterated on. A backup that fails stops the write: losing a summary is recoverable, losing the note is not.
+
+### Warnings reach the note
+
+A degraded run puts an Obsidian `> [!warning]` callout at the top of the note's prose (after its own frontmatter, which must stay first in the file) listing the transcript's `warnings:` plus anything `summarize` itself had to say — jottings that could not be found, or that were matched by search rather than by name. The transcript's warnings also go into the prompt header verbatim, so the model can hedge the specific claims a degraded run undermines rather than the note as a whole.
+
+This exists because every failure behind a mislabelled note was already being detected and reported — to a log nobody reads. A false positive costs one line in a note; a false negative costs the note.
 
 ### CLI
 ```
-summarize <transcript.md> [more...] [--preset brief] [--preset actions] [--all-presets] [--out <path>] [--model <name>]
+summarize (<transcript.md> [more...] | --session <id>) [--preset brief] [--all-presets] [--out <path>] [--notes <path>] [--model <name>]
 ```
+
+`--notes` applies to a single-preset run, like `--out`; selecting more than one preset with it is a usage error.
 
 ## Composition
 
@@ -56,8 +103,14 @@ The stages chain but never depend on each other at runtime — each reads and wr
 
 ```sh
 transcribe --session "$SESSION_ID" \
-  && cleanup "$OUT/…standup.transcript.md" \
-  && summarize "$OUT/…standup.clean.md" --preset brief --preset actions
+  && cleanup --session "$SESSION_ID" \
+  && summarize --session "$SESSION_ID" --preset brief --preset actions
+```
+
+Or by path, since each stage prints where it wrote:
+
+```sh
+summarize "$(cleanup "$(transcribe --session "$SESSION_ID")")" --all-presets
 ```
 
 The daemon runs this chain itself when a session that asked for it ends — declared per session at `session.start`, or, for a session that declared nothing, the per-trigger default (`[earsd.sessions] on_end_stages`, which browser sessions inherit — see [capture-daemon](capture-daemon.md)). Any stage can still be run alone against an existing file, and a client that intends to do exactly that declares `on_end_stages: []` so the daemon stays out of its way.
@@ -68,7 +121,7 @@ Two result surfaces share one rule: **empty stdout means no result.** Plain mode
 
 **The plain promise, frozen (issue #62):** On exit 0 in default mode, stdout is exactly one line: the absolute path of the primary output. All other output goes to stderr. This will not change.
 
-`transcribe` (batch mode) prints the `.transcript.md` path; `cleanup` prints the `.clean.md` path. `summarize` writes one file per preset and currently prints no path — its result surface is the `--json` envelope below; a plain result line for the single-preset case is deferred until something needs it. Script use: `` cleanup "$(transcribe --session "$SESSION_ID")" ``.
+`transcribe` (batch mode) prints the raw transcript's path in the data store; `cleanup` prints the published path. `summarize` writes one file per preset and currently prints no path — its result surface is the `--json` envelope below; a plain result line for the single-preset case is deferred until something needs it. Script use: `` cleanup "$(transcribe --session "$SESSION_ID")" ``.
 
 Failure ⇒ empty stdout: a run that exits non-zero writes **nothing** to stdout, in default and `--verbose` mode alike. `--verbose` (shorthand for `--log-level debug`) only widens what reaches stderr and the log file — it never changes stdout. Enforced structurally by `EarsCLISupport.ResultChannel`'s fd swap (the process's real stdout descriptor is reserved for the result; every other write in the process lands on stderr — `--follow`'s segment stream routes through the saved descriptor deliberately), stated verbatim in each stage binary's `--help` (`EarsCLISupport.PlainModeContract`), and pinned end to end by `Tests/CLISmokeTests/PlainModeContractSmokeTests.swift`.
 
@@ -93,9 +146,9 @@ On `transcribe`, `--json` reuses the existing flag: under `--follow` it still me
 
 **Failure (non-zero exit):** stdout stays **byte-empty** — "empty stdout ⇒ no result" holds in both modes — and the **last line of stderr** is an error envelope with the same `schema` field, `ok: false`, `exit_class` (the taxonomy label below), and `message`. Usage rejections that stop the invocation before a run starts (ArgumentParser validation) keep their plain usage error: stdout is still empty, but no envelope is emitted for a run that never began.
 
-**`output` semantics:** present when exactly one primary artifact exists — `transcribe`: the `.transcript.md`; `cleanup`: the `.clean.md`; `summarize` single preset: that summary file. A multi-preset `summarize` run has no single primary artifact, so `output` is absent and `outputs[]` carries per-preset entries `{preset, path, ok}` — which also makes partial success ("2 of 3 presets") expressible: presets run independently, each outcome is reported, and the exit is 0 only when all presets succeeded (a failed run's stderr envelope still carries `outputs[]`, naming what was written).
+**`output` semantics:** present when exactly one primary artifact exists — `transcribe`: the raw transcript; `cleanup`: the published cleaned transcript; `summarize` single preset: that summary file. A multi-preset `summarize` run has no single primary artifact, so `output` is absent and `outputs[]` carries per-preset entries `{preset, path, ok}` — which also makes partial success ("2 of 3 presets") expressible: presets run independently, each outcome is reported, and the exit is 0 only when all presets succeeded (a failed run's stderr envelope still carries `outputs[]`, naming what was written).
 
-**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`; `summarize`: `presets`).
+**`stats`** starts minimal — whatever `run.summary` already computes per tool (`transcribe`: `duration_s`/`segments`/`words`; `cleanup`: `segments`/`accepted`/`fallback`/`skipped`/`chunks`; `summarize`: `presets`).
 
 **Versioning.** The `schema` field, `allears.<tool>/v<major>`, carries only the major:
 

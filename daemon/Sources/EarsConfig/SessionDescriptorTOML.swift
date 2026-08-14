@@ -42,6 +42,7 @@ public enum SessionDescriptorTOML {
             "end": .string(interval.end.map(formatInstant) ?? ""),
           ])
         }),
+      "warnings": .array(session.warnings.map { .string($0) }),
       "attendee": .array(
         session.attendees.map { attendee in
           .table([
@@ -50,6 +51,29 @@ public enum SessionDescriptorTOML {
             "joined": .string(attendee.joined.map(formatInstant) ?? ""),
             "left": .string(attendee.left.map(formatInstant) ?? ""),
             "source": .string(attendee.source?.rawValue ?? ""),
+            // "" = unknown (the suite's absent sentinel): a roster row
+            // recorded before provenance existed, or an id whose join the
+            // client never saw. Readers treat unknown exactly as pre-origin
+            // rows — see `RosterReconciler.namedRemoteAttendees`.
+            "origin": .string(attendee.origin?.rawValue ?? ""),
+            "self": .bool(attendee.isLocal),
+          ])
+        }),
+      // Which reconciler derived the `speaker` map below — 0 for a session
+      // never reconciled. `transcribe` re-derives a map older than the
+      // current `RosterReconciler.version`, so a reconciler fix repairs past
+      // sessions instead of only future ones.
+      "reconciler_version": .int(session.reconcilerVersion),
+      // The reconciled derivation, kept beside the roster it came from rather
+      // than replacing it: `attendee` stays the observed record, `speaker` is
+      // what `RosterReconciler` concluded, and having both on disk is what
+      // makes a wrong conclusion diagnosable after the fact.
+      "speaker": .array(
+        session.speakers.map { speaker in
+          .table([
+            "source": .string(speaker.source.rawValue),
+            "name": .string(speaker.name),
+            "confidence": .string(speaker.confidence.rawValue),
           ])
         }),
     ]
@@ -100,13 +124,20 @@ public enum SessionDescriptorTOML {
       transcriptCompleted = nil
     }
 
+    // An identity is both halves or neither. Half an identity is a corrupt
+    // file, not a manual session — decoding it to nil would silently break
+    // `session.start` idempotency for the reloaded record, so it is rejected
+    // like any other invalid field, naming the half that is missing.
     let identity: SessionIdentity?
-    if let platform = fields.optionalString("platform"),
-      let externalID = fields.optionalString("external_id")
-    {
+    switch (fields.optionalString("platform"), fields.optionalString("external_id")) {
+    case (let platform?, let externalID?):
       identity = SessionIdentity(platform: platform, externalID: externalID)
-    } else {
+    case (nil, nil):
       identity = nil
+    case (.some, nil):
+      throw .invalidField("external_id")
+    case (nil, .some):
+      throw .invalidField("platform")
     }
 
     var sources: [SourceID] = []
@@ -116,7 +147,7 @@ public enum SessionDescriptorTOML {
     }
 
     var onEndStages: [String]?
-    if let declared = try fields.optionalArray("on_end_stages") {
+    if let declared = try fields.declaredArray("on_end_stages") {
       var stages: [String] = []
       for element in declared {
         guard case .string(let raw) = element else { throw .invalidField("on_end_stages") }
@@ -146,13 +177,50 @@ public enum SessionDescriptorTOML {
     for element in try fields.array("attendee") {
       guard case .table(let attendeeTable) = element else { throw .invalidField("attendee") }
       let attendeeFields = TOMLFieldReader(table: attendeeTable)
+      // Absent (or "") = unknown, for every file written before the field
+      // existed; a present-but-unrecognised value is rejected like any other
+      // enum field rather than being quietly read as unknown.
+      let origin: AttendeeOrigin?
+      if let originRaw = attendeeFields.optionalString("origin") {
+        guard let parsed = AttendeeOrigin(rawValue: originRaw) else {
+          throw .invalidField("attendee.origin")
+        }
+        origin = parsed
+      } else {
+        origin = nil
+      }
       attendees.append(
         SessionAttendee(
           id: try attendeeFields.string("id"),
           displayName: attendeeFields.optionalString("display_name"),
           joined: attendeeFields.optionalString("joined").flatMap(parseInstant),
           left: attendeeFields.optionalString("left").flatMap(parseInstant),
-          source: attendeeFields.optionalString("source").map { SourceID($0) }))
+          source: attendeeFields.optionalString("source").map { SourceID($0) },
+          origin: origin,
+          isLocal: attendeeFields.optionalBool("self")))
+    }
+
+    // `speaker`/`warnings` post-date schema 3's first files, so both read
+    // tolerantly: a session captured before reconciliation existed simply has
+    // an empty speaker map, which is exactly what it knew.
+    var speakers: [SessionSpeaker] = []
+    for element in fields.optionalArray("speaker") {
+      guard case .table(let speakerTable) = element else { throw .invalidField("speaker") }
+      let speakerFields = TOMLFieldReader(table: speakerTable)
+      guard
+        let confidence = SpeakerConfidence(rawValue: try speakerFields.string("confidence"))
+      else { throw .invalidField("speaker.confidence") }
+      speakers.append(
+        SessionSpeaker(
+          source: SourceID(try speakerFields.string("source")),
+          name: try speakerFields.string("name"),
+          confidence: confidence))
+    }
+
+    var warnings: [String] = []
+    for element in fields.optionalArray("warnings") {
+      guard case .string(let warning) = element else { throw .invalidField("warnings") }
+      warnings.append(warning)
     }
 
     return Session(
@@ -164,10 +232,15 @@ public enum SessionDescriptorTOML {
       ended: ended,
       intervals: intervals,
       attendees: attendees,
+      speakers: speakers,
+      warnings: warnings,
       sources: sources,
       trigger: trigger,
       onEndStages: onEndStages,
-      transcriptCompleted: transcriptCompleted)
+      transcriptCompleted: transcriptCompleted,
+      // Absent = 0: a file from before reconciliation was versioned, which
+      // every consumer treats as "older than any current reconciler".
+      reconcilerVersion: fields.optionalInt("reconciler_version"))
   }
 
   /// Standard colon-separated ISO-8601 UTC, whole seconds.

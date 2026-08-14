@@ -16,16 +16,20 @@ import Foundation
 /// timeline (``TranscriptAssembly``), and write the Markdown transcript +
 /// JSON sidecar atomically.
 ///
-/// Deliberately takes `dataRoot`/`outputRoot`/`backendName` as plain,
-/// already-resolved values rather than reading config/environment itself --
-/// that resolution is ``TranscribeRuntime``'s job (the thin, tier-2/3 glue
-/// layer that reads `ProcessInfo.environment`/the home directory/the real
-/// config file). Splitting it this way means this type -- everything from
-/// "have a data root and an output root" onward, which is most of
-/// `transcribe`'s actual behaviour -- is directly unit-testable against a
-/// fixture data root and an injected fake ``Transcriber`` with no
-/// environment-variable or config-file setup at all, per
-/// `docs/engineering-practices.md`'s tier-1 "fixture audio store on disk"
+/// The transcript it writes is an **intermediate**: it lands in the data
+/// store (``TranscriptStorePaths``), addressed by session or range-run
+/// identifier, never under `output_root`. Publishing — a cleaned transcript
+/// at a user-configured path — is `cleanup`'s job.
+///
+/// Deliberately takes `dataRoot`/`backendName` as plain, already-resolved
+/// values rather than reading config/environment itself -- that resolution is
+/// ``TranscribeRuntime``'s job (the thin, tier-2/3 glue layer that reads
+/// `ProcessInfo.environment`/the home directory/the real config file).
+/// Splitting it this way means this type -- everything from "have a data
+/// root" onward, which is most of `transcribe`'s actual behaviour -- is
+/// directly unit-testable against a fixture data root and an injected fake
+/// ``Transcriber`` with no environment-variable or config-file setup at all,
+/// per `docs/engineering-practices.md`'s tier-1 "fixture audio store on disk"
 /// strategy.
 enum TranscribePipeline {
   /// Everything real production code has to fake to test this type: the
@@ -135,6 +139,11 @@ enum TranscribePipeline {
     var jobID: String? = nil
     var sourceIDs: [String]
     var out: String?
+    /// `--rereconcile`: re-derive the session's speaker map from its roster
+    /// with the current ``RosterReconciler``, ignoring the stored
+    /// `[[speaker]]` map even when its `reconciler_version` is current.
+    /// Only meaningful with `session` — `Transcribe` validates that.
+    var rereconcile: Bool = false
   }
 
   /// Entry point. `socketPath` (when resolvable) lets a `--session` run
@@ -143,14 +152,13 @@ enum TranscribePipeline {
   static func run(
     inputs: Inputs,
     dataRoot: URL,
-    outputRoot: URL,
     backendName: String,
     socketPath: String? = nil,
     dependencies: Dependencies
   ) async -> Int32 {
     guard let sessionID = inputs.session else {
       return await runResolved(
-        inputs: inputs, dataRoot: dataRoot, outputRoot: outputRoot, backendName: backendName,
+        inputs: inputs, dataRoot: dataRoot, backendName: backendName,
         dependencies: dependencies)
     }
     let job = JobEventPublisher(
@@ -160,7 +168,7 @@ enum TranscribePipeline {
       log: dependencies.log)
     await job.publish(state: .started)
     let code = await runResolved(
-      inputs: inputs, dataRoot: dataRoot, outputRoot: outputRoot, backendName: backendName,
+      inputs: inputs, dataRoot: dataRoot, backendName: backendName,
       dependencies: dependencies)
     await job.publish(
       state: code == 0 ? .done : .failed, detail: code == 0 ? nil : "exit \(code)")
@@ -171,7 +179,6 @@ enum TranscribePipeline {
   private static func runResolved(
     inputs: Inputs,
     dataRoot: URL,
-    outputRoot: URL,
     backendName: String,
     dependencies: Dependencies
   ) async -> Int32 {
@@ -277,7 +284,7 @@ enum TranscribePipeline {
     // synthesized `<start-timestamp>_<slug>` identifier for a raw range run.
     let runIdentifier =
       sessionRecord?.id
-      ?? OutputPathResolution.rangeRunIdentifier(
+      ?? TranscriptStorePaths.rangeRunIdentifier(
         requestedStart: requestedRange.start, sourceIDs: sourceIDs)
 
     // Optional per-session vocabulary, keyed by session id by convention:
@@ -461,15 +468,75 @@ enum TranscribePipeline {
     let modelInfo = TranscriptModelInfo(
       name: transcriber.info.name, backend: backendName, version: transcriber.info.version)
 
-    // The session roster's name map (attendee source → display name) feeds
-    // speaker labels, so real names flow into the transcript directly.
-    var speakers: [String: String] = [:]
-    if let sessionRecord {
-      for attendee in sessionRecord.attendees {
-        if let source = attendee.source, let name = attendee.displayName {
-          speakers[source.rawValue] = name
-        }
-      }
+    // Speaker labels come from the session's *reconciled* map, not from the
+    // roster's raw bindings: `RosterReconciler` has already dropped the
+    // impossible ones and filled what the roster determines by elimination,
+    // and re-deriving it here from `attendee.source` would reinstate exactly
+    // the bindings it rejected. Several sources naming one speaker is normal
+    // and intended — turns group by resolved label, so a participant split
+    // across an identity upgrade reassembles into one speaker.
+    //
+    // A session with no map — or one whose map an *older* reconciler wrote —
+    // is reconciled here instead. That covers every session captured before
+    // reconciliation existed, and every session reconciled before the latest
+    // fix: re-transcribing one applies the current invariants and repairs its
+    // labels retroactively. It is only possible because the derivation is a
+    // pure function of the roster, so running it late gives the same answer
+    // as running it at session end would today. The re-derived map is used
+    // for this run, never written back — `session.toml` stays the daemon's
+    // record of what its own reconciliation concluded.
+    var reconciled: RosterReconciler.Outcome? = nil
+    if let sessionRecord, !sessionRecord.attendees.isEmpty,
+      inputs.rereconcile || sessionRecord.speakers.isEmpty
+        || sessionRecord.reconcilerVersion < RosterReconciler.version
+    {
+      // The attribution log's binding hints feed the re-derivation exactly as
+      // they feed the daemon's own session.end reconciliation: sources are
+      // opaque track handles, and the log carries links the roster's single
+      // `source` field per attendee lost. Best-effort — no log, no hints.
+      let attributionURL = SessionAttributionLog.fileURL(
+        dataRoot: dataRoot, sessionID: sessionRecord.id)
+      let hints =
+        (try? String(contentsOf: attributionURL, encoding: .utf8))
+        .map { AttributionBindingHints.parse(jsonl: $0) } ?? []
+      let outcome = RosterReconciler.reconcile(
+        attendees: sessionRecord.attendees, sources: sessionRecord.sources,
+        sessionStart: sessionRecord.started, hints: hints)
+      reconciled = outcome
+      let reason =
+        inputs.rereconcile
+        ? "re-reconciliation requested (--rereconcile)"
+        : sessionRecord.speakers.isEmpty
+          ? "no stored speaker map"
+          : "stored speaker map is reconciler v\(sessionRecord.reconcilerVersion), "
+            + "current is v\(RosterReconciler.version)"
+      dependencies.log(
+        "session \(sessionRecord.id): \(reason); reconciled the roster into "
+          + "\(outcome.speakers.count) speaker(s) with \(outcome.warnings.count) warning(s)")
+    }
+    // The full rows (name + confidence per source), not a flattened lookup:
+    // assembly labels turns from them *and* records them in the sidecar, the
+    // one durable trace of a re-derived map (`session.toml` never sees it).
+    let speakers = reconciled?.speakers ?? sessionRecord?.speakers ?? []
+    // Everyone the roster named, whether or not any audio was matched to them
+    // — the fact that survives a total attribution failure. The local
+    // participant is marked the way the summarize prompt's own `speakers:`
+    // roll call marks them, so both lines speak one vocabulary.
+    var derivedTitle: String? = nil
+    if let sessionRecord, let reconciled, sessionRecord.hasDefaultTitle,
+      let derived = RosterReconciler.derivedTitle(
+        attendees: sessionRecord.attendees, localAttendeeID: reconciled.localAttendeeID)
+    {
+      derivedTitle = derived
+      dependencies.log(
+        "session \(sessionRecord.id): titling this transcript \"\(derived)\" from the roster; "
+          + "the session itself is still named \"\(sessionRecord.title)\"")
+    }
+    let localAttendeeID = reconciled?.localAttendeeID
+    let attendees: [String] = (sessionRecord?.attendees ?? []).compactMap { attendee in
+      guard let name = attendee.displayName, !name.isEmpty else { return nil }
+      let isLocal = attendee.isLocal || attendee.id == localAttendeeID
+      return isLocal ? "\(name) (me)" : name
     }
 
     // The chosen lookup order, recorded in frontmatter so a wrong-store read is
@@ -489,6 +556,19 @@ enum TranscribePipeline {
       // run still carries the synthesized `range_run:` identifier.
       rangeRun: sessionRecord == nil ? runIdentifier : nil,
       session: sessionRecord?.id,
+      // The path-template context every downstream stage reads back from the
+      // document rather than being told again on the command line, so a
+      // manual rerun files exactly where the daemon-spawned run did.
+      // A session that ended before reconciliation existed still carries the
+      // platform's meeting id as its title, and that title is what every
+      // downstream path template interpolates — including the `notes` lookup
+      // that has to match a note the user named after a person. Re-deriving
+      // it here means re-running the chain over an old session files it under
+      // a readable name, the same as a session captured today.
+      title: derivedTitle ?? sessionRecord?.title,
+      started: sessionRecord?.started ?? requestedRange.start,
+      attendees: attendees,
+      warnings: reconciled?.warnings ?? sessionRecord?.warnings ?? [],
       speakers: speakers,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,
@@ -498,9 +578,17 @@ enum TranscribePipeline {
       audioStores: audioStores
     )
 
-    let paths = OutputPathResolution.resolve(
-      outputRoot: outputRoot, requestedStart: requestedRange.start, sourceIDs: sourceIDs,
-      explicitOut: inputs.out, slug: sessionRecord?.id)
+    // Intermediates live in the data store, addressed by session (or by
+    // range-run identifier); `output_root` is the *published* artifacts' root
+    // and this stage never writes there. `--out` still overrides verbatim.
+    let paths: TranscriptStorePaths.Paths
+    if let out = inputs.out, !out.isEmpty {
+      paths = TranscriptStorePaths.explicit(out)
+    } else if let sessionRecord {
+      paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionRecord.id)
+    } else {
+      paths = TranscriptStorePaths.rangeRun(dataRoot: dataRoot, runIdentifier: runIdentifier)
+    }
 
     do {
       let markdown = TranscriptRenderer.renderMarkdown(document)

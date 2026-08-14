@@ -8,7 +8,7 @@
       "/out/2026-07-17T10-30-00Z_standup.clean.json"
     ],
     "warnings": [],
-    "stats": { "segments": 87, "accepted": 61, "fallback": 2, "skipped": 24 }
+    "stats": { "segments": 87, "accepted": 61, "fallback": 2, "skipped": 24, "chunks": 3 }
   },
   "error": {
     "schema": "allears.cleanup/v1",

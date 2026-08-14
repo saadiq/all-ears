@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   SeamArbiter,
   SEAM_ESCALATION_GRACE_MS,
+  admitReceiverTrack,
+  looksLikeCaptureDevice,
   seamUsesReceiverTracks,
   seamOrderFor,
   seamTracksToAdopt,
+  seamTracksToRetire,
   type TrackProvenanceInfo,
 } from "./capture-seams";
 
@@ -140,7 +143,8 @@ describe("seamUsesReceiverTracks", () => {
 
   it("excludes the WebAudio seam — its ids never match a hooked receiver", () => {
     // So it must start under a provisional id rather than inherit a
-    // neighbouring participant's name (rtc-hook.ts:654).
+    // neighbouring participant's name (rtc-hook.ts's installMeetWebAudioProbe,
+    // the ids-never-match finding).
     expect(seamUsesReceiverTracks("webaudio-track")).toBe(false);
   });
 });
@@ -222,5 +226,123 @@ describe("seamTracksToAdopt with provenance", () => {
       "u1",
       "u2",
     ]);
+  });
+});
+
+describe("seamTracksToRetire", () => {
+  const info = (origin: "local" | "remote", rootId: string, seq: number): TrackProvenanceInfo => ({
+    origin,
+    rootId,
+    seq,
+  });
+
+  it("retires an adopted track that was later classified local: the 2026-08-06 call fixture", () => {
+    // The track was adopted as `unknown` (the hook installed mid-join, after
+    // Meet's getUserMedia), and Meet handing it to a sender named it `local`
+    // afterwards. Reading provenance only at adoption left it capturing the
+    // user's own voice for the whole 42-minute call.
+    const provenance = new Map([["t1", info("local", "mic-root", 1)]]);
+    expect(seamTracksToRetire(new Set(["t1", "t5"]), provenance)).toEqual(["t1"]);
+  });
+
+  it("never retires an unknown track — only a positive local verdict acts", () => {
+    // The mirror of "unknown adopts": absence of evidence must not tear down a
+    // pipeline that may be carrying a real participant.
+    expect(seamTracksToRetire(new Set(["mystery"]), new Map())).toEqual([]);
+    expect(seamTracksToRetire(new Set(["mystery"]), undefined)).toEqual([]);
+  });
+
+  it("never retires a remote track", () => {
+    const provenance = new Map([["t3", info("remote", "t3", 1)]]);
+    expect(seamTracksToRetire(new Set(["t3"]), provenance)).toEqual([]);
+  });
+
+  it("retires nothing when nothing is adopted", () => {
+    const provenance = new Map([["t1", info("local", "t1", 1)]]);
+    expect(seamTracksToRetire(new Set(), provenance)).toEqual([]);
+  });
+
+  it("frees the lineage root, so a genuine sibling can be adopted in the same sweep", () => {
+    // Retirement runs before adoption in the sweep; this is the state the
+    // adopt policy then sees.
+    const provenance = new Map([
+      ["local-copy", info("local", "mic-root", 1)],
+      ["remote-1", info("remote", "r", 2)],
+    ]);
+    const adopted = new Set(["local-copy"]);
+    for (const id of seamTracksToRetire(adopted, provenance)) adopted.delete(id);
+    expect(seamTracksToAdopt("webaudio-track", ["remote-1"], adopted, provenance)).toEqual([
+      "remote-1",
+    ]);
+  });
+});
+
+describe("looksLikeCaptureDevice", () => {
+  // Fixtures are the real getSettings() shapes read off a live Meet call on
+  // Chrome 151 (2026-08-06); see the doc comment on looksLikeCaptureDevice.
+  const micGum = { deviceId: "default", groupId: "9298…64 chars" };
+  const meetWebAudio = { deviceId: "ba262343-dfb…" }; // echoes the track id
+  const decodedRemote = { deviceId: "61c142f9-…36 chars" }; // ontrack
+  const webAudioDestination = { deviceId: "WebAudio-1c1e358b-3f…" };
+
+  it("recognises a microphone by the device group it belongs to", () => {
+    expect(looksLikeCaptureDevice(micGum)).toBe(true);
+  });
+
+  it("does NOT flag a decoded remote track — the data-loss direction", () => {
+    // The bug this rule replaced: deviceId is truthy here too, so testing it
+    // called every remote participant local and dropped their audio.
+    expect(looksLikeCaptureDevice(decodedRemote)).toBe(false);
+    expect(looksLikeCaptureDevice(meetWebAudio)).toBe(false);
+  });
+
+  it("ignores deviceId entirely — it is truthy on every shape and discriminates nothing", () => {
+    expect(looksLikeCaptureDevice({ deviceId: "default" })).toBe(false);
+    expect(looksLikeCaptureDevice(webAudioDestination)).toBe(false);
+  });
+
+  it("does not flag a track with no settings at all", () => {
+    expect(looksLikeCaptureDevice({})).toBe(false);
+    expect(looksLikeCaptureDevice(undefined)).toBe(false);
+  });
+
+  it("treats an empty-string groupId as no device rather than as a device", () => {
+    expect(looksLikeCaptureDevice({ deviceId: "default", groupId: "" })).toBe(false);
+  });
+});
+
+describe("admitReceiverTrack", () => {
+  it("starts an unmuted track on a receiver seam", () => {
+    expect(admitReceiverTrack("receiver-track", { muted: false, alreadyCapturing: false })).toBe("start");
+    expect(admitReceiverTrack("meet-encoded-tee", { muted: false, alreadyCapturing: false })).toBe("start");
+  });
+
+  it("defers a MUTED track instead of minting a phantom attendee (journal #142, #165)", () => {
+    // Meet pre-allocates three remote transceivers before anyone fills them.
+    // Each one that starts a pipeline becomes a speaker-<n> in session.toml.
+    expect(admitReceiverTrack("receiver-track", { muted: true, alreadyCapturing: false })).toBe(
+      "defer-until-unmute",
+    );
+  });
+
+  it("skips a track already being captured, muted or not", () => {
+    expect(admitReceiverTrack("receiver-track", { muted: false, alreadyCapturing: true })).toBe("skip");
+    expect(admitReceiverTrack("receiver-track", { muted: true, alreadyCapturing: true })).toBe("skip");
+  });
+
+  it("skips receiver tracks entirely once the call has escalated past them (journal #82)", () => {
+    // Post-escalation the receiver tracks are known-silent decoys; a muted one
+    // must not even be deferred, or it would start a pipeline on a later unmute.
+    expect(admitReceiverTrack("webaudio-track", { muted: false, alreadyCapturing: false })).toBe("skip");
+    expect(admitReceiverTrack("webaudio-track", { muted: true, alreadyCapturing: false })).toBe("skip");
+  });
+
+  it("admits the carrying track of a pre-allocated trio and defers the other two", () => {
+    // The exact 2026-08-12 shape: three ontrack tracks, one unmuted.
+    const trio = [{ muted: false }, { muted: true }, { muted: true }];
+    const verdicts = trio.map((t) =>
+      admitReceiverTrack("receiver-track", { muted: t.muted, alreadyCapturing: false }),
+    );
+    expect(verdicts).toEqual(["start", "defer-until-unmute", "defer-until-unmute"]);
   });
 });

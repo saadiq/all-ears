@@ -46,6 +46,7 @@ struct ConfigLoaderTests {
             "data_root": .string("/Users/tom/Library/Application Support/ears"),
             "output_root": .string("/Users/tom/Documents/Transcripts"),
             "socket_path": .string(""),
+            "week_numbering": .string("us"),
             "log": .table([
               "level": .string("info"),
               "file": .string(""),

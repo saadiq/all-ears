@@ -38,6 +38,21 @@ struct ConfigValidationTests {
     #expect(errors.first?.reason == .unknownKey)
   }
 
+  @Test("week_numbering is a declared shared key")
+  func weekNumberingIsDeclared() {
+    let value = mergeConfigLayers([
+      Phase0ConfigSchema.defaults,
+      .table(["week_numbering": .string("iso")]),
+    ])
+
+    #expect(validateConfig(value, against: Phase0ConfigSchema.schema).isEmpty)
+    guard case .table(let root) = Phase0ConfigSchema.defaults else {
+      Issue.record("expected a table root")
+      return
+    }
+    #expect(root["week_numbering"] == .string("us"))
+  }
+
   @Test("a top-level type mismatch reports expected vs. actual kind")
   func topLevelTypeMismatch() {
     let value = mergeConfigLayers([

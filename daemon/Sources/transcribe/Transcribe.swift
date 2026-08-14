@@ -97,6 +97,13 @@ struct Transcribe: AsyncParsableCommand {
       visibility: .hidden))
   var jobID: String?
 
+  @Flag(
+    name: .customLong("rereconcile"),
+    help:
+      "Re-derive the session's speaker map from its roster with the current reconciler, ignoring the stored [[speaker]] map (requires --session)."
+  )
+  var rereconcile = false
+
   @Option(name: .customLong("source"), help: "Source(s) to transcribe; repeatable.")
   var sources: [String] = []
 
@@ -157,18 +164,20 @@ struct Transcribe: AsyncParsableCommand {
     let session = self.session
     let sources = self.sources
     let out = self.out
+    let rereconcile = self.rereconcile
 
     // The real run happens inside `work`, between `run.start` and
     // `run.summary`; the summary now reflects the outcome we return here,
     // never a `status=ok` logged before the work could fail (issue #25). The
     // `--print-config`/`--config-path` fast paths return before `work` runs.
-    // A `--file` run writes next to each input, never into `output_root`, so
-    // its `run.start` omits that field instead of advertising a directory the
-    // run won't touch.
+    // No `transcribe` run writes into `output_root` any more — raw
+    // transcripts are intermediates in the data store, and only `cleanup`
+    // publishes — so `run.start` omits the field rather than advertising a
+    // directory the run never touches.
     let diagnostics = RunDiagnostics()
     let exitCode = await EarsCLI.run(
       tool: "transcribe", version: "0.1.0", arguments: arguments,
-      usesOutputRoot: files.isEmpty
+      usesOutputRoot: false
     ) { bootstrap in
       if !files.isEmpty {
         return await TranscribeRuntime.runFiles(
@@ -188,7 +197,7 @@ struct Transcribe: AsyncParsableCommand {
         arguments: arguments,
         inputs: TranscribePipeline.Inputs(
           last: last, from: from, to: to, session: session, jobID: jobID, sourceIDs: sources,
-          out: out),
+          out: out, rereconcile: rereconcile),
         diagnostics: diagnostics,
         spans: bootstrap.stageSpans(tool: "transcribe"),
         emitJSONEnvelope: json)
@@ -214,6 +223,13 @@ struct Transcribe: AsyncParsableCommand {
   /// Rejects mutually exclusive flag combinations before any run. Mirrors the
   /// per-mode guards the dispatch in ``run()`` relies on having already passed.
   private func validateArgumentCombinations() throws {
+    // The speaker map is a session artifact, so re-reconciling one is
+    // meaningless without a session to read the roster from — checked first
+    // so `--file --rereconcile` and `--follow --rereconcile` get this
+    // precise error rather than the generic combination one.
+    if rereconcile, session == nil {
+      throw ValidationError("--rereconcile requires --session")
+    }
     if !files.isEmpty {
       // `--file` is a standalone-file batch: every range/session selector
       // and the live-`--follow` attach make no sense against a file

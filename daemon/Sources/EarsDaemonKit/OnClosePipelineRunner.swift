@@ -362,6 +362,16 @@ public struct OnClosePipelineRunner: Sendable {
       return outcome
     }
     log("\(context) on_end: \(stage.rawValue) succeeded for session '\(sessionID)'")
+    // Exit 0 is not the same as "nothing to say". A stage that degraded — the
+    // notes file it was configured to fold in wasn't there, a cleanup chunk
+    // fell back — says so on stderr and still exits 0, and until now that
+    // line was discarded with the rest of the successful child's capture.
+    let diagnostics = Self.plainDiagnostics(outcome.stderr)
+    if !diagnostics.isEmpty {
+      log(
+        "\(context) on_end: \(stage.rawValue) reported for session '\(sessionID)': "
+          + diagnostics)
+    }
     return outcome
   }
 
@@ -378,6 +388,33 @@ public struct OnClosePipelineRunner: Sendable {
   static func stderrNote(_ stderr: String) -> String {
     let bounded = boundedCapture(stderr)
     return bounded.isEmpty ? "no stderr captured" : "stderr: \(bounded)"
+  }
+
+  /// A *successful* stage's plain-text stderr: every line that is not one of
+  /// its structured JSON-Lines log records, newline-joined and bounded like a
+  /// failure capture.
+  ///
+  /// Stages write two interleaved things to stderr — their JSON-Lines log
+  /// (which the daemon's own log already carries by every other route) and
+  /// plain diagnostics meant for a human: `warning: preset 'meeting': no
+  /// notes file at …`, `cleanup: rejected a cleanup candidate …`. Only the
+  /// second is worth re-logging on success, and only the second is what exit
+  /// 0 was hiding. The 2026-08-12 `meet 96DC3F7J7x0B` run warned that the
+  /// jotted note it was configured to fold in did not exist at the templated
+  /// path, summarized the call without it, and overwrote that path anyway;
+  /// the daemon log recorded `summarize wrote 1/1 presets` and nothing else,
+  /// so the one line that identified the fault survived only in the child's
+  /// discarded stderr.
+  static func plainDiagnostics(_ captured: String) -> String {
+    let lines =
+      captured
+      .split(separator: "\n", omittingEmptySubsequences: true)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      // A JSON-Lines record is the structured log; anything else is prose for
+      // the operator. Prefix-matching `{` is enough — the stages emit one
+      // compact record per line, never a pretty-printed one.
+      .filter { !$0.isEmpty && !$0.hasPrefix("{") }
+    return boundedCapture(lines.joined(separator: "\n"))
   }
 
   /// ``stderrNote(_:)``'s stdout twin, for contract-violation notices:

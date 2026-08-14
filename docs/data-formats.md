@@ -11,6 +11,12 @@ This document defines the on-disk contract. Because the storage layout *is* the 
       session.toml                   # session record (schema 3: identity, state, intervals,
                                      #   roster, sources); kept forever, never evicted
       events.jsonl                   # append-only session timeline; kept forever
+      attribution.jsonl              # browser attribution flight-recorder events
+                                     #   (browser-extension sessions only); kept forever
+      transcript.md                  # RAW TRANSCRIPT (from `transcribe --session`) — an
+      transcript.json                #   intermediate; kept forever, never swept
+      mic.follow.transcript.md       # a `transcribe --follow` run's live transcript,
+                                     #   one per followed source
       sources/                       # AUDIO — deleted as one unit by retention
         <source-id>/                 # e.g. mic, system, browser_meet_jane
           meta.toml                  # source descriptor (class, device, sample rate, codec)
@@ -27,24 +33,28 @@ This document defines the on-disk contract. Because the storage layout *is* the 
   vocab/
     global.txt                       # global known-word list
     <session-id>.txt                 # optional per-session vocabulary (session UUID)
+  runs/                              # range runs (`--last`/`--from`/`--to`) have no session
+    2026-07-17T10-30-00Z_mic.transcript.md    # …so their raw transcripts land here
+    2026-07-17T10-30-00Z_mic.transcript.json
   runtime/
     earsd.sock                       # control socket (path configurable)
     earsd.pid
 
-<output-root>/                       # default: ~/Documents/Transcripts
-  2026-07-17/
-    10-30-00_standup.transcript.md   # transcript (from `transcribe`)
-    10-30-00_standup.clean.md        # cleaned transcript (from `cleanup`)
-    10-30-00_standup.summary.md      # summary (from `summarize`)
-    10-30-00_standup.transcript.json # optional canonical sidecar (word timings, confidence)
+<output-root>/                       # default: ~/Documents/Transcripts — PUBLISHED output,
+  2026/08/05/                        #   laid out by `[cleanup] output`'s path template
+    2026-08-05 - Kevin Weekly.md          # cleaned transcript (from `cleanup`)
+    2026-08-05 - Kevin Weekly.json        # its canonical sidecar (word timings, confidence)
+    2026-08-05 - Kevin Weekly.summary.md  # summary (from `summarize`)
 ```
 
-`<source-id>` is the source's stable id with characters unsafe for paths replaced by `_` (e.g. `app:us.zoom.xos` → `app_us.zoom.xos`). The id itself, as used on the socket and in metadata, keeps its natural form.
+**Two tiers.** Raw transcripts are **intermediates**: addressed by session (or range-run id) inside the data store, with no user-facing layout. The **published** artifacts — the cleaned transcript and the summaries — go wherever their path template resolves to, `output_root` by default. A preset can publish somewhere else entirely (an Obsidian daily note, say); see [configuration](./configuration.md#path-templates).
+
+`<source-id>` is the source's stable id with characters unsafe for paths replaced by `_` (e.g. `app:us.zoom.xos` → `app_us.zoom.xos`). The id itself, as used on the socket and in metadata, keeps its natural form. **Source ids are opaque handles**: a browser source is `browser:<platform>:<track-slug>` where the slug (`t3`) names one captured track and never a person — whose voice it carries lives in `[[speaker]]`, derived from the roster (see "Roster and speaker map"). Older stores hold labels whose suffix was a platform or synthetic participant id (`browser:meet:spaces-x-devices-y`, `browser:meet:speaker-1`); the change is additive-compatible for every reader that treats the id as opaque — which transcription's assembly does, resolving labels only through the speaker map — so old and new sessions read identically.
 
 Audio is **session-scoped**: a source records only while a session names it, and everything it writes lands under that session's own `sources/` tree. Two consequences:
 
-- **Transcripts** (under `<output-root>`) are never evicted — they are the durable artifact.
-- **Retention is a per-session delete.** Once an ended session's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the session has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `sessions/<uuid>/sources/` directory. `session.toml` and `events.jsonl` survive as the session's record. See `[earsd.retention]` in [configuration](./configuration.md).
+- **Transcripts are never evicted**, in either tier. Raw transcripts in the data store are deliberately not swept: once the audio is gone they are the only route to re-running cleanup or summarize with a different prompt or model.
+- **Retention is a per-session delete.** Once an ended session's transcript has been complete for `evict_after_transcript_seconds` (default 2 h) — or, if no transcript ever completed, once the session has been over for `max_audio_age_seconds` (default 7 days) — the daemon deletes the whole `sessions/<uuid>/sources/` directory. `session.toml`, `events.jsonl`, and `attribution.jsonl` survive as the session's record. See `[earsd.retention]` in [configuration](./configuration.md).
 
 The daemon enforces a **single-active-session invariant**: a `session.start` for a new identity (or a manual start) supersedes any session still live, running the old one through its full end pipeline first. At most one active session means exactly one legal directory for any capture actor at any moment, so a source's audio can never land in the wrong session's directory.
 
@@ -117,19 +127,25 @@ schema = 3
 id = "0d5e7f6a-…"                      # daemon-assigned UUID
 platform = "meet"                       # platform identity; "" for manual sessions
 external_id = "abc-defg-hij"            # the platform's own meeting id; "" for manual
-title = "Weekly sync"                   # renameable; defaults from identity or id
+title = "Weekly sync"                   # renameable; defaults from identity or start time
 state = "ended"                         # active | paused | ended
 started = "2026-07-19T10:00:00Z"
 ended = "2026-07-19T10:31:00Z"          # "" while active/paused
 transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succeeds;
                                         #   the marker retention keys off
 trigger = "browser-extension"           # manual | browser-extension
-sources = ["mic", "browser:meet:jane-a1b2"]
+sources = ["mic", "browser:meet:t3"]    # source ids are opaque handles: a browser
+                                        #   source names a captured track, never a
+                                        #   person (see "Roster and speaker map")
 on_end_stages = ["transcribe"]          # the chain this session's starter declared.
                                         #   Absent key = declared nothing (the daemon
                                         #   applies its per-trigger default); [] = an
                                         #   explicit "run no stages". The one field
                                         #   where absent and empty differ.
+reconciler_version = 3                  # which reconciler derived [[speaker]] below;
+                                        #   absent = 0 (a file from before versioning,
+                                        #   or a session never reconciled) — see
+                                        #   "Roster and speaker map"
 
 [[interval]]                            # transcription marks over the recording;
 start = "2026-07-19T10:00:00Z"          #   pause closes one, resume opens the next
@@ -143,12 +159,44 @@ id = "spaces/x/devices/y"               #   (the extension's DOM layer today)
 display_name = "Jane Doe"
 joined = "2026-07-19T10:00:12Z"
 left = ""
-source = "browser:meet:jane-a1b2"       # optional link to a per-participant source
+source = "browser:meet:t3"              # optional link to the source carrying
+                                        #   this attendee's audio (the identity
+                                        #   link — how a name reaches a track)
+origin = "platform"                     # where `id` was minted: "platform" (the
+                                        #   platform's own id) | "synthetic" (a
+                                        #   capture track handle like t3 that
+                                        #   names a track, not a person); "" or
+                                        #   absent = unknown (files from before
+                                        #   the field existed)
+self = false                            # true on the local participant — you
+
+[[speaker]]                             # the *reconciled* source → name map,
+source = "browser:meet:t3"              #   derived from the roster at session end
+name = "Jane Doe"                       #   (see "Roster and speaker map" below)
+confidence = "correlated"               # correlated | inferred
 ```
 
-`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
+`warnings = [...]` (a top-level array, omitted when empty) records what
+reconciliation could not resolve or resolved by inference. It travels into the
+transcript's frontmatter and from there into the note itself.
+
+`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, `capture_failed` (a browser source's capture died mid-call — carries `source` and the client's stated `reason`, so a gap in the audio is attributable rather than reading as silence), and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
 Tools reject a `schema` other than 3 rather than guessing — which is exactly how the legacy schema-1 and schema-2 descriptors (above) stay inert on disk.
+
+### `attribution.jsonl` (attribution flight recorder)
+
+Every input the browser extension's speaker-attribution decision consumed, and every decision it took, as an append-only JSON Lines stream beside `events.jsonl` — present only on sessions fed by the browser extension, and only for the stretches a daemon session existed. The extension records events per call in a bounded in-page ring, ships them in batches over the ingest WebSocket (`ingest.attribution`, [transport](./specs/browser/transport.md#wire-protocol)), and the daemon appends the lines **verbatim** — what is on disk is byte-for-byte what the browser recorded, so the file replays against the same code that consumed the evidence live.
+
+The vocabulary is owned by the browser (`browser/lib/attribution-log.ts`), versioned by a per-line `schema` integer (currently 1). One JSON object per line, discriminated by `type`, with `t` = epoch ms at observation:
+
+- **track lifecycle** — `track-appeared` (track id, seam, muted-at-dispatch, provenance origin/root), `track-unmuted`, `track-muted`, `track-ended`
+- **admission decisions** — `admitted`, `deferred`, `adopted`, `retired`, `escalated`, each with the admission policy's reason
+- **identity evidence** — `collections-edge` (parsed device id and mic state plus the raw payload bytes, base64), `dom-burst` (tile speaking-ring onset per device), `audio-onset` (decoded-audio speaking edge per track)
+- **roster observations** — `roster-delta` (id → display name, with the `(You)`-marker evidence as `isLocal`)
+- **binding events** — `provisional-binding` (track ↔ device, which correlator, how many confirming turns, and the outcome — bound or refused and why), and `identity-link` (the identity actually forwarded to the daemon: capture handle ↔ platform id, with the track id joining it back to the binding that caused it)
+
+Best-effort by contract: batches arriving before the session is declared, or while the daemon is down, are dropped server-side or never sent — the in-page ring (exported on demand via `window.__earsExportAttribution()` in the meeting tab's console) is the recovery path. The daemon skips any line that would break JSONL framing; it never interprets the events. Like `events.jsonl`, the file survives audio retention. Contains device-id paths and display names — treat exports as private, and commit only sanitized/synthetic fixtures.
 
 ## Transcript format
 
@@ -164,6 +212,25 @@ session: 0d5e7f6a-…         # the session UUID this transcript unions the
                             # instead of `session:` on a raw range run
                             # (`--last`/`--from`/`--to`) — a synthesized
                             # <start-timestamp>_<slug> identifier
+title: Weekly standup       # the session's display title, and `{title}` in a
+                            # downstream path template; absent with no session
+note: "[[daily-notes/2026/07/29/2026-07-17 - Weekly standup.md]]"
+                            # the note `summarize` wrote from this transcript —
+                            # the inverse of that note's own `transcript:` link.
+                            # Stamped in after the summary lands, since that is
+                            # the only point both paths are known; absent until
+                            # a preset has summarized this transcript
+attendees: [Tom Elliot (me), Jane Doe]
+                            # everyone the roster named, `(me)` marking the
+                            # local participant. Independent of whether any
+                            # audio was matched to them — see "Roster and
+                            # speaker map"; absent with no session context
+started: 2026-07-17T10:30:00Z
+                            # when the session began, as distinct from `range`
+                            # below (a --from/--to rerun narrows the range but
+                            # not the session). The date tokens key on this, so
+                            # a call that ran past midnight always files under
+                            # the day it started
 sources: [mic, "app:us.zoom.xos"]
 range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }
 model: { name: parakeet, backend: fluidaudio, version: "0.x" }
@@ -178,20 +245,32 @@ vocab: [global, standup]
                             # which store each source was read from (`session` =
                             # per-session copy, `ring` = legacy global buffer),
                             # so a wrong-store read is visible
+# warnings: ["speaker attribution: …"]
+#                           # what was degraded or inferred about this
+                            # transcript; omitted when there is nothing to say.
+                            # `summarize` renders these into the note as a
+                            # callout, because a warning only in a log is a
+                            # warning nobody reads
 ---
 
-## [10:30:04] You
+**[10:30:04] You**
 Morning — let's keep this quick. Any blockers?
 
-## [10:30:11] app:us.zoom.xos
+**[10:30:11] app:us.zoom.xos**
 Nothing from me, the deploy went out last night.
+> [10:30:14] You: Nice.
 ```
 
 Rules:
 
-- Segments are grouped by speaker turn, each headed by a timestamp and a speaker label.
-- **Speaker labels** derive from the source: `mic` → `You`, every other source → its source id (a per-participant browser source is therefore already a per-person label). Within-stream diarization — stable `Speaker N` labels inside a multi-speaker source — is designed but not yet implemented.
+- Segments are grouped by speaker turn, each labelled with a timestamp and a speaker name. The label is **bold text, not a heading**: a speaker name is metadata, not document structure, and an `##` per turn rendered a one-word "Yeah." at display size while buying an outline of a thousand entries named after two people. Readers of transcripts written before this change are unaffected — the parser still accepts the old `## [HH:MM:SS] speaker` form.
+- **A turn is never split.** Turns are emitted whole in start order, even when two people overlap. Splitting a turn wherever another speaker intrudes is faithful to the audio and unreadable as a document — it shreds both sentences into alternating single words. Nor are a speaker's consecutive segments merged: an ASR pause is a paragraph break a reader wants.
+- **Backchannels are demoted.** A turn of at most four words falling entirely inside another speaker's turn — "Yeah.", "Right." — renders as a `> [HH:MM:SS] speaker: text` blockquote line attached beneath the turn it interrupted, instead of breaking that turn in two. It stays a full segment in the JSON sidecar, so nothing is lost; only the Markdown demotes it.
+- **Turns with no text are dropped.** A heading with no words tells a reader nothing.
+- **Speaker labels** resolve through the session's `[[speaker]]` map: a mapped source renders as its speaker's name, `mic` → `You`, and an unmapped source falls back to its raw (opaque) source id. Within-stream diarization — stable `Speaker N` labels inside a multi-speaker source — ships as the offline refinement pass.
+- **The path-template context travels here, not on the command line.** `title:` and `started:` are what a publishing stage expands `{title}`/`{date}`/`{week}` against, so a manual rerun files exactly where the daemon-spawned run did.
 - `cleanup` and `summarize` outputs use the same frontmatter convention with `kind: clean` / `kind: summary` and a `derived_from` field naming the source transcript. A summary also carries a `preset` field naming the `[[summarize.preset]]` it was generated from.
+- A `[[summarize.preset]]` with `frontmatter = false` writes its body alone — no YAML block and no JSON sidecar. That output is plain Markdown, not an ears document, which is what a destination owning its own frontmatter (an Obsidian vault) needs.
 
 ### Canonical JSON sidecar (optional)
 
@@ -199,6 +278,11 @@ Rules:
 {
   "schema": 1,
   "diarization": { "enabled": false },        // { enabled, backend? } — mirrors the frontmatter
+  "speakers": [                               // the speaker map this run's turns were labelled
+    { "source": "browser:meet:t3",            //   with — the session's stored [[speaker]] map, or
+      "name": "Jane Doe",                     //   the fresh re-derivation a --session run computed
+      "confidence": "correlated" }            //   (which session.toml never sees, making this its
+  ],                                          //   one durable record); omitted with no session map
   "segments": [
     {
       "start": 604.14, "end": 611.88,          // seconds from range start
@@ -213,11 +297,31 @@ Rules:
 
 The Markdown is rendered from the same data the sidecar holds, so the two never disagree for a given run.
 
+## Roster and speaker map
+
+Two different things, kept apart on purpose.
+
+The **roster** (`[[attendee]]`) is observed: the platform names its own participants, and it is right from the moment they join. The **speaker map** (`[[speaker]]`) is derived: which audio track carries whose voice. Deriving it is a guess — the capture client pairs a track to a participant by temporal coincidence — and guesses fail.
+
+Storing only the derived answer meant a failed derivation *erased* a name the session had known all along: the transcript, the note's title and its attendee list all read the binding, so a correlation miss lost the participant entirely. Keeping the roster whole means a total attribution failure still yields the right attendees and the right note title.
+
+At `session.end` the daemon reconciles one into the other, applying invariants a binding must satisfy:
+
+1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool. When that `self` flag is itself contradicted on both fronts — the flagged attendee is bound to remote audio *and* join order singles out a different attendee as the one whose arrival started the session — the flag is revised rather than the binding dropped, and the evidence for the revision is recorded in `warnings`.
+2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label). Only rows the platform itself named can be people: a named attendee whose `origin` is `"synthetic"` is a stand-in for a track and never counts as a remote participant (or appears in the derived title), so a junk synthetic row cannot block this inference. Rows with unknown origin (old files) count exactly as they did before the field existed.
+3. **A source carries at most one name.** Competing claims on one source resolve deterministically — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
+
+Beside the roster's own `source` links, reconciliation consumes the **binding hints** in the session's `attribution.jsonl` (the `identity-link` events, each joined to the `provisional-binding` decision that caused it): a hint claims a source for a named attendee under the same invariants, after the roster's claims. Hints cover what the roster's single `source` field per attendee cannot — one participant owning several track-handle sources across a call (a rejoin, a seam swap), and an identity confirmed after the row's link was overwritten. A session with no attribution log reconciles from the roster alone, exactly as before.
+
+With two or more remote participants and an unresolved track, nothing is forced and nothing is assigned: an unlabelled turn is recoverable, a confidently mislabelled one is not. Each entry records `confidence` — `correlated` (the client's binding, having survived the invariants) or `inferred` (assigned by elimination).
+
+The derivation is a pure function of the roster, so it also runs on demand — and it is versioned: `reconciler_version` in `session.toml` records which reconciler wrote the stored map, and a file without the field is version 0 (written before versioning existed, and read fine — the field's absence is never an error). `transcribe --session` re-derives the map when none is stored *or* when the stored one carries an older version than the current reconciler, so a reconciler fix repairs past sessions on their next transcription rather than only future ones; `transcribe --rereconcile` forces the re-derivation even for a current-version map. The re-derived map labels that run's transcript — `session.toml` keeps the daemon's own record.
+
 ## Speaker attribution
 
 Two independent layers:
 
-1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side; each `browser:<platform>:<participant>` source maps to one named participant. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
+1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side; each `browser:<platform>:<track-slug>` source carries exactly one participant's audio, named through the reconciled `[[speaker]]` map. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
 2. **Diarization (offline pass implemented):** an opt-in diarization stage (`[diarize].backend = "sortformer"`) assigns stable `Speaker N` labels within a multi-speaker source, rendered as `<source> · Speaker N` so source attribution stays primary. An optional per-session name map (`Speaker 2` → `Priya`) applied at or after `cleanup`, never mutating timings, remains future work; the live (streaming) pass is a follow-up to the offline pass that ships today.
 
 ## Vocabulary / known-word lists

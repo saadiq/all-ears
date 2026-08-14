@@ -12,7 +12,9 @@
 //
 // The arbitration is deliberately per-CALL rather than per-track. A per-track
 // choice would need to know which WebAudio track belongs to which receiver
-// track, and rtc-hook.ts:654 records that those ids never match. Per-call
+// track, and rtc-hook.ts's installMeetWebAudioProbe (the ids-never-match
+// finding at its createMediaStreamSource wrap) records that those ids never
+// match. Per-call
 // sidesteps that entirely and matches the observed failure mode: when Meet
 // migrates, it migrates the whole call's audio at once.
 //
@@ -60,9 +62,9 @@ export const SEAM_ESCALATION_GRACE_MS = 4_000;
  * Seams to try for `platform`, most-preferred first.
  *
  * `receiver-track` leads everywhere because it is the only seam whose tracks
- * carry identity directly (the transceiver and stream reach `resolveIdentity`).
- * Falling past it costs attribution quality, so it is never skipped
- * speculatively — only after it demonstrably fails to produce a frame.
+ * carry identity directly (the track and its stream reach the adapter's
+ * `identify()`). Falling past it costs attribution quality, so it is never
+ * skipped speculatively — only after it demonstrably fails to produce a frame.
  */
 export function seamOrderFor(platform: Platform): SeamId[] {
   switch (platform) {
@@ -85,7 +87,7 @@ export function seamOrderFor(platform: Platform): SeamId[] {
  * This one predicate answers both questions that matter, because they have the
  * same answer. Such a seam (a) takes its tracks from the hook's live registry
  * rather than discovering its own, and (b) carries identity, since the
- * transceiver and stream reach `resolveIdentity`.
+ * track and its stream reach the adapter's `identify()`.
  *
  * `meet-encoded-tee` counts: the tee fires on the receiver and its pipeline is
  * keyed on the receiver track — only the *frames* come from the decoder. That
@@ -93,9 +95,9 @@ export function seamOrderFor(platform: Platform): SeamId[] {
  * (journal #31).
  *
  * Seams that are false here have track ids that never match a hooked receiver
- * (rtc-hook.ts:654), so they start under a provisional id and are named later
- * by the existing speaking-onset correlation (SpeakingCorrelator →
- * adapter.onIdentify → handleIdentityUpgrade).
+ * (rtc-hook.ts, ids-never-match finding), so their sources stay anonymous
+ * until the speaking-onset correlation names their owner (SpeakingCorrelator
+ * → adapter.onIdentity → an attendee upsert linking the source).
  */
 export function seamUsesReceiverTracks(seam: SeamId): boolean {
   return seam === "receiver-track" || seam === "meet-encoded-tee";
@@ -130,6 +132,9 @@ export interface TrackProvenanceInfo {
  *   reconcile sweep runs;
  * - an id with no provenance entry always adopts (its own root): a wrongly
  *   dropped remote track is unrecoverable data loss, so unknown fails safe.
+ *
+ * Adopting on `unknown` is only safe because it is reversible: see
+ * ``seamTracksToRetire``, which the same sweep runs first.
  */
 export function seamTracksToAdopt(
   seam: SeamId,
@@ -152,6 +157,116 @@ export function seamTracksToAdopt(
   }
   const keep = new Set(keeperByRoot.values());
   return availableIds.filter((id) => keep.has(id) && !adoptedIds.has(id));
+}
+
+/** What to do with a receiver track the `ontrack` hook just handed us. */
+export type ReceiverAdmission = "start" | "defer-until-unmute" | "skip";
+
+/**
+ * Whether a receiver track should start a pipeline now, wait, or be ignored.
+ *
+ * The `defer-until-unmute` verdict exists because Meet pre-allocates remote
+ * audio transceivers before there is anyone to fill them: journal #142 found
+ * three in a SOLO call, and #165 confirmed the same three on a two-person call
+ * with only the carrying one ever unmuting. Starting a pipeline for each one
+ * mints a `speaker-<n>` attendee for a participant who does not exist — the
+ * phantom roster entries in every session file since July.
+ *
+ * Deferring costs nothing. A muted track carries no audio by definition, and
+ * `AudioFrameSource` already could not build its processor until that same
+ * unmute edge (a MediaStreamTrackProcessor constructed on a muted track never
+ * delivers frames, even after it unmutes). The pipeline was always starting at
+ * first unmute; this only stops us *announcing a participant* before then.
+ *
+ * Scope: receiver tracks only. Webaudio-seam tracks all report `muted=false`
+ * even when inert — on 2026-08-12 all three were unmuted and two transcribed to
+ * zero segments (#171) — so `muted` cannot filter those, and silence alone must
+ * never retire a source, because a genuinely quiet participant looks identical
+ * under DTX / noise suppression.
+ */
+export function admitReceiverTrack(
+  seam: SeamId,
+  opts: { muted: boolean; alreadyCapturing: boolean },
+): ReceiverAdmission {
+  if (opts.alreadyCapturing) return "skip";
+  // Past the receiver-based seams the tracks are known-silent decoys (#82).
+  if (!seamUsesReceiverTracks(seam)) return "skip";
+  return opts.muted ? "defer-until-unmute" : "start";
+}
+
+/**
+ * Adopted tracks that have since been classified `local` — the user's own
+ * audio, captured a second time behind the daemon's mic source.
+ *
+ * The counterpart to `seamTracksToAdopt`'s "unknown adopts" rule, and the
+ * reason that rule can stay as permissive as it is. Provenance only ever
+ * improves: a track can arrive unclassified (the hook installing after Meet's
+ * `getUserMedia`, or Meet handing over a processed track whose lineage was
+ * never recorded) and be named `local` later, when the page hands it to a
+ * sender. Reading provenance once, at adoption, threw that away — so a local
+ * track that lost its first race stayed adopted for the whole call (the
+ * 2026-08-06 call transcribed the user twice and left the identity correlator
+ * with two tracks carrying one voice, which it could not name consistently).
+ *
+ * Retiring fails safe in the same direction as adopting: a `local` verdict is
+ * *evidence*, never the absence of it, so this only ever acts on a positive
+ * classification. An unknown track is left alone exactly as it is at adoption.
+ */
+export function seamTracksToRetire(
+  adoptedIds: ReadonlySet<string>,
+  provenance?: ReadonlyMap<string, TrackProvenanceInfo>,
+): string[] {
+  return [...adoptedIds].filter((id) => provenance?.get(id)?.origin === "local");
+}
+
+/**
+ * The subset of `MediaStreamTrack.getSettings()` locality is decided on.
+ * Data in, so this module stays pure — the DOM read happens at the boundary.
+ *
+ * `deviceId` is named here to document that it is *not* consulted: it is
+ * present and truthy on decoded remote tracks too, so it discriminates
+ * nothing. See ``looksLikeCaptureDevice``.
+ */
+export interface TrackSettingsLike {
+  deviceId?: string;
+  groupId?: string;
+}
+
+/**
+ * Whether these settings describe a capture device — a microphone, not a
+ * decoded remote stream.
+ *
+ * The positive locality signal that does not depend on having witnessed the
+ * `getUserMedia` call: a track backed by a real input device reports the
+ * device group it belongs to, and nothing else does. Still classification from
+ * the page's own API contract rather than from signal analysis, the same rule
+ * the rest of provenance follows.
+ *
+ * **`groupId` only, and deliberately not `deviceId`.** Verified against a live
+ * Meet call on Chrome 151 (2026-08-06), reading `getSettings()` off every track
+ * in the webaudio registry plus a local `RTCPeerConnection` loopback:
+ *
+ * | track                          | `deviceId`          | `groupId` |
+ * | ------------------------------ | ------------------- | --------- |
+ * | `getUserMedia` mic             | `"default"`         | present   |
+ * | Meet's WebAudio-minted tracks  | echoes the track id | absent    |
+ * | WebRTC decoded remote (ontrack)| a UUID              | absent    |
+ * | `MediaStreamAudioDestinationNode` | `"WebAudio-…"`   | absent    |
+ *
+ * `deviceId` is truthy on *every* shape, so testing it would have called every
+ * remote participant local and dropped their audio — the one direction this
+ * classifier must never fail in. `groupId` separated the six local mic tracks
+ * from the three `ontrack` tracks with no false positives in either direction,
+ * and caught two local tracks provenance had as `unknown`.
+ *
+ * Known blind spot, by construction rather than by accident: a *processed*
+ * local mic (Meet's noise suppression re-mints the track through WebAudio)
+ * reports no `groupId` either, so it reads as unknown here and adopts.
+ * ``seamTracksToRetire`` is what covers that case, once the page hands the
+ * processed track to a sender.
+ */
+export function looksLikeCaptureDevice(settings: TrackSettingsLike | undefined): boolean {
+  return Boolean(settings?.groupId);
 }
 
 /**

@@ -51,8 +51,9 @@ describe("sanitizeLabel", () => {
 });
 
 describe("sourceLabel", () => {
-  it("builds browser:<platform>:<participant>", () => {
-    expect(sourceLabel("meet", "jane-a1b2")).toBe("browser:meet:jane-a1b2");
+  it("builds browser:<platform>:<track-slug> from the opaque capture handle", () => {
+    expect(sourceLabel("meet", "t3")).toBe("browser:meet:t3");
+    // Any unsafe capture id is still sanitized into the label grammar.
     expect(sourceLabel("teams", "Speaker 3")).toBe("browser:teams:Speaker-3");
   });
 });
@@ -165,14 +166,25 @@ describe("controlRequest builders match the golden fixtures", () => {
     expect(controlRequest.sessionEnd(7, session)).toEqual(fixture("requests", "session.end"));
   });
 
-  it("session.attendee upsert (display name + source link)", () => {
+  it("session.attendee upsert (display name + source link + platform origin)", () => {
     expect(
       controlRequest.sessionAttendee(9, "0d5e1111-aaaa-bbbb-cccc-222233334444", {
         id: "spaces/x/devices/y",
         display_name: "Jane Doe",
-        source: "browser:meet:jane-a1b2",
+        source: "browser:meet:t3",
+        origin: "platform",
       }),
     ).toEqual(fixture("requests", "session.attendee-upsert"));
+  });
+
+  it("session.attendee upsert marks an extension-minted track handle as synthetic", () => {
+    expect(
+      controlRequest.sessionAttendee(10, "0d5e1111-aaaa-bbbb-cccc-222233334444", {
+        id: "t3",
+        source: "browser:meet:t3",
+        origin: "synthetic",
+      }),
+    ).toEqual(fixture("requests", "session.attendee-upsert-synthetic"));
   });
 });
 

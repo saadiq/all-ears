@@ -125,6 +125,116 @@ describe("SpeakingCorrelator", () => {
     expect(match).toEqual({ trackKey: "track-a", deviceId: "device-377", confirmations: 1 });
   });
 
+  it("refuses a pairing a rival device onset already in hand also fits", () => {
+    // journal #158: the local participant's speaking-ring burst landing inside
+    // the remote track's onset window is exactly as ambiguous as two tracks
+    // sharing one device's window. This is the ordering where the rival is
+    // visible before the match is attempted.
+    const c = new SpeakingCorrelator(200, 3000, 0);
+    expect(c.recordDeviceOnset("devices/160", 1020)).toBeNull(); // remote's own device
+    expect(c.recordDeviceOnset("devices/159", 1040)).toBeNull(); // local participant's device
+    expect(c.recordAudioOnset("track-remote", 1000)).toBeNull();
+  });
+
+  it("retracts a pairing when a second device's onset lands on the same burst afterwards", () => {
+    // The live ordering: track onset, then both rings ~20ms apart. The first
+    // device consumes the burst before the second is visible, so the collision
+    // can only be caught retroactively.
+    const c = new SpeakingCorrelator(200, 3000, 0);
+    c.recordAudioOnset("track-remote", 1000);
+    expect(c.recordDeviceOnset("devices/160", 1020)).toEqual({
+      trackKey: "track-remote",
+      deviceId: "devices/160",
+      confirmations: 1,
+    });
+    expect(c.recordDeviceOnset("devices/159", 1040)).toBeNull();
+
+    // That turn now counts for neither device: a second, clean turn comes back
+    // at confirmations 1, not 2.
+    c.recordAudioOnset("track-remote", 5000);
+    expect(c.recordDeviceOnset("devices/160", 5020)).toEqual({
+      trackKey: "track-remote",
+      deviceId: "devices/160",
+      confirmations: 1,
+    });
+  });
+
+  it("never reaches a 2-turn threshold when every turn is shadowed (the journal #158 call)", () => {
+    const c = new SpeakingCorrelator(200, 3000, 0);
+    for (let turn = 0; turn < 6; turn++) {
+      const t = 1000 + turn * 2000;
+      c.recordAudioOnset("track-remote", t);
+      const m = c.recordDeviceOnset("devices/160", t + 20);
+      expect(m?.confirmations ?? 0).toBeLessThan(2);
+      expect(c.recordDeviceOnset("devices/159", t + 40)).toBeNull();
+    }
+  });
+
+  it("still confirms a pairing that is clean more often than it is shadowed", () => {
+    const c = new SpeakingCorrelator(200, 3000, 0);
+    c.recordAudioOnset("track-remote", 1000); // clean turn → 1
+    c.recordDeviceOnset("devices/160", 1020);
+    c.recordAudioOnset("track-remote", 5000); // clean turn → 2
+    c.recordDeviceOnset("devices/160", 5020);
+    c.recordAudioOnset("track-remote", 9000); // shadowed turn → 3, retracted to 2
+    c.recordDeviceOnset("devices/160", 9020);
+    c.recordDeviceOnset("devices/159", 9040);
+
+    c.recordAudioOnset("track-remote", 13_000);
+    expect(c.recordDeviceOnset("devices/160", 13_020)).toEqual({
+      trackKey: "track-remote",
+      deviceId: "devices/160",
+      confirmations: 3,
+    });
+  });
+
+  it("does not retract when the second device's onset is a separate turn", () => {
+    const c = new SpeakingCorrelator(200, 3000, 0);
+    c.recordAudioOnset("track-remote", 1000);
+    c.recordDeviceOnset("devices/160", 1020);
+    c.recordDeviceOnset("devices/159", 1900); // 900ms away — its own turn, not this burst
+
+    c.recordAudioOnset("track-remote", 5000);
+    expect(c.recordDeviceOnset("devices/160", 5020)).toEqual({
+      trackKey: "track-remote",
+      deviceId: "devices/160",
+      confirmations: 2,
+    });
+  });
+
+  it("treats a same-device onset cluster as one device, not a rival", () => {
+    const c = new SpeakingCorrelator(200, 3000, 0);
+    c.recordAudioOnset("track-a", 1000);
+    expect(c.recordDeviceOnset("devices/160", 1010)).toEqual({
+      trackKey: "track-a",
+      deviceId: "devices/160",
+      confirmations: 1,
+    });
+    // The same device bursting again over the same audio is one speaker, so it
+    // must not retract its own match.
+    c.recordDeviceOnset("devices/160", 1040);
+    c.recordAudioOnset("track-a", 5000);
+    expect(c.recordDeviceOnset("devices/160", 5010)).toEqual({
+      trackKey: "track-a",
+      deviceId: "devices/160",
+      confirmations: 2,
+    });
+  });
+
+  it("forgets a consumed pairing once it ages out of the history window", () => {
+    const c = new SpeakingCorrelator(200, 1000, 0); // 1s history
+    c.recordAudioOnset("track-remote", 1000);
+    c.recordDeviceOnset("devices/160", 1020);
+    c.recordDeviceOnset("devices/159", 3000); // 2s later — consumed record already pruned
+
+    c.recordAudioOnset("track-remote", 5000);
+    expect(c.recordDeviceOnset("devices/160", 5020)).toEqual({
+      trackKey: "track-remote",
+      deviceId: "devices/160",
+      confirmations: 2,
+    });
+  });
+
   it("accepts a genuinely new turn from the same track once the debounce window passes", () => {
     const c = new SpeakingCorrelator(200); // default 1s debounce
     c.recordAudioOnset("track-a", 1000);

@@ -2,13 +2,13 @@
 
 ## One job
 
-Intercept the meeting page's `RTCPeerConnection`s, isolate each remote participant's audio into its own 16 kHz mono PCM stream tagged with a stable participant id, and forward those streams to the background context, which streams them to `earsd`. Identity resolution is the only platform-specific part; everything else is shared.
+Intercept the meeting page's `RTCPeerConnection`s, isolate each remote participant's audio into its own 16 kHz mono PCM stream tagged with a stable per-track handle, and forward those streams to the background context, which streams them to `earsd`. Whose voice a handle carries is resolved separately — platform identities flow as attendee upserts linking the handle's source, never into the source id itself. Identity resolution is the only platform-specific part; everything else is shared.
 
 ### Responsibilities
 
 - Install an `RTCPeerConnection` constructor wrapper in the page's main world **before the page constructs its first connection**.
 - Capture every remote audio track (added at join or mid-call), one isolated pipeline per track, surviving mute/replace/re-subscribe.
-- Resolve each track to a stable participant id via the active platform adapter, degrading to `speaker-<n>` rather than blocking audio.
+- Mint each admitted track a stable, opaque source handle (`t<n>`), and resolve its owner's platform identity via the active platform adapter — at admission when the platform allows it, by speaking-onset correlation later otherwise, or never; audio flows under the handle regardless.
 - Convert each stream to 16 kHz mono `pcm_s16le` off the main thread, without ever playing it back.
 - Relay tagged PCM frames and participant lifecycle events to the background context, which owns the sockets to `earsd`.
 
@@ -53,13 +53,12 @@ The hook is a `world: "MAIN"`, `runAt: "document_start"` content script — the 
 
 ## Track isolation & lifecycle
 
-`lib/audio-tap.ts` owns a map keyed on the live `MediaStreamTrack` object — N tracks, N independent pipelines — plus a per-participant generation counter:
+`lib/audio-tap.ts` owns a map keyed on the live `MediaStreamTrack` object — N tracks, N independent pipelines — plus a per-handle generation counter:
 
-- **Start** (on `track`): resolve identity, bump the participant's generation, build the frame source, store it. A gone-and-back participant starts a fresh segment under the same id — never mutate a live pipeline across a drop.
+- **Start** (on `track`): mint (or re-use) the track's source handle, bump its generation, build the frame source, store it. A gone-and-back track starts a fresh segment under the same handle — never mutate a live pipeline across a drop.
 - **Stop:** on `track.onended`, delete from the map before stopping, so a late frame can't resurrect a dead entry.
 - **Mute/replace:** `onmute`/`onunmute` gate emission. Teams delivers tracks `muted=true` until first speech — accept enabled-but-muted tracks.
-- An async identity upgrade (see Meet below) restarts the track's pipeline as a new segment under the upgraded id rather than renaming in place.
-- An identity that confirms **after its track has ended** can't restart anything; it is sent as a `participant-renamed` message instead (adapter `onRename`). The background upserts the dead track's source label onto the *named* attendee (`session.attendee` with `id=<device>` + `source=browser:<platform>:<fallback>`), so audio already recorded under a `speaker-<n>` source is still transcript-labeled by the participant's name.
+- A platform identity — resolved at admission (`identify()`) or confirmed later by correlation (adapter `onIdentity`) — is forwarded as a `participant-identified` message: a `session.attendee` upsert with `id=<platform id>`, the display name when resolved, and `source=browser:<platform>:<handle>`. The pipeline is never restarted for an identity, no frames are lost, and the message is identical whether the track is live or already ended — late identity is just another upsert.
 
 ## Platform adapters
 
@@ -68,28 +67,36 @@ Identity is the fragile part; it lives entirely behind `lib/identity/adapter.ts`
 ```ts
 export interface PlatformAdapter {
   readonly platform: "meet" | "zoom" | "teams";
-  /** Best-effort stable id for a remote track. null → caller assigns speaker-<n>. */
-  identify(track: MediaStreamTrack, stream: MediaStream, transceiver: RTCRtpTransceiver): ParticipantId | null;
-  displayName?(id: ParticipantId): string | undefined;
+  /** Best-effort platform id for a remote track at admission. null → the source stays anonymous until (unless) a later identity confirms. */
+  identify(track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null;
+  displayName?(id: PlatformParticipantId): string | undefined;
   /** Called on every track's decoded-audio speaking edge. */
   onTrackSpeaking?(track: MediaStreamTrack, speaking: boolean): void;
-  /** Register a callback for a later async identity upgrade of an already-resolved track. */
-  onIdentify?(cb: (track: MediaStreamTrack, id: ParticipantId) => void): void;
+  /** Called on every track's "unmute" (RTP resumed). */
+  onTrackUnmute?(track: MediaStreamTrack): void;
+  /** A platform-DOM speaking indicator fired for a device id. */
+  onDeviceSpeaking?(deviceId: string, at: number): void;
+  /** Register a callback for a platform identity confirmed asynchronously for a captured track — forwarded as an attendee upsert linking the track's source handle; nothing restarts, and it may fire after the track ended. */
+  onIdentity?(cb: (trackId: string, id: PlatformParticipantId) => void): void;
+  /** Register a callback for batches of (id → display name) resolved from the platform roster/UI. */
+  onRoster?(cb: (entries: RosterEntry[]) => void): void;
+  /** Re-scan the identity source (called by the periodic capture reconciler). */
+  pollIdentities?(): void;
   dispose?(): void;
 }
 ```
 
 - **Zoom** — the participant id is parsed from the track's MSID (`decodeURIComponent(streamId).match(/^(\d+)\+/)`, then `>> 10 << 10`, gated on `+CS+`). Intrinsic to the track, stable across mute/re-subscribe.
-- **Meet** — no synchronous mechanism exists on the current build: tiles expose no per-participant media elements, and CSRC/SSRC values don't bridge to tiles (all verified dead live). `identify()` therefore returns `null`, and identity arrives **asynchronously by speaking-onset correlation**: Meet's `collections` `RTCDataChannel` carries a gzip+protobuf message on every speaking-state transition embedding the participant's stable `spaces/<space>/devices/<device>` id and a start/stop flag (`lib/identity/meet-collections.ts`, field paths `1.2.3.2.6` and `1.2.3.2.10.1`). `meet-correlator.ts` pairs a device id's speaking onset with the one live track whose decoded audio onset falls within ~200 ms; after one confirming turn the adapter pushes the upgraded id via `onIdentify`. There is no way to resolve a participant before their first speaking turn.
+- **Meet** — `identify()`'s tile-media correlation is opportunistic (the tile attributes vanished once and returned — see `lib/identity/meet.ts`'s dated addenda) and usually returns `null`; identity arrives **asynchronously by correlation**. Meet's `collections` `RTCDataChannel` carries a gzip+protobuf message embedding the participant's stable `spaces/<space>/devices/<device>` id and a mute flag (`lib/identity/meet-collections.ts`, field paths `1.2.3.2.6` and `1.2.3.2.10.1`). That flag is a **mute-state edge, not a per-turn speaking indicator** — re-interpreted 2026-07-24 (`meet-collections.ts`): the channel emits nothing during normal turn-taking, one message per deliberate mute/unmute. `MeetIdentityEngine` (`meet-identity-engine.ts`, three `meet-correlator.ts` pairings) correlates device ids to tracks: the mic-open edge against the track-level `unmute` event (~2 s window — the pairing current builds actually support); the tile speaking-ring burst (`meet-speaking-dom.ts`, the only per-turn per-device signal left) against the decoded-audio speaking onset (~1 s); and the original mic-open ↔ audio-onset pairing (~200 ms), dormant on current builds and kept in case per-turn events return. After the confirming pairings the adapter pushes the confirmed id via `onIdentity`, and it lands as an attendee upsert linking the track's source. A participant cannot resolve by correlation before their first unmute or speaking turn.
 - **Teams** — one mixed track, no usable CSRCs. Buffered frames are attributed to the app's reported dominant speaker, emitting `Speaker N`. This is attribution, not isolation — never presented as per-participant fidelity.
-- **Universal fallback:** on `null`, assign a stable `speaker-<n>` keyed to the track. Identity is best-effort; audio is not.
+- **Universal fallback is the default:** every source is already a stable anonymous handle, so an identity that never resolves costs nothing but the name. Identity is best-effort; audio is not.
 
 ### The collections exception
 
 Decoding an app's private protobuf/Redux internals is prohibited in general (versioned, undocumented wire formats — the biggest maintenance sink). The Meet `collections` parser is the one narrow exception, bounded by these guardrails:
 
 - Only the two documented fields (device id, speaking flag) are decoded; nothing depends on any other field.
-- Parsing is defensive: any shape mismatch degrades to `speaker-<n>`, never throws or blocks audio, and a schema self-check warns when real traffic stops matching the expected shape (plus a debug-gated structure dump for diagnosing drift).
+- Parsing is defensive: any shape mismatch degrades to an unnamed source, never throws or blocks audio, and a schema self-check warns when real traffic stops matching the expected shape (plus a debug-gated structure dump for diagnosing drift).
 - Tests carry real captured wire-byte fixtures, not just synthetic ones.
 
 This does not license decoding anything else on `collections`, or Zoom's `__reduxStore`, or any other private store.
@@ -107,12 +114,12 @@ Meet's internal audio path moved four times in twelve days (journal #31, #73, #8
 - **Order:** `receiver-track` leads on every platform, because it is the only seam whose tracks carry identity directly. Meet then falls back `webaudio-track` → `meet-encoded-tee`. Zoom and Teams have the one seam that works; speculative fallbacks there would risk double-capture.
 - **Escalation:** an `unmute` arms a grace window (`SEAM_ESCALATION_GRACE_MS`) — the platform asserting audio is flowing, so a frame must follow. No frame before it expires means the *seam* is wrong, not that the participant is quiet, and the call escalates. Waiting on `unmute` rather than on pipeline start is what stops a silent call from escalating through every seam before anyone speaks.
 - **Locking:** the first decoded frame proves the seam permanently. A proven seam falling quiet is participants stopping talking, never breakage, so it must never churn.
-- **Identity:** seams built on the receiver track reach `resolveIdentity` — both `receiver-track` and `meet-encoded-tee`, since the tee only supplies *frames* while its pipeline is still keyed on the receiver. Other seams' track ids never match a hooked receiver (`rtc-hook.ts`), so they capture under a provisional `<seam>-<n>` id and are named by the existing speaking-onset correlation. Guessing a mapping would attach a confidently-wrong name to real audio, which is worse than a provisional one.
+- **Identity:** seams built on the receiver track reach the adapter's `identify()` at admission — both `receiver-track` and `meet-encoded-tee`, since the tee only supplies *frames* while its pipeline is still keyed on the receiver. Other seams' track ids never match a hooked receiver (`rtc-hook.ts`'s `installMeetWebAudioProbe`, the ids-never-match finding), so there is nothing for `identify()` to match on; their sources simply stay anonymous under their `t<n>` handles until the speaking-onset correlation names their owner. Guessing a mapping would attach a confidently-wrong name to real audio, which is worse than an anonymous handle.
 - **Cloning:** non-receiver seams capture a `clone()` of the page's track. A `MediaStreamTrackProcessor` consumes the track it is given; cloning keeps the page's own playback whole.
 
 ### Seams
 
-- **`receiver-track` (Zoom, Teams, and Meet builds that keep audio on the receiver path):** `MediaStreamTrackProcessor` reads decoded `AudioData` directly off each remote track. Construction is deferred to the track's first `unmute` — a processor built on a muted track never delivers frames, and a track allows only one processor ever. (`pcm-worklet.ts` survives as an unwired legacy fallback; don't build new capture against it.)
+- **`receiver-track` (Zoom, Teams, and Meet builds that keep audio on the receiver path):** `MediaStreamTrackProcessor` reads decoded `AudioData` directly off each remote track. Construction is deferred to the track's first `unmute` — a processor built on a muted track never delivers frames, and a track allows only one processor ever.
 - **`webaudio-track` (Meet):** the tracks Meet passes to `createMediaStreamSource`, registered by the passive prototype wrap in `rtc-hook.ts` and exposed as `webAudioTracks()`. On builds where the receiver tracks are live-but-silent decoys, these carry the real decoded audio, per participant, readable by the same `MediaStreamTrackProcessor` the receiver seam uses — verified live at exactly real-time (50 frames / 24000 samples in 498 ms at 48 kHz), with energy envelopes across six concurrent tracks separating into one speaker, two idle-but-live, and three at digital zero (journal #105, #106). Reuses `TrackProcessorSource` unchanged; the seam adds discovery and cloning, not a new frame source.
 - **`meet-encoded-tee` (Meet, `createEncodedStreams`):** Meet's client calls `receiver.createEncodedStreams()` on every audio receiver and decodes the RTP in its own WASM pipeline, so **no `MediaStreamTrack`-based mechanism ever produces audio on Meet** — worklet, processor, and `<audio>` taps all read pure silence (confirmed via `getStats()`: `decoderImplementation=undefined`, `jitterBufferEmittedCount=0` through live speech). The fix: wrap `createEncodedStreams` in the same MAIN-world hook, `.tee()` the pre-decode readable on audio receivers (Meet's own branch passes through untouched — verified transparent in live calls), and decode our branch with the native WebCodecs `AudioDecoder` (`{codec:"opus", sampleRate:48000, numberOfChannels:1}`; every Opus chunk is `"key"`). The decoder outputs the same `AudioData` interface the standard path yields, so downstream is shared. A registry keyed on the `MediaStreamTrack` connects the tee (which fires on the receiver) to the pipeline (built on the `track` event).
   - Gate the tee on `location.host === "meet.google.com"` at hook-install time — applied elsewhere it would double-capture platforms where the standard path works.
@@ -127,7 +134,19 @@ Meet's internal audio path moved four times in twelve days (journal #31, #73, #8
 - **Isolated → main:** `{ __earsCtl: true, ... }` — mirrors the capture toggle (and every change) into the page realm as `capture-state` messages.
 - **Isolated → background:** PCM rides a dedicated long-lived `runtime.connect` port (`lib/pcm-port.ts`), reconnected **lazily** on the next post after a disconnect so an idle tab never traps a suspended worker in a wake loop. Control events use typed runtime messaging.
 - **Respawn replay:** the content relay keeps the durable copy of what the worker holds only in memory — the live call and current participants — and replays `meeting-started` + `joined` into every *fresh* port ahead of the message that triggered the reconnect. A respawned worker therefore re-learns which session the tab's audio belongs to (the daemon-side verbs are idempotent), so it can tag `ingest.open` with the session identity and send `session.end` when the tab goes away. Without the replay, an evicted-mid-call worker forwards PCM it can't attribute and has nothing to end — the stranded-active-session bug.
-- **Session lifecycle:** `session-tracker.ts` (in the background) is a signal forwarder — the daemon owns the session state machine ([control protocol v2](../control-protocol.md)). It translates what the tabs' DOM layers observe into daemon verbs over the `/control` WebSocket: the platform's `meeting-started` signal → `session.start` (idempotent on platform + external meeting id), participant join/leave and ingest-stream opens → `session.attendee` upserts, the popup's pause toggle → `session.pause`/`session.resume` (marks, never capture), `meeting-ended` or the tab going away → `session.end`. Recovery after worker eviction or daemon restart is re-declaration through the same idempotent `session.start`.
+- **Session lifecycle:** `session-tracker.ts` (in the background) is a signal forwarder — the daemon owns the session state machine ([control protocol v2](../control-protocol.md)). It translates what the tabs' DOM layers observe into daemon verbs over the `/control` WebSocket: the platform's `meeting-started` signal → `session.start` (idempotent on platform + external meeting id), a scraped meeting name → `session.rename`, participant join/leave and ingest-stream opens → `session.attendee` upserts, the popup's pause toggle → `session.pause`/`session.resume` (marks, never capture), `meeting-ended` or the tab going away → `session.end`. Recovery after worker eviction or daemon restart is re-declaration through the same idempotent `session.start`.
+
+### Meeting name
+
+The session's title is what the daemon files the transcript under (`{title}` in a path template, see [configuration](../../configuration.md#path-templates)), so a calendar-created call should carry its real name rather than a UUID.
+
+`lib/identity/meet-meeting-title.ts` reads it, on the same poll the meeting-id watcher runs on:
+
+- **`document.title`** is the load-bearing surface. `stripProductName` handles both orderings ("Meet – X", "X - Google Meet") and the "(3) " notification prefix rather than pinning one exact spelling.
+- **The in-call details heading** is a fallback. Its selectors are **unverified against a live Meet build**; a miss costs nothing, since the title path already covers the common case.
+- A **meeting-code-shaped string** (`xxx-yyyy-zzz`) counts as *no name found*. Filing a transcript under the join code is worse than the daemon's own default (identity → Meet id), which at least stays stable.
+
+A name known at declare time rides along on `session.start` as `title`. Calendar names usually resolve a few seconds after join, so a late one goes out as `session.rename` with `if_rev` — a compare-and-set, so a rename the user made by hand is never clobbered, and a lost compare-and-set is never retried. At most one rename per session. Zoom and Teams send no title; the daemon's default stands.
 - **Persisted state:** `storage.local` holds the user-facing capture toggle (explicit privacy intent — survives browser restart; missing/corrupt values default to ON so a failed read can't silently kill capture). `storage.session` holds worker-respawn recovery (active-session flag re-arms the `chrome.alarms` keepalive; session area so a fresh browser start can't resurrect a stale alarm). The keepalive is armed only while ≥1 participant is live — an idle extension schedules zero wakes.
 
 ## Performance instrumentation

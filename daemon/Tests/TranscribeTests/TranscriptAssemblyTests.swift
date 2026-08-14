@@ -98,22 +98,69 @@ struct TranscriptAssemblyTests {
       speechSeconds: 12
     )
 
-    // The guest turn is split around each reply, and the replies land at their
-    // own timestamps — a woven conversation, not two monolithic blocks.
+    // The guest keeps the floor: their sentence is emitted WHOLE, and the two
+    // short replies are demoted to backchannels attached beneath it rather than
+    // cutting it into five fragments. Splitting on every intrusion is faithful
+    // to the audio and unreadable as a document — on the 2026-08-12 call it
+    // turned a mutual "nice to meet you" into ten one-word turns.
     #expect(
-      document.segments.map(\.speaker) == [
-        "app:us.zoom.xos", "You", "app:us.zoom.xos", "You", "app:us.zoom.xos",
-      ])
+      document.segments.map(\.speaker) == ["app:us.zoom.xos", "You", "You"])
     #expect(
       document.segments.map(\.segment.text) == [
-        "so as I was saying", "right", "the plan", "makes sense", "is basically",
+        "so as I was saying the plan is basically", "right", "makes sense",
       ])
+    #expect(document.segments.map(\.isBackchannel) == [false, true, true])
     // Displayed segments are non-decreasing by start across the whole file.
     let starts = document.segments.map(\.segment.start)
     #expect(starts == starts.sorted())
-    #expect(starts == [0, 5, 6, 8, 9])
-    // No words are lost or duplicated by the split.
+    #expect(starts == [0, 5, 8])
+    // Nothing is split or merged, so no words are lost or duplicated.
     #expect(document.frontmatter.wordCount == 12)
+  }
+
+  @Test("a long interjection keeps its own turn — only short ones are demoted")
+  func longInterjectionIsNotABackchannel() {
+    let start = Instant(secondsSinceEpoch: 0)
+    let requested = TimeRange(start: start, end: start.advanced(by: 12))
+    let model = TranscriptModelInfo(name: "m", backend: "b", version: "v")
+    let guest = SourceTranscription(
+      sourceID: "app:us.zoom.xos",
+      segments: [Segment(start: 0, end: 12, text: "so as I was saying the plan is basically")])
+    let mic = SourceTranscription(
+      sourceID: "mic",
+      segments: [
+        Segment(start: 5, end: 6, text: "hang on that is not what we agreed last week at all")
+      ])
+
+    let document = TranscriptAssembly.assemble(
+      sourceIDs: [SourceID("app:us.zoom.xos"), SourceID("mic")],
+      transcriptions: [guest, mic], requested: requested, rangeRun: "id",
+      model: model, generated: start, speechSeconds: 12)
+
+    #expect(document.segments.map(\.isBackchannel) == [false, false])
+  }
+
+  @Test("turns with no text are dropped before anything else sees them")
+  func emptyTurnsAreDropped() {
+    let start = Instant(secondsSinceEpoch: 0)
+    let requested = TimeRange(start: start, end: start.advanced(by: 10))
+    let model = TranscriptModelInfo(name: "m", backend: "b", version: "v")
+    // The ASR emits these in volume — eleven of the first fifteen turns on the
+    // 2026-08-12 call carried no words at all.
+    let mic = SourceTranscription(
+      sourceID: "mic",
+      segments: [
+        Segment(start: 0, end: 1, text: ""),
+        Segment(start: 2, end: 3, text: "   "),
+        Segment(start: 4, end: 5, text: "actually here"),
+      ])
+
+    let document = TranscriptAssembly.assemble(
+      sourceIDs: [SourceID("mic")], transcriptions: [mic], requested: requested,
+      rangeRun: "id", model: model, generated: start, speechSeconds: 1)
+
+    #expect(document.segments.map(\.segment.text) == ["actually here"])
+    #expect(document.frontmatter.wordCount == 2)
   }
 
   @Test("a single word-timed source is not fragmented (byte-identical turns)")
@@ -157,8 +204,11 @@ struct TranscriptAssemblyTests {
     // [speakers] map points both at the same display name, so they render as
     // one speaker and never split each other.
     let speakers = [
-      "browser:meet:speaker-1": "Priya",
-      "browser:meet:spaces-x769r-devices-261": "Priya",
+      SessionSpeaker(
+        source: SourceID("browser:meet:speaker-1"), name: "Priya", confidence: .correlated),
+      SessionSpeaker(
+        source: SourceID("browser:meet:spaces-x769r-devices-261"), name: "Priya",
+        confidence: .inferred),
     ]
     let early = SourceTranscription(
       sourceID: "browser:meet:speaker-1",
@@ -199,6 +249,9 @@ struct TranscriptAssemblyTests {
 
     #expect(document.segments.map(\.speaker) == ["Priya", "Priya"])
     #expect(document.segments.map(\.segment.text) == ["before the upgrade", "after the upgrade"])
+    // The map itself travels on the document, so the sidecar can record the
+    // attribution conclusion this run was labelled with.
+    #expect(document.speakers == speakers)
   }
 
   @Test("word count sums split text words when a segment has no word timings")

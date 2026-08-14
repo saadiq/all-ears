@@ -11,6 +11,12 @@ import EarsCore
 /// `socket_path`, and `log.file`. An empty path (the "derive it" sentinel for
 /// `socket_path`/`log.file`) is left untouched.
 ///
+/// The ``PathTemplate``-valued keys — `cleanup.output` and each
+/// `[[summarize.preset]]`'s `notes`/`out` — get `~` expansion only, for the
+/// same reason `output_root` does: a template usually *starts* with
+/// `{output_root}`, so resolving a non-absolute one against `data_root`
+/// would prepend a base its tokens already carry.
+///
 /// Takes `homeDirectory` as a parameter rather than reading it from the
 /// environment, so it's a pure, injectable function tests can exercise without
 /// touching the real home directory.
@@ -31,6 +37,27 @@ public func expandConfigPaths(_ config: ConfigValue, homeDirectory: String) -> C
     root["socket_path"] = .string(
       resolvePath(rawSocketPath, relativeTo: dataRoot, homeDirectory: homeDirectory)
     )
+  }
+  if case .table(var cleanup)? = root["cleanup"] {
+    if case .string(let rawOutput)? = cleanup["output"] {
+      cleanup["output"] = .string(expandTilde(rawOutput, homeDirectory: homeDirectory))
+    }
+    root["cleanup"] = .table(cleanup)
+  }
+  if case .table(var summarize)? = root["summarize"] {
+    if case .array(let presets)? = summarize["preset"] {
+      summarize["preset"] = .array(
+        presets.map { preset in
+          guard case .table(var fields) = preset else { return preset }
+          for key in ["notes", "out"] {
+            if case .string(let rawTemplate)? = fields[key] {
+              fields[key] = .string(expandTilde(rawTemplate, homeDirectory: homeDirectory))
+            }
+          }
+          return .table(fields)
+        })
+    }
+    root["summarize"] = .table(summarize)
   }
   if case .table(var log)? = root["log"] {
     if case .string(let rawLogFile)? = log["file"] {

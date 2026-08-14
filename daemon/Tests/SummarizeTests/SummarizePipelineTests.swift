@@ -1,6 +1,7 @@
 import EarsCore
 import EarsCoreTestSupport
 import Foundation
+import Synchronization
 import Testing
 
 @testable import summarize
@@ -119,12 +120,14 @@ struct SummarizePipelineTests {
         atPath: directory.appendingPathComponent("standup.actions.summary.md").path))
   }
 
-  @Test("prefers a sibling .clean.md over the .transcript.md it was pointed at")
-  func prefersCleanedSibling() async throws {
-    let directory = Self.makeTempDirectory("prefer-clean")
+  @Test("summarizes exactly the path it was given, with no sibling redirection")
+  func usesTheGivenPathVerbatim() async throws {
+    let directory = Self.makeTempDirectory("verbatim-path")
     defer { try? FileManager.default.removeItem(at: directory) }
     let transcriptURL = try Self.writeFixtureTranscript(
       at: directory, text: "raw unclean text")
+    // A sibling `.clean.md` exists but is *not* what was asked for: the
+    // caller (the daemon chain, or `--session`) names the input explicitly.
     _ = try Self.writeFixtureTranscript(
       at: directory, name: "standup.clean.md", text: "Cleaned, readable text.")
 
@@ -138,12 +141,365 @@ struct SummarizePipelineTests {
       dependencies: deps)
 
     #expect(exitCode == 0)
-    #expect(
-      FileManager.default.fileExists(
-        atPath: directory.appendingPathComponent("standup.summary.md").path))
     let content = try String(
       contentsOf: directory.appendingPathComponent("standup.summary.md"), encoding: .utf8)
-    #expect(content.contains("derived_from: standup.clean.md"))
+    #expect(content.contains("derived_from: standup.transcript.md"))
+  }
+
+  @Test("a preset's notes file is read as plain Markdown and labelled in the prompt")
+  func notesAreLabelledInThePrompt() async throws {
+    let directory = Self.makeTempDirectory("notes")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("jotted.md")
+    try "- ship the thing\n- ask Kevin".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let (deps, backend) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "brief", promptContent: "Brief:",
+            notes: PathTemplate("{output_root}/jotted.md"))
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let prompt = try #require(await backend.receivedPrompts.first)
+    #expect(prompt.dynamicSuffix.contains("## Jotted notes\n\n- ship the thing\n- ask Kevin"))
+    #expect(prompt.dynamicSuffix.contains("## Transcript\n\n"))
+    #expect(prompt.dynamicSuffix.contains("Transcript body."))
+  }
+
+  @Test("a configured notes file that doesn't exist summarizes with empty notes")
+  func missingNotesFallsBackToEmpty() async throws {
+    let directory = Self.makeTempDirectory("missing-notes")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+
+    let results = Mutex<[SummarizePipeline.PresetResult]>([])
+    let stderr = Mutex<[String]>([])
+    var (deps, backend) = Self.dependencies(
+      llmResults: [
+        .success(LLMCompletionResult(text: "Summary.")),
+        .success(LLMCompletionResult(text: "Brief.")),
+      ])
+    deps.onPresetResult = { result in results.withLock { $0.append(result) } }
+    deps.writeStderr = { line in stderr.withLock { $0.append(line) } }
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "notes", promptContent: "Notes:",
+            notes: PathTemplate("{output_root}/absent.md")),
+          SummarizePipeline.Preset(name: "brief", promptContent: "Brief:"),
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    // Both presets succeed: the absent notes file is a warning, not a failure.
+    #expect(exitCode == 0)
+    let recorded = results.withLock { $0 }
+    #expect(recorded.count == 2)
+    #expect(recorded.filter(\.ok).count == 2)
+
+    // The prompt still carries the labelled two-section shape, with the notes
+    // half empty — that is what "an empty string for the notes" buys.
+    let notesPrompt = try #require(await backend.receivedPrompts.first)
+    #expect(notesPrompt.dynamicSuffix.hasPrefix("## Jotted notes\n\n\n\n## Transcript\n\n"))
+    #expect(notesPrompt.dynamicSuffix.contains("Transcript body."))
+
+    // The absence is reported, not swallowed.
+    let warnings = stderr.withLock { $0 }
+    #expect(warnings.contains { $0.contains("no notes file at") && $0.hasPrefix("warning:") })
+  }
+
+  @Test("out = {notes} overwrites the notes file, and frontmatter = false writes the body alone")
+  func writesBackOverTheNotesFile() async throws {
+    let directory = Self.makeTempDirectory("notes-writeback")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("daily/2026-08-05.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let (deps, backend) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "# Notes\n\n- jotted, expanded"))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "meeting-notes", promptContent: "Notes:",
+            notes: PathTemplate("{output_root}/daily/2026-08-05.md"),
+            out: PathTemplate("{notes}"),
+            frontmatter: false)
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    // The original notes were read before the write — the prompt saw them.
+    let prompt = try #require(await backend.receivedPrompts.first)
+    #expect(prompt.dynamicSuffix.contains("- jotted"))
+    // ...and the note now holds the summary body, with no ears frontmatter
+    // to collide with a vault's own, and no stray JSON sidecar beside it.
+    let written = try String(contentsOf: notesURL, encoding: .utf8)
+    #expect(written == "# Notes\n\n- jotted, expanded\n")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("daily/2026-08-05.json").path))
+  }
+
+  @Test("--out overrides a preset's own out template, including out = {notes}")
+  func explicitOutBeatsPresetOut() async throws {
+    let directory = Self.makeTempDirectory("out-precedence")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("daily/2026-08-05.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted".write(to: notesURL, atomically: true, encoding: .utf8)
+    let explicitURL = directory.appendingPathComponent("elsewhere/redirected.md")
+
+    let (deps, _) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "meeting-notes", promptContent: "Notes:",
+            notes: PathTemplate("{output_root}/daily/2026-08-05.md"),
+            out: PathTemplate("{notes}"),
+            frontmatter: false)
+        ],
+        out: explicitURL.path, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    // The summary went where the flag said, parent directory created for it...
+    #expect(try String(contentsOf: explicitURL, encoding: .utf8) == "Summary.\n")
+    // ...and the notes file the preset would have overwritten is untouched.
+    #expect(try String(contentsOf: notesURL, encoding: .utf8) == "- jotted")
+  }
+
+  @Test("the LLM sees the conversation's title, start, speakers and per-turn timestamps")
+  func promptCarriesHeaderAndTimestamps() async throws {
+    let directory = Self.makeTempDirectory("prompt-header")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let start = Instant(secondsSinceEpoch: 1_786_518_073)  // 2026-08-12T07:01:13Z
+    let frontmatter = TranscriptFrontmatter(
+      schema: 1,
+      kind: .clean,
+      rangeRun: "2026-08-12T07-01-13Z_meet",
+      title: "meet 96DC3F7J7x0B",
+      started: start,
+      sources: ["mic", "browser:meet:webaudio-track-1"],
+      range: TimeRange(start: start, end: start.advanced(by: 3347)),
+      model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
+      diarization: TranscriptDiarizationInfo(enabled: false),
+      generated: start.advanced(by: 4000),
+      durationSeconds: 3347,
+      speechSeconds: 3000,
+      wordCount: 20,
+      vocab: []
+    )
+    let document = TranscriptDocument(
+      frontmatter: frontmatter,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "Tom Elliot",
+          segment: Segment(start: 40, end: 41, text: "Nice to meet you.")),
+        TranscriptSegment(
+          source: "browser:meet:webaudio-track-1", speaker: "Alan Bradburne",
+          segment: Segment(start: 94, end: 96, text: "Very good to meet you too.")),
+      ])
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let transcriptURL = directory.appendingPathComponent("meet.clean.md")
+    try TranscriptRenderer.renderMarkdown(document).write(
+      to: transcriptURL, atomically: true, encoding: .utf8)
+    // With the sidecar, as the daemon chain always writes it: the Markdown
+    // body alone carries no per-turn source, so this is what separates the
+    // mic speaker from the remote one.
+    try TranscriptRenderer.renderJSON(document).write(
+      to: directory.appendingPathComponent("meet.clean.json"), atomically: true, encoding: .utf8)
+
+    let (deps, backend) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [SummarizePipeline.Preset(name: "meeting", promptContent: "Notes:")],
+        out: nil),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let prompt = try #require(await backend.receivedPrompts.first)
+    // The header dates the conversation the model is asked to write up...
+    #expect(prompt.dynamicSuffix.contains("title: meet 96DC3F7J7x0B"))
+    #expect(prompt.dynamicSuffix.contains("started: 2026-08-12T07:01:13Z"))
+    // ...names the file it came from, so a prompt asked to link the transcript
+    // quotes a path rather than inventing a plausible-looking one...
+    #expect(prompt.dynamicSuffix.contains("transcript: \(transcriptURL.path)"))
+    // ...and names who was in it, marking the mic speaker as the note's author
+    // so identifying them is not left to guesswork over display names.
+    #expect(
+      prompt.dynamicSuffix.contains("speakers: Tom Elliot (me), Alan Bradburne"))
+    // Every turn carries its wall-clock time, as the published transcript does.
+    #expect(prompt.dynamicSuffix.contains("[07:01:53] Tom Elliot: Nice to meet you."))
+    #expect(
+      prompt.dynamicSuffix.contains("[07:02:47] Alan Bradburne: Very good to meet you too."))
+  }
+
+  @Test("the source transcript is linked back to the summary it produced")
+  func stampsNoteLinkIntoTheSourceTranscript() async throws {
+    let directory = Self.makeTempDirectory("backlink")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let before = try String(contentsOf: transcriptURL, encoding: .utf8)
+
+    let (deps, _) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [SummarizePipeline.Preset(name: "brief", promptContent: "Brief:")],
+        out: nil),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let after = try String(contentsOf: transcriptURL, encoding: .utf8)
+    let summaryPath = directory.appendingPathComponent("standup.summary.md").path
+    // Outside any vault the link falls back to the absolute path, which is
+    // still a truthful pointer — see `VaultPath.linkTarget`.
+    #expect(after.contains("note: \"[[\(summaryPath)]]\""))
+    // Only the frontmatter moved: the body is byte-identical.
+    #expect(
+      after.components(separatedBy: "---\n").last == before.components(separatedBy: "---\n").last)
+    // And it still parses.
+    #expect(try TranscriptParser.parse(markdown: after, jsonSidecar: nil).frontmatter.note != nil)
+  }
+
+  @Test("a summary still succeeds when its source transcript can't be linked back")
+  func unwritableSourceDoesNotFailThePreset() async throws {
+    let directory = Self.makeTempDirectory("backlink-failure")
+    defer {
+      try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o755], ofItemAtPath: directory.path)
+      try? FileManager.default.removeItem(at: directory)
+    }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let outURL = Self.makeTempDirectory("backlink-failure-out").appendingPathComponent("s.md")
+    defer { try? FileManager.default.removeItem(at: outURL.deletingLastPathComponent()) }
+
+    let warnings = Mutex<[String]>([])
+    let backend = FakeLLMBackend(results: [.success(LLMCompletionResult(text: "Summary."))])
+    let deps = SummarizePipeline.Dependencies(
+      clock: ManualClock(Instant(secondsSinceEpoch: 120)),
+      llmBackend: backend,
+      log: { _ in },
+      writeStderr: { line in warnings.withLock { $0.append(line) } })
+
+    // Read-only directory: the summary lands elsewhere, the in-place rewrite
+    // of the transcript cannot.
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o555], ofItemAtPath: directory.path)
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [SummarizePipeline.Preset(name: "brief", promptContent: "Brief:")],
+        out: outURL.path),
+      dependencies: deps)
+
+    // The summary is the artifact that matters; a missing back-link is a
+    // warning, not a lost summary.
+    #expect(exitCode == 0)
+    #expect(try String(contentsOf: outURL, encoding: .utf8).contains("Summary."))
+    #expect(warnings.withLock { $0 }.contains { $0.contains("could not link") })
+  }
+
+  @Test("a Markdown transcript that isn't an ears document still summarizes, warning once")
+  func summarizesAForeignTranscript() async throws {
+    let directory = Self.makeTempDirectory("foreign-transcript")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    // A Granola-style export: no frontmatter, its own speaker/timestamp shape.
+    let foreign = "**You**\n*00:07*\nSo that hardware in the loop…\n"
+    let transcriptURL = directory.appendingPathComponent("Lucas - 12 June at 14-59.md")
+    try foreign.write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+    let warnings = Mutex<[String]>([])
+    let backend = FakeLLMBackend(results: [.success(LLMCompletionResult(text: "Summary."))])
+    let deps = SummarizePipeline.Dependencies(
+      clock: ManualClock(Instant(secondsSinceEpoch: 120)),
+      llmBackend: backend,
+      log: { _ in },
+      writeStderr: { line in warnings.withLock { $0.append(line) } })
+
+    let outURL = directory.appendingPathComponent("note.md")
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(name: "meeting", promptContent: "Notes:", frontmatter: false)
+        ],
+        out: outURL.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let prompt = try #require(await backend.receivedPrompts.first)
+    // Its text reaches the model verbatim, under a header carrying the one
+    // thing that *is* known about it...
+    #expect(prompt.dynamicSuffix.contains(foreign))
+    #expect(prompt.dynamicSuffix.contains("transcript: \(transcriptURL.path)"))
+    // ...and nothing this pipeline would have had to invent.
+    #expect(!prompt.dynamicSuffix.contains("started:"))
+    #expect(!prompt.dynamicSuffix.contains("speakers:"))
+    // The degraded input is reported rather than passed off as a clean parse.
+    #expect(warnings.withLock { $0 }.contains { $0.contains("is not an ears transcript") })
+    // It still gets linked to the note it produced, in a block created for it.
+    let after = try String(contentsOf: transcriptURL, encoding: .utf8)
+    #expect(after == "---\nnote: \"[[\(outURL.path)]]\"\n---\n\(foreign)")
+    #expect(warnings.withLock { $0 }.contains { $0.contains("had no frontmatter") })
+  }
+
+  @Test("nobody is marked (me) when every speaker resolves to the mic")
+  func rollCallStaysUnmarkedWhenSourcesDoNotSeparateSpeakers() async throws {
+    let directory = Self.makeTempDirectory("roll-call-single-source")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    // The stock fixture is one mic source with one speaker — the shape a
+    // Markdown-only parse also degrades to, where every turn resolves to
+    // `sources.first` whether or not it was really captured there.
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory)
+
+    let (deps, backend) = Self.dependencies(
+      llmResults: [.success(LLMCompletionResult(text: "Summary."))])
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [SummarizePipeline.Preset(name: "brief", promptContent: "Brief:")],
+        out: nil),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    let prompt = try #require(await backend.receivedPrompts.first)
+    #expect(prompt.dynamicSuffix.contains("speakers: You\n"))
+    #expect(!prompt.dynamicSuffix.contains("(me)"))
   }
 
   @Test("merges sources/vocab and spans the range across multiple input transcripts")
@@ -304,5 +660,136 @@ struct SummarizePipelineTests {
         presets: [SummarizePipeline.Preset(name: "brief", promptContent: "Brief:")], out: nil),
       dependencies: deps)
     #expect(exitCode == 3)
+  }
+}
+
+/// The 2026-08-12 Matthew Barras call, end to end through the real pipeline.
+///
+/// Everything that went wrong that day meets here: a session the platform
+/// never named, jottings filed a directory below where the `notes` template
+/// looks and under a short form of the attendee's name, and speaker
+/// attribution that had to be repaired at session end. The note this produces
+/// is the one the user should have got.
+@Suite("SummarizePipeline — the misattributed one-to-one")
+struct SummarizeMisattributedCallTests {
+  private static let start = Instant(secondsSinceEpoch: 1_786_544_990)  // 2026-08-12T14:29:50Z
+  private static let end = Instant(secondsSinceEpoch: 1_786_547_924)
+
+  /// A published transcript carrying what reconciliation concluded: a title
+  /// derived from the roster, the roster itself, and the caveats.
+  private static func writeTranscript(at directory: URL) throws -> URL {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let frontmatter = TranscriptFrontmatter(
+      schema: 1,
+      kind: .clean,
+      session: "ea510e3a-b9e8-4e9d-9844-0f5dbf7e5852",
+      title: "Matthew Barras",
+      started: start,
+      attendees: ["Tom Elliot (me)", "Matthew Barras"],
+      warnings: [
+        "speaker attribution: dropped a binding of remote audio "
+          + "(browser:meet:spaces-wUE9lE2sg5YB-devices-404) to you (Tom Elliot) — browser "
+          + "capture only ever records other participants"
+      ],
+      sources: ["mic", "browser:meet:speaker-2"],
+      range: TimeRange(start: start, end: end),
+      model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.6b"),
+      diarization: TranscriptDiarizationInfo(enabled: false),
+      generated: end,
+      durationSeconds: 2934,
+      speechSeconds: 1494.5,
+      wordCount: 5019,
+      vocab: [])
+    let document = TranscriptDocument(
+      frontmatter: frontmatter,
+      segments: [
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 0, end: 3, text: "Nice to meet you, Matt.")),
+        TranscriptSegment(
+          source: "browser:meet:speaker-2", speaker: "Matthew Barras",
+          segment: Segment(start: 4, end: 8, text: "Based in York, in Yorkshire.")),
+      ])
+    let url = directory.appendingPathComponent("2026-08-12 - Matthew Barras.md")
+    try TranscriptRenderer.renderMarkdown(document).write(
+      to: url, atomically: true, encoding: .utf8)
+    return url
+  }
+
+  /// The vault's real shape: the week folder holds a day folder the template
+  /// does not know about, and the note is named "Matt Barras".
+  private static func writeVault(at root: URL) throws -> URL {
+    let day = root.appendingPathComponent("daily-notes/2026/08/33/2026-08-12")
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    let notes = day.appendingPathComponent("2026-08-12 - Matt Barras.md")
+    try "barrasindustries.com\n\nhas codex + claude open 12 hours a day\n"
+      .write(to: notes, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: start.advanced(by: 2200).secondsSinceEpoch)],
+      ofItemAtPath: notes.path)
+    return notes
+  }
+
+  @Test("the jottings are found, folded in, backed up, and the caveats reach the note")
+  func foldsInTheNoteTheTemplateMissed() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("SummarizeMisattributed-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transcriptURL = try Self.writeTranscript(at: root.appendingPathComponent("Transcripts"))
+    let notesURL = try Self.writeVault(at: root)
+    let backups = root.appendingPathComponent("backups")
+
+    let backend = FakeLLMBackend(results: [
+      .success(LLMCompletionResult(text: "---\ntitle: Matthew Barras\n---\n\n## Matthew Barras"))
+    ])
+    let deps = SummarizePipeline.Dependencies(
+      clock: ManualClock(Self.end), llmBackend: backend,
+      log: { _ in }, writeStderr: { _ in })
+
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "meeting", promptContent: "Fold in:",
+            // The template as configured: no day folder, `{title}` in the name.
+            notes: PathTemplate(
+              "{output_root}/daily-notes/{year}/{month}/{week}/{date} - {title}.md"),
+            out: PathTemplate("{notes}"),
+            frontmatter: false)
+        ],
+        out: nil, outputRoot: root.path, backupDirectory: backups.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+
+    // The jottings reached the prompt — the whole failure was that they didn't.
+    let prompt = try #require(await backend.receivedPrompts.first)
+    #expect(prompt.dynamicSuffix.contains("barrasindustries.com"))
+    // ...along with the roster, so the model can name the other party even
+    // when attribution is shaky, and the caveats, so it can hedge.
+    #expect(prompt.dynamicSuffix.contains("attendees: Tom Elliot (me), Matthew Barras"))
+    #expect(prompt.dynamicSuffix.contains("warning: speaker attribution: dropped a binding"))
+
+    // The summary replaced the real note, not a phantom beside it.
+    let written = try String(contentsOf: notesURL, encoding: .utf8)
+    #expect(written.contains("## Matthew Barras"))
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: root.appendingPathComponent(
+          "daily-notes/2026/08/33/2026-08-12 - Matthew Barras.md"
+        ).path))
+
+    // The caveat is in the note, under the note's own frontmatter — which is
+    // still the first thing in the file, or Obsidian would not read it.
+    #expect(written.hasPrefix("---\ntitle: Matthew Barras\n---\n"))
+    #expect(written.contains("> [!warning] All Ears"))
+    #expect(written.contains("browser capture only ever records other participants"))
+
+    // And the hand-typed original survives the overwrite.
+    let backedUp = try String(
+      contentsOf: backups.appendingPathComponent("2026-08-12 - Matt Barras.handnotes.md"),
+      encoding: .utf8)
+    #expect(backedUp.contains("barrasindustries.com"))
   }
 }

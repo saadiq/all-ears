@@ -16,6 +16,7 @@ public enum Phase0ConfigSchema {
     "data_root": .string("~/Library/Application Support/ears"),
     "output_root": .string("~/Documents/Transcripts"),
     "socket_path": .string(""),
+    "week_numbering": .string("us"),
     "log": .table([
       "level": .string("info"),
       "file": .string(""),
@@ -33,10 +34,16 @@ public enum Phase0ConfigSchema {
         type: .string,
         description: "Root directory for captured audio, indexes, and session state."),
       "output_root": ConfigSchema.Field(
-        type: .string, description: "Directory where transcripts and summaries are written."),
+        type: .string,
+        description: "Root directory published transcripts and summaries are written under."),
       "socket_path": ConfigSchema.Field(
         type: .string,
         description: "Control-socket path; empty derives <data_root>/runtime/earsd.sock."),
+      "week_numbering": ConfigSchema.Field(
+        type: .string,
+        description:
+          "Convention for a path template's {week}: \"us\" (Sunday-start, week 1 holds Jan 1) or \"iso\"."
+      ),
       "log": ConfigSchema.Field(
         type: .table,
         children: ConfigSchema(

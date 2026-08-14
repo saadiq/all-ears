@@ -1,0 +1,7 @@
+{"schema":1,"type":"track-appeared","t":1786615212000,"trackId":"track-aaa","seam":"rtc","muted":false,"origin":"peer","root":"peer"}
+{"schema":1,"type":"admitted","t":1786615212100,"trackId":"track-aaa","reason":"peer-origin unmuted track"}
+{"schema":1,"type":"roster-delta","t":1786615210000,"roster":{"spaces/demo/devices/1":{"displayName":"GT-Host","isLocal":true},"spaces/demo/devices/2":{"displayName":"GT-Alpha","isLocal":false}}}
+{"schema":1,"type":"dom-burst","t":1786615214000,"deviceId":"spaces/demo/devices/2"}
+{"schema":1,"type":"audio-onset","t":1786615214100,"trackId":"track-aaa"}
+{"schema":1,"type":"provisional-binding","t":1786615216000,"trackId":"track-aaa","deviceId":"spaces/demo/devices/2","outcome":"bound","correlator":"dom","confirmations":2}
+{"schema":1,"type":"identity-link","t":1786615216100,"trackId":"track-aaa","captureId":"t1","participantId":"spaces/demo/devices/2"}

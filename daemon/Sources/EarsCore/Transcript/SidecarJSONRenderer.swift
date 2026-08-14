@@ -12,14 +12,30 @@
 ///   `Codable`, but the wire format uses the short keys `w`/`conf`.
 enum SidecarJSONRenderer {
   static func render(
-    _ segments: [TranscriptSegment], diarization: TranscriptDiarizationInfo
+    _ segments: [TranscriptSegment], diarization: TranscriptDiarizationInfo,
+    speakers: [SessionSpeaker] = []
   ) -> String {
-    let root = JSONValue.object([
+    var pairs: [(key: String, value: JSONValue)] = [
       ("schema", .int(1)),
       ("diarization", diarizationValue(diarization)),
-      ("segments", .array(segments.map(segmentValue))),
+    ]
+    // The speaker map that labelled this run — see
+    // ``TranscriptDocument/speakers``. Omitted (not rendered empty) for a
+    // document with no session context, matching the frontmatter's habit of
+    // omitting keys with nothing to say.
+    if !speakers.isEmpty {
+      pairs.append(("speakers", .array(speakers.map(speakerValue))))
+    }
+    pairs.append(("segments", .array(segments.map(segmentValue))))
+    return JSON.render(.object(pairs)) + "\n"
+  }
+
+  private static func speakerValue(_ speaker: SessionSpeaker) -> JSONValue {
+    .object([
+      ("source", .string(speaker.source.rawValue)),
+      ("name", .string(speaker.name)),
+      ("confidence", .string(speaker.confidence.rawValue)),
     ])
-    return JSON.render(root) + "\n"
   }
 
   /// The run-level diarization state, mirroring the Markdown frontmatter's

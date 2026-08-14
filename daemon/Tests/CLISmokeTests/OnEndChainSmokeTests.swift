@@ -96,6 +96,10 @@ struct OnEndChainSmokeTests {
   /// terminate the process and let the temp dir's `deinit` clean up.
   private struct OnEndDaemonHarness {
     var socketPath: String
+    /// The store the daemon writes: intermediates only, addressed by session id.
+    var dataRoot: URL
+    /// The published-artifact root, where the LLM stages' path templates file
+    /// their output. The two are asserted apart — see the chain's artifacts.
     var outputRoot: URL
     var daemonLogPath: String
     var daemon: Process
@@ -108,10 +112,12 @@ struct OnEndChainSmokeTests {
     private let keepAliveTempDirectory: TempDirectory
 
     init(
-      socketPath: String, outputRoot: URL, daemonLogPath: String, daemon: Process, tempDir: URL,
+      socketPath: String, dataRoot: URL, outputRoot: URL, daemonLogPath: String, daemon: Process,
+      tempDir: URL,
       keepAliveTempDirectory: TempDirectory
     ) {
       self.socketPath = socketPath
+      self.dataRoot = dataRoot
       self.outputRoot = outputRoot
       self.daemonLogPath = daemonLogPath
       self.daemon = daemon
@@ -195,7 +201,8 @@ struct OnEndChainSmokeTests {
     }
 
     return OnEndDaemonHarness(
-      socketPath: socketPath, outputRoot: URL(fileURLWithPath: outputRoot),
+      socketPath: socketPath, dataRoot: URL(fileURLWithPath: dataRoot),
+      outputRoot: URL(fileURLWithPath: outputRoot),
       daemonLogPath: daemonLogPath, daemon: daemon, tempDir: temp.url,
       keepAliveTempDirectory: temp)
   }
@@ -211,6 +218,7 @@ struct OnEndChainSmokeTests {
       try? FileManager.default.removeItem(atPath: harness.socketPath)
     }
     let socketPath = harness.socketPath
+    let dataRoot = harness.dataRoot.path
     let outputRoot = harness.outputRoot.path
     let daemonLogPath = harness.daemonLogPath
 
@@ -266,15 +274,23 @@ struct OnEndChainSmokeTests {
 
     // The chain's artifacts exist on disk: each stage's envelope named a real
     // file that fed the next stage.
+    // The raw transcript is an intermediate: it lands in the session's own
+    // data-store directory, never under `output_root`.
     #expect(
-      !Self.files(withSuffix: ".transcript.md", under: outputRoot).isEmpty,
-      "expected a .transcript.md under \(outputRoot)")
+      !Self.files(withSuffix: "sessions/\(session.id)/transcript.md", under: dataRoot).isEmpty,
+      "expected the session's raw transcript under \(dataRoot)")
+    // The cleaned transcript and the summaries are the *published* artifacts:
+    // they land under `output_root`, where `[cleanup] output`'s template puts
+    // them — never in the data store.
     #expect(
-      !Self.files(withSuffix: ".clean.md", under: outputRoot).isEmpty,
-      "expected a .clean.md under \(outputRoot)")
+      !Self.files(withSuffix: ".md", under: outputRoot).isEmpty,
+      "expected a published cleaned transcript under \(outputRoot)")
     #expect(
       !Self.files(withSuffix: ".summary.md", under: outputRoot).isEmpty,
       "expected a .summary.md under \(outputRoot)")
+    #expect(
+      Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
+      "the data store must hold intermediates only, never a published clean transcript")
   }
 
   @Test(

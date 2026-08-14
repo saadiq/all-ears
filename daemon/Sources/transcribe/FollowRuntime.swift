@@ -7,7 +7,7 @@ import Synchronization
 
 /// `transcribe --follow`'s real entry point — the follow-mode counterpart of
 /// ``TranscribeRuntime``, and deliberately just as thin: loads config,
-/// resolves `data_root`/`output_root`/`[transcribe]` selection *plus* the
+/// resolves `data_root`/`[transcribe]` selection *plus* the
 /// daemon's `socket_path` (same precedence and default as `ears`/`earsd`:
 /// empty ⇒ `<data_root>/runtime/earsd.sock`) for the live-feed publisher,
 /// installs SIGINT/SIGTERM handlers that flip the pipeline's stop seam, and
@@ -61,7 +61,6 @@ enum FollowRuntime {
       writeStderr(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
-    let outputRootPath = stringValue(root, ["output_root"])
     let backendName = stringValue(root, ["transcribe", "backend"], default: "fluidaudio")
     let modelIdentifier = stringValue(root, ["transcribe", "model"])
     let compute = TranscribeRuntime.computePreference(
@@ -98,7 +97,6 @@ enum FollowRuntime {
     let exitCode = await TranscribeFollowPipeline.run(
       inputs: inputs,
       dataRoot: URL(fileURLWithPath: dataRootPath),
-      outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath),
       backendName: backendName,
       dependencies: .production(
         loadOptions: LoadOptions(
