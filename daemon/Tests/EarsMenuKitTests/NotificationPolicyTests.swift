@@ -24,6 +24,65 @@ struct NotificationPolicyTests {
           title: "Summary ready", body: "Weekly sync", action: .openSummary(session: "s1")))
   }
 
+  /// The reconciler's attribution warnings are the one failure that looks
+  /// like success: the summary is there and reads fine, but a name on it may
+  /// be the wrong person's. They travel to the same note, so the summary's
+  /// own notification is where they belong.
+  @Test("a summary whose speakers were not resolved cleanly says so")
+  func summarizeDoneFlagsAttributionWarnings() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(
+        rev: 41,
+        sessions: [
+          makeSession(
+            state: .ended,
+            warnings: [
+              "speaker attribution: could not identify which roster entry is you",
+              "speaker attribution: dropped a binding of remote audio",
+            ])
+        ]))
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "sum-1", kind: "summarize", session: "s1", state: .done)))
+    #expect(
+      NotificationPolicy.onEvent(frame, state: state)
+        == NotificationRequest(
+          title: "Summary ready — check speaker names",
+          body:
+            "Weekly sync — speaker attribution: could not identify which roster entry is you "
+            + "(+1 more)",
+          action: .openSummary(session: "s1")))
+  }
+
+  @Test("a lone warning is quoted without a count")
+  func singleWarningHasNoCount() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(
+        rev: 41, sessions: [makeSession(state: .ended, warnings: ["speaker attribution: nope"])]))
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "sum-1", kind: "summarize", session: "s1", state: .done)))
+    #expect(
+      NotificationPolicy.onEvent(frame, state: state)?.body
+        == "Weekly sync — speaker attribution: nope")
+  }
+
+  /// A session the menu never saw carries no warnings to report, so the
+  /// notification degrades to the plain form rather than claiming clean
+  /// attribution it cannot vouch for.
+  @Test("an unknown session's summary stays the plain summary-ready notice")
+  func unknownSessionSummaryIsPlain() {
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(job: "sum-1", kind: "summarize", session: "nope", state: .done)))
+    #expect(
+      NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+        == NotificationRequest(
+          title: "Summary ready", body: "nope", action: .openSummary(session: "nope")))
+  }
+
   @Test("any failed stage notifies with a reveal action")
   func failureNotifies() {
     let frame = EventFrame(

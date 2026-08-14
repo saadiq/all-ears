@@ -37,7 +37,13 @@ struct MenuContentView: View {
         Text("No ended sessions")
       }
       ForEach(model.recents) { item in
-        Menu(item.session.title) {
+        // The warning marker rides the row, not just the notification: a
+        // user who denied the notification grant would otherwise never learn
+        // that a name in the transcript may be the wrong person's.
+        Menu(item.session.warnings.isEmpty ? item.session.title : "⚠ \(item.session.title)") {
+          ForEach(item.session.warnings, id: \.self) { warning in
+            Text(warning)
+          }
           Button("Open Summary") { open(item.summaries.first) }
             .disabled(item.summaries.isEmpty)
           Button("Open Transcript") { open(item.clean ?? item.transcript) }
