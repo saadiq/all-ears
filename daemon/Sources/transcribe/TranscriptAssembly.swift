@@ -150,7 +150,9 @@ enum TranscriptAssembly {
     session: String? = nil,
     title: String? = nil,
     started: Instant? = nil,
-    speakers: [String: String] = [:],
+    attendees: [String] = [],
+    warnings: [String] = [],
+    speakers: [SessionSpeaker] = [],
     diarization: [SourceID: [SpeakerSpan]] = [:],
     diarizationBackend: String? = nil,
     model: TranscriptModelInfo,
@@ -159,9 +161,16 @@ enum TranscriptAssembly {
     audioStores: [TranscriptAudioStore] = [],
     backchannelMaxWords: Int = defaultBackchannelMaxWords
   ) -> TranscriptDocument {
+    // Labelling wants a source → name lookup; the reconciler already
+    // guarantees one name per source (its invariant 3), so first claimant
+    // wins here purely defensively.
+    var names: [String: String] = [:]
+    for speaker in speakers where names[speaker.source.rawValue] == nil {
+      names[speaker.source.rawValue] = speaker.name
+    }
     var turns: [TranscriptSegment] = []
     for transcription in transcriptions {
-      let base = speakerLabel(for: transcription.sourceID, speakers: speakers)
+      let base = speakerLabel(for: transcription.sourceID, speakers: names)
       let spans = diarization[transcription.sourceID] ?? []
       for segment in transcription.segments {
         turns.append(
@@ -197,6 +206,8 @@ enum TranscriptAssembly {
       session: session,
       title: title,
       started: started,
+      attendees: attendees,
+      warnings: warnings,
       sources: sourceIDs,
       range: requested,
       model: model,
@@ -211,7 +222,7 @@ enum TranscriptAssembly {
       audioStores: audioStores
     )
 
-    return TranscriptDocument(frontmatter: frontmatter, segments: ordered)
+    return TranscriptDocument(frontmatter: frontmatter, segments: ordered, speakers: speakers)
   }
 
   /// Longest an utterance can be and still count as a backchannel. Four words

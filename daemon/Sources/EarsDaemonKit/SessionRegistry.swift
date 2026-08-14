@@ -47,8 +47,8 @@ public enum SessionRegistryError: Error, Sendable, Hashable {
 /// Browser sessions (any `browser:*` source) auto-end with
 /// `reason = "ingest-idle"` once their last live ingest stream has been
 /// closed for `graceSeconds` with no re-open — `EarsDaemon` feeds
-/// ``ingestStreamOpened(source:)``/``ingestStreamClosed(source:)`` from the
-/// ingest WebSocket. Manual sessions are never auto-ended: the daemon
+/// ``ingestStreamOpened(source:session:)``/``ingestStreamClosed(source:session:)``
+/// from the ingest WebSocket. Manual sessions are never auto-ended: the daemon
 /// records, it doesn't decide.
 public actor SessionRegistry {
   /// Why a session ended, recorded in `events.jsonl`'s `ended` line.
@@ -183,11 +183,21 @@ public actor SessionRegistry {
   /// A resumed *browser* session whose streams don't return starts its orphan
   /// grace clock from daemon boot, so even the survivor converges to `ended` if
   /// it's actually dead.
+  ///
+  /// A `session.toml` that exists but doesn't parse is **repaired**, not just
+  /// skipped — see ``repairCorruptSession(id:error:)``: skipping alone left
+  /// the directory's audio invisible to the retention sweeper (which reads
+  /// the same descriptors) and therefore stranded forever.
   public func loadFromDisk() async {
+    var corrupt: [(id: String, error: Error)] = []
     let live = SessionStore.readAll(
       dataRoot: dataRoot,
-      onSkip: { [log] id, error in log("session registry: skipping sessions/\(id): \(error)") }
+      onSkip: { id, error in corrupt.append((id, error)) }
     ).filter { $0.state != .ended }
+
+    for (id, error) in corrupt {
+      repairCorruptSession(id: id, error: error)
+    }
 
     // The survivor: the most-recently-started live session. Ties (identical
     // `started`) resolve by id for determinism.
@@ -228,6 +238,50 @@ public actor SessionRegistry {
     if survivor.state == .active {
       log("boot: resuming capture for session \(survivor.id) sources=\(sourceLabel(survivor))")
       await startCapture(survivor.id, survivor.sources)
+    }
+  }
+
+  /// Quarantines an unparseable `session.toml` and writes a minimal **ended**
+  /// record in its place, so the directory's audio re-enters retention.
+  ///
+  /// The unreadable original is preserved beside it as `session.toml.corrupt`
+  /// (replacing any earlier quarantine) for diagnosis. The synthesized record
+  /// is deliberately minimal — this boot's instant for `started`/`ended`, no
+  /// identity, no sources — because nothing in the corrupt file can be
+  /// trusted; its one job is to exist and be `ended`, which is what lets the
+  /// eviction sweeper delete `sources/` at `ended + max_audio_age_seconds`
+  /// instead of never. The repair is recorded in the session's `warnings`, so
+  /// `session list`/`session.get` show it where a user looks.
+  private func repairCorruptSession(id: String, error: Error) {
+    let now = clock.now()
+    let tomlURL = DataStoreLayout.sessionTomlFile(dataRoot: dataRoot, sessionID: id)
+    let quarantineURL = tomlURL.appendingPathExtension("corrupt")
+    do {
+      if FileManager.default.fileExists(atPath: quarantineURL.path) {
+        try FileManager.default.removeItem(at: quarantineURL)
+      }
+      try FileManager.default.moveItem(at: tomlURL, to: quarantineURL)
+    } catch {
+      log("boot: quarantining corrupt sessions/\(id)/session.toml failed: \(error)")
+      return
+    }
+    let repaired = Session(
+      id: id,
+      title: "recovered session",
+      state: .ended,
+      started: now,
+      ended: now,
+      warnings: [
+        "session.toml was unreadable at boot (\(error)); the original is preserved as "
+          + "session.toml.corrupt and this minimal record re-entered the session into retention"
+      ])
+    do {
+      try persist(repaired)
+      log(
+        "boot: repaired corrupt sessions/\(id)/session.toml — original preserved as "
+          + "session.toml.corrupt, minimal ended record written (was: \(error))")
+    } catch {
+      log("boot: rewriting repaired sessions/\(id)/session.toml failed: \(error)")
     }
   }
 
@@ -307,7 +361,7 @@ public actor SessionRegistry {
     var session = Session(
       id: makeID(),
       identity: identity,
-      title: params.title ?? Self.defaultTitle(identity: identity),
+      title: params.title ?? Session.defaultTitle(identity: identity, started: now),
       state: .active,
       started: now,
       intervals: [SessionInterval(start: now)],
@@ -350,6 +404,7 @@ public actor SessionRegistry {
     session.state = .ended
     session.ended = now
 
+    reconcileRoster(&session)
     logRosterSummary(session)
     try persist(session)
     appendEvent(session.id, event: "ended", at: now, reason: reason.rawValue)
@@ -459,6 +514,13 @@ public actor SessionRegistry {
     if let joined = params.joined { attendee.joined = joined }
     if let left = params.left { attendee.left = left }
     if let source = params.source { attendee.source = source }
+    // Omitted = "sender doesn't know": a later upsert without the field must
+    // not erase the provenance the join declared.
+    if let origin = params.origin { attendee.origin = origin }
+    // Latched, never cleared: the client reports `self` on whichever upsert
+    // happens to carry it, and a later upsert for the same attendee that
+    // simply omits the field must not un-flag them.
+    if let isLocal = params.isLocal, isLocal { attendee.isLocal = true }
 
     if let index = session.attendees.firstIndex(where: { $0.id == params.id }) {
       session.attendees[index] = attendee
@@ -566,7 +628,16 @@ public actor SessionRegistry {
 
   /// A live ingest stream closed for `source` — when this leaves a browser
   /// session with no live streams at all, its grace clock starts.
-  public func ingestStreamClosed(source: SourceID) {
+  ///
+  /// A non-nil `session` is the same membership tag the stream's
+  /// `ingest.open` carried, echoed here so the close is scoped exactly the
+  /// way the open is (#24): the grace clock starts only for the session that
+  /// identity resolves to — NOT every non-ended session whose roster happens
+  /// to include the (slot-style, non-unique) `source` label, which would let
+  /// an unrelated call's dying stream start (or re-arm) another session's
+  /// grace. With no tag, fall back to the sessions that name the source (at
+  /// most one under the single-active invariant).
+  public func ingestStreamClosed(source: SourceID, session identity: SessionIdentity? = nil) {
     let remaining = max(0, (liveIngest[source] ?? 0) - 1)
     liveIngest[source] = remaining == 0 ? nil : remaining
     if remaining == 0 {
@@ -574,11 +645,15 @@ public actor SessionRegistry {
       // nothing — a later session must not adopt a source that isn't flowing.
       pendingIngestLinks[source] = nil
     }
-    for session in sessions.values
-    where session.state != .ended && session.sources.contains(source) {
-      if session.isBrowserSession && !hasLiveIngest(session) {
-        scheduleGraceExpiry(sessionID: session.id)
-      }
+    let affected: [Session]
+    if let identity {
+      affected = byIdentity[identity].flatMap { sessions[$0] }.map { [$0] } ?? []
+    } else {
+      affected = sessions.values.filter { $0.state != .ended && $0.sources.contains(source) }
+    }
+    for session in affected
+    where session.state != .ended && session.isBrowserSession && !hasLiveIngest(session) {
+      scheduleGraceExpiry(sessionID: session.id)
     }
   }
 
@@ -768,6 +843,17 @@ public actor SessionRegistry {
     try SessionStore.write(session, dataRoot: dataRoot)
   }
 
+  /// Binding hints recovered from the session's attribution flight-recorder
+  /// log (`attribution.jsonl`), for reconciliation. Best-effort by contract:
+  /// a session with no log — or an unreadable one — reconciles from the
+  /// roster alone, exactly as before hints existed; nothing here may block
+  /// `session.end`.
+  private func attributionHints(sessionID: String) -> [AttributionBindingHint] {
+    let url = SessionAttributionLog.fileURL(dataRoot: dataRoot, sessionID: sessionID)
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+    return AttributionBindingHints.parse(jsonl: text)
+  }
+
   /// Publishes the session as a revision-tagged state event, stamping the
   /// assigned revision into the object itself (result and notification carry
   /// the same `rev`).
@@ -804,6 +890,71 @@ public actor SessionRegistry {
     return "\"\(value)\""
   }
 
+  /// Derives the session's speaker map, warnings, and — when nothing ever
+  /// named it — its title, from the final roster.
+  ///
+  /// Runs at `session.end`, on the last state before anything downstream
+  /// reads it: `transcribe` labels turns from ``Session/speakers``, and every
+  /// published path interpolates ``Session/title``. Doing it here rather than
+  /// live means it sees the *whole* call — an attendee who joins late, a
+  /// binding made and then contradicted — instead of deciding on partial
+  /// evidence and never revisiting it.
+  ///
+  /// **Title precedence.** A title anyone else established wins outright, and
+  /// the roster is consulted only for a session still carrying the platform's
+  /// own default. That default is regenerated and compared rather than
+  /// tracked with a flag, so the order needs no extra state: the extension's
+  /// meeting-name scrape (`MeetMeetingTitleWatcher` → `session.rename`) and a
+  /// manual rename both take precedence simply by having changed the title
+  /// away from it. The roster is the last resort before an opaque meeting id.
+  private func reconcileRoster(_ session: inout Session) {
+    let outcome = RosterReconciler.reconcile(
+      attendees: session.attendees, sources: session.sources, sessionStart: session.started,
+      hints: attributionHints(sessionID: session.id))
+    session.speakers = outcome.speakers
+    session.warnings = outcome.warnings
+    // Stamp which derivation produced this map, so `transcribe` can tell a
+    // current map from one a since-fixed reconciler left behind and re-derive
+    // the stale one.
+    session.reconcilerVersion = RosterReconciler.version
+    // The reconciler's local-participant conclusion is written back onto the
+    // roster — in both directions. Setting the concluded row records the
+    // answer, so `session.toml` carries the conclusion and not just the
+    // evidence for it; clearing every other row is what makes the upsert
+    // latch above (set-once, so a client omitting `self` can't un-flag
+    // anyone) revisable after all: the registry never un-flags on a client's
+    // say-so, but a reconciliation that showed the flag impossible does, and
+    // its evidence is persisted in `warnings` (``RosterReconciler/LocalResolution/revised``).
+    if let localID = outcome.localAttendeeID {
+      for index in session.attendees.indices {
+        session.attendees[index].isLocal = session.attendees[index].id == localID
+      }
+    }
+
+    let speakerMap = outcome.speakers
+      .map { "\($0.source.rawValue)→\"\($0.name)\"(\($0.confidence.rawValue))" }
+      .joined(separator: ",")
+    log(
+      "session.end reconciled: session=\(session.id) "
+        + "local=\(logField(outcome.localAttendeeID))(\(outcome.localResolution.rawValue)) "
+        + "speakers=\(speakerMap.isEmpty ? "-" : speakerMap) "
+        + "warnings=\(outcome.warnings.count)")
+    for warning in outcome.warnings {
+      log("session.end warning: session=\(session.id) \(warning)")
+    }
+
+    guard session.hasDefaultTitle else { return }
+    guard
+      let derived = RosterReconciler.derivedTitle(
+        attendees: session.attendees, localAttendeeID: outcome.localAttendeeID)
+    else { return }
+    log(
+      "session.end titled from roster: session=\(session.id) "
+        + "title=\"\(derived)\" (was the platform default \"\(session.title)\")")
+    session.title = derived
+    appendEvent(session.id, event: "renamed", at: session.ended ?? session.started, title: derived)
+  }
+
   /// At session end, log which attendees resolved a name and a source and which
   /// are still unresolved (name and/or source missing). This makes an
   /// unresolved attendee an explicit, greppable fact rather than a silent empty
@@ -823,11 +974,6 @@ public actor SessionRegistry {
       "session.end roster summary: session=\(session.id) attendees=\(session.attendees.count) "
         + "with_name=\(withName) with_source=\(withSource) "
         + "unresolved=\(unresolved.isEmpty ? "-" : unresolved.joined(separator: ","))")
-  }
-
-  private static func defaultTitle(identity: SessionIdentity?) -> String {
-    guard let identity else { return "session" }
-    return "\(identity.platform) \(identity.externalID)"
   }
 
   // MARK: - Log helpers

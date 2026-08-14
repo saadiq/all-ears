@@ -106,7 +106,7 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
 {
   "id": "0d5e…",                          // daemon-assigned UUID
   "identity": {"platform": "meet", "external_id": "abc-defg-hij"},  // optional; absent for manual sessions
-  "title": "Weekly sync",                 // renameable; defaults from identity or id
+  "title": "Weekly sync",                 // renameable; defaults from identity or start time
   "state": "active",                      // active | paused | ended
   "started": "2026-07-19T10:00:00Z",
   "ended": null,
@@ -117,7 +117,8 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
   "attendees": [
     {"id": "spaces/x/devices/y", "display_name": "Jane Doe",
      "joined": "2026-07-19T10:00:12Z", "left": null,
-     "source": "browser:meet:jane-a1b2"}  // optional mapping to a SourceID
+     "source": "browser:meet:jane-a1b2",  // optional mapping to a SourceID
+     "origin": "platform"}                // platform | synthetic; absent = unknown
   ],
   "sources": ["mic", "browser:meet:jane-a1b2"],
   "trigger": "browser-extension",         // manual | browser-extension
@@ -151,7 +152,12 @@ Semantics:
   auto-ended (see [Orphaned sessions](#orphaned-sessions)).
 - **Attendees are a roster with join/leave times**, upserted by whoever knows them (the
   extension's DOM layer today). `source` links an attendee to their per-participant audio
-  source, which downstream feeds the transcript's speaker labels.
+  source, which downstream feeds the transcript's speaker labels. `origin` records where
+  the attendee's `id` was minted: `platform` (the platform's own id — a Meet device path,
+  a Zoom node id) or `synthetic` (a capture-client stand-in like `speaker-<n>` that names
+  a track, not a person). Absent means unknown (old clients, old files); an upsert that
+  omits it leaves the stored value untouched. Reconciliation counts only platform-origin
+  rows as named remote participants.
 - **On `session.end`,** the daemon closes the open interval, finalizes the session record
   (`session.toml` holds the intervals and roster that transcription reads directly), and stops
   capture. For browser-triggered sessions the daemon then runs the on-end pipeline
@@ -189,7 +195,7 @@ Grouped by capability. All carried in the v2 envelope.
 | `sessions` | `session.pause` | `{session}` → session. Closes open interval; no-op success if already paused |
 | `sessions` | `session.resume` | `{session}` → session. Opens a new interval; no-op success if active |
 | `sessions` | `session.rename` | `{session, title, if_rev?}` → session. `if_rev` mismatch → `conflict` |
-| `sessions` | `session.attendee` | `{session, id, display_name?, joined?, left?, source?}` → session. Upsert |
+| `sessions` | `session.attendee` | `{session, id, display_name?, joined?, left?, source?, origin?, self?}` → session. Upsert |
 | `sessions` | `session.list` | `{}` → live + recent sessions (ended history is read from disk, not the socket) |
 | `sessions` | `session.get` | `{session}` → session |
 | `publish` | `segment.publish` | `{session, speaker, start, end, text}` → `{}`. Notification-only republish from `transcribe --follow` |

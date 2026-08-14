@@ -20,12 +20,13 @@ import Foundation
 ///
 /// ## Ingest-only
 ///
-/// This WebSocket accepts only `ingest.open`/`ingest.close` text frames
-/// (the v1-era flat-`cmd` `IngestRequest`/`ControlResponse` shapes — the
-/// ingest contract is explicitly out of control protocol v2's scope and
-/// unchanged) and binary PCM frames. Every other `cmd` is rejected: the
-/// daemon's control plane lives on its own transports, so an allowed Origin
-/// still cannot drive the daemon from this endpoint.
+/// This WebSocket accepts only `ingest.open`/`ingest.close`/
+/// `ingest.attribution`/`ingest.capture_failed` text frames (the v1-era
+/// flat-`cmd` `IngestRequest`/`ControlResponse` shapes — the ingest contract
+/// is explicitly out of control protocol v2's scope) and binary PCM frames.
+/// Every other `cmd` is rejected: the daemon's control plane lives on its own
+/// transports, so an allowed Origin still cannot drive the daemon from this
+/// endpoint.
 ///
 /// ## Domain logic lives elsewhere
 ///
@@ -49,6 +50,16 @@ public actor IngestWebSocketServer {
   /// `ingest.close`, or implicit close on connection teardown for any
   /// stream this connection opened but never explicitly closed.
   public typealias CloseHandler = @Sendable (String) async -> Void
+  /// `ingest.attribution`: a batch of the extension's attribution
+  /// flight-recorder lines for the tagged session. Best-effort by contract —
+  /// the handler resolves the session and appends (or drops, logged); either
+  /// way the frame is acked `ok` so the client never blocks on evidence.
+  public typealias AttributionHandler = @Sendable (SessionIdentity, [String]) async -> Void
+  /// `ingest.capture_failed`: a source's capture died mid-call; the handler
+  /// records it in the tagged session's `events.jsonl` (or drops it, logged).
+  /// Best-effort like `ingest.attribution` — the frame is always acked `ok`.
+  public typealias CaptureFailedHandler =
+    @Sendable (SourceID, SessionIdentity, String) async -> Void
 
   private let listener: any SocketListener
   private let allowedOrigins: Set<String>
@@ -56,6 +67,8 @@ public actor IngestWebSocketServer {
   private let openHandler: OpenHandler
   private let pushHandler: PushHandler
   private let closeHandler: CloseHandler
+  private let attributionHandler: AttributionHandler
+  private let captureFailedHandler: CaptureFailedHandler
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
 
@@ -71,7 +84,9 @@ public actor IngestWebSocketServer {
     log: @escaping @Sendable (String) -> Void = { _ in },
     onOpen: @escaping OpenHandler,
     onPush: @escaping PushHandler,
-    onClose: @escaping CloseHandler
+    onClose: @escaping CloseHandler,
+    onAttribution: @escaping AttributionHandler = { _, _ in },
+    onCaptureFailed: @escaping CaptureFailedHandler = { _, _, _ in }
   ) {
     self.listener = listener
     self.allowedOrigins = Set(allowedOrigins)
@@ -79,6 +94,8 @@ public actor IngestWebSocketServer {
     self.openHandler = onOpen
     self.pushHandler = onPush
     self.closeHandler = onClose
+    self.attributionHandler = onAttribution
+    self.captureFailedHandler = onCaptureFailed
   }
 
   /// Accept connections until the listener closes.
@@ -206,7 +223,7 @@ public actor IngestWebSocketServer {
     return false
   }
 
-  // MARK: - Control frames: ingest.open / ingest.close, everything else rejected
+  // MARK: - Control frames: the IngestRequest commands, everything else rejected
 
   private func handleControlFrame(
     _ text: String, socket: any SocketConnection, openStreams: inout [String: OpenStream]
@@ -218,24 +235,41 @@ public actor IngestWebSocketServer {
         WebSocketFrameWriter.text(failureText("unsupported cmd on the ingest WebSocket")))
       return
     }
+    // The request's correlation id rides every reply path verbatim (nil for
+    // pre-id clients, whose replies stay byte-identical to before the field).
+    let id = request.correlationID
     switch request {
-    case .open(let source, let format, let session):
+    case .open(let source, let format, let session, _):
       do {
         let streamID = try await openHandler(source, format, session)
         openStreams[streamID] = OpenStream(format: format)
         try? await socket.send(
           WebSocketFrameWriter.text(
-            replyText(ControlResponse<IngestOpenData>.success(IngestOpenData(streamID: streamID)))))
+            replyText(
+              IngestReply(.success(IngestOpenData(streamID: streamID)), id: id))))
       } catch {
         try? await socket.send(
           WebSocketFrameWriter.text(
-            replyText(ControlResponse<IngestOpenData>.failure(ControlError("\(error)")))))
+            replyText(
+              IngestReply(ControlResponse<IngestOpenData>.failure(ControlError("\(error)")), id: id)
+            )))
       }
-    case .close(let streamID):
+    case .close(let streamID, _):
       openStreams.removeValue(forKey: streamID)
       await closeHandler(streamID)
       try? await socket.send(
-        WebSocketFrameWriter.text(replyText(ControlResponse<EmptyData>.success(EmptyData()))))
+        WebSocketFrameWriter.text(
+          replyText(IngestReply(ControlResponse<EmptyData>.success(EmptyData()), id: id))))
+    case .attribution(let session, let events, _):
+      await attributionHandler(session, events)
+      try? await socket.send(
+        WebSocketFrameWriter.text(
+          replyText(IngestReply(ControlResponse<EmptyData>.success(EmptyData()), id: id))))
+    case .captureFailed(let source, let session, let reason, _):
+      await captureFailedHandler(source, session, reason)
+      try? await socket.send(
+        WebSocketFrameWriter.text(
+          replyText(IngestReply(ControlResponse<EmptyData>.success(EmptyData()), id: id))))
     }
   }
 
@@ -275,8 +309,8 @@ public actor IngestWebSocketServer {
 
   // MARK: - Reply encoding
 
-  private func replyText<Payload>(_ response: ControlResponse<Payload>) -> String {
-    guard let data = try? encoder.encode(response), let text = String(data: data, encoding: .utf8)
+  private func replyText<Payload>(_ reply: IngestReply<Payload>) -> String {
+    guard let data = try? encoder.encode(reply), let text = String(data: data, encoding: .utf8)
     else {
       return "{\"ok\":false,\"error\":\"internal encode error\"}"
     }
@@ -284,6 +318,8 @@ public actor IngestWebSocketServer {
   }
 
   private func failureText(_ message: String) -> String {
-    replyText(ControlResponse<EmptyData>.failure(ControlError(message)))
+    // No id: this path answers frames that failed to decode as any
+    // IngestRequest, so there is no trustworthy id to echo.
+    replyText(IngestReply(ControlResponse<EmptyData>.failure(ControlError(message))))
   }
 }

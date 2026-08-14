@@ -154,6 +154,13 @@ public enum TranscriptParser {
     // The path-template context (see `TranscriptFrontmatter.title`/`started`):
     // both optional, both absent on a document with no session context.
     let title = fields["title"].map(unquote)
+    // Round-tripped rather than dropped: a `cleanup` rerun over a transcript
+    // `summarize` has already linked must not silently unlink it.
+    let note = fields["note"].map(unquote)
+    // Both post-date the original schema, so both are optional: a transcript
+    // written before they existed parses unchanged.
+    let attendees = try fields["attendees"].map(splitFlowArray)?.map(unquote) ?? []
+    let warnings = try fields["warnings"].map(splitFlowArray)?.map(unquote) ?? []
     let started = try fields["started"].map { try instant("started", $0) }
     let sources = try splitFlowArray(field("sources")).map { SourceID(unquote($0)) }
 
@@ -198,6 +205,9 @@ public enum TranscriptParser {
       session: session,
       title: title,
       started: started,
+      note: note,
+      attendees: attendees,
+      warnings: warnings,
       sources: sources,
       range: range,
       model: model,
@@ -396,16 +406,47 @@ public enum TranscriptParser {
     return (key, value)
   }
 
-  /// Splits a `[a, "b:c"]`-shaped flow array's inner elements. Safe here
-  /// (not a general YAML list parser) because none of this schema's array
-  /// elements (source ids, vocab names) ever contain a literal comma.
+  /// Splits a `[a, "b:c"]`-shaped flow array's inner elements, treating a
+  /// comma inside a double-quoted element as content rather than a separator.
+  ///
+  /// Still not a general YAML list parser — it knows only this schema's
+  /// grammar of plain and double-quoted scalars. Quote-awareness became load
+  /// bearing with `warnings:`, whose elements are prose written for a human
+  /// and routinely contain commas; the earlier naive split was correct only
+  /// while every array held ids and single words.
   private static func splitFlowArray(_ raw: String) throws -> [String] {
     guard raw.hasPrefix("["), raw.hasSuffix("]") else {
       throw TranscriptParsingError.malformedField(field: "flow array", value: raw)
     }
     let inner = raw.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
     guard !inner.isEmpty else { return [] }
-    return inner.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+
+    var elements: [String] = []
+    var current = ""
+    var inQuotes = false
+    var escaped = false
+    for character in inner {
+      if escaped {
+        current.append(character)
+        escaped = false
+        continue
+      }
+      switch character {
+      case "\\" where inQuotes:
+        current.append(character)
+        escaped = true
+      case "\"":
+        inQuotes.toggle()
+        current.append(character)
+      case "," where !inQuotes:
+        elements.append(current.trimmingCharacters(in: .whitespaces))
+        current = ""
+      default:
+        current.append(character)
+      }
+    }
+    elements.append(current.trimmingCharacters(in: .whitespaces))
+    return elements
   }
 
   /// Splits a `{ k: v, k2: v2 }`-shaped flow mapping into its key/value pairs.

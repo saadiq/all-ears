@@ -2,7 +2,6 @@ import {
   encodeBinaryFrame,
   INGEST_FORMAT,
   sourceLabel,
-  type ParticipantId,
   type Platform,
 } from "./protocol";
 
@@ -13,8 +12,11 @@ import {
 // rejected open is retried (bounded — see MAX_OPEN_ATTEMPTS) rather than
 // treated as the end of that participant.
 //
-// Control responses carry no correlation id — earsd replies in request order
-// over the single TCP-backed WebSocket — so pending requests are matched FIFO.
+// Every control request is stamped with a correlation `id`, and a response
+// that echoes one is matched to its request by id — so a reordered, duplicated
+// or unsolicited daemon response cannot desynchronise the queue. A response
+// with no id (an earsd from before the field existed replies in request order
+// over the single TCP-backed WebSocket) falls back to FIFO matching.
 
 export type TransportStatus = "connecting" | "connected" | "disconnected";
 
@@ -41,7 +43,11 @@ const OPEN_RETRY_MS = 1_000; // floor between same-tag retries (PCM arrives ~10 
 // rescues the rest of the call.
 const OPEN_HOLD_LIMIT_MS = 60_000;
 
-type PendingRequest = { kind: "open"; participantId: ParticipantId } | { kind: "close" };
+type PendingRequest =
+  | { kind: "open"; id: string; participantId: string }
+  | { kind: "close"; id: string }
+  | { kind: "attribution"; id: string }
+  | { kind: "capture-failed"; id: string };
 
 /** Per-frame provenance carried from the MAIN world all the way to earsd. */
 export interface FrameStamp {
@@ -100,7 +106,7 @@ export class EarsSocket {
   /** Invoked when an ingest.open succeeds — the moment a participant's source
    * actually exists on earsd (session-tracker.ts listens to attach the
    * source to its session). */
-  onStreamOpened?: (participantId: ParticipantId, platform: Platform) => void;
+  onStreamOpened?: (participantId: string, platform: Platform) => void;
 
   /** Optional perf sink; unset in tests and when perf collection is off. */
   perf?: TransportPerf;
@@ -111,8 +117,11 @@ export class EarsSocket {
   private backoff = BASE_BACKOFF_MS;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
 
-  private readonly participants = new Map<ParticipantId, ParticipantState>();
-  private readonly pending: PendingRequest[] = []; // FIFO, matches responses in order
+  private readonly participants = new Map<string, ParticipantState>();
+  private readonly pending: PendingRequest[] = []; // id-matched; FIFO for daemons that don't echo
+  /** Correlation ids, unique per socket lifetime (uniqueness per connection is
+   * all the protocol needs — pending is cleared on reconnect). */
+  private nextRequestId = 1;
 
   constructor(
     private port: number,
@@ -191,7 +200,7 @@ export class EarsSocket {
   // ── PCM in ────────────────────────────────────────────────────────────────
 
   sendPcm(
-    participantId: ParticipantId,
+    participantId: string,
     platform: Platform,
     pcm: Uint8Array,
     meetingExternalId?: string,
@@ -247,7 +256,7 @@ export class EarsSocket {
    * Nothing here is timer-driven — a participant that has stopped sending PCM
    * has nothing left to rescue.
    */
-  private maybeOpen(participantId: ParticipantId, st: ParticipantState): void {
+  private maybeOpen(participantId: string, st: ParticipantState): void {
     if (st.opening) return;
     if (st.attempts === 0) {
       this.openStream(participantId, st);
@@ -271,13 +280,15 @@ export class EarsSocket {
     }
   }
 
-  private openStream(participantId: ParticipantId, st: ParticipantState): void {
+  private openStream(participantId: string, st: ParticipantState): void {
     st.opening = true;
     st.attempts++;
     st.attemptedWith = st.meetingExternalId;
-    this.pending.push({ kind: "open", participantId });
+    const id = String(this.nextRequestId++);
+    this.pending.push({ kind: "open", id, participantId });
     this.sendText({
       cmd: "ingest.open",
+      id,
       source: sourceLabel(st.platform, participantId),
       format: INGEST_FORMAT,
       ...(st.meetingExternalId
@@ -310,34 +321,112 @@ export class EarsSocket {
     this.perf?.bytes.add(frame.byteLength);
   }
 
-  participantLeft(participantId: ParticipantId): void {
+  /**
+   * Ship a batch of attribution flight-recorder events (pre-encoded JSONL
+   * lines — see attribution-log.ts) as an `ingest.attribution` text frame.
+   * Best-effort by contract: with no session tag there is no session directory
+   * to file the batch under, and with the socket down there is no daemon — in
+   * both cases the batch is dropped here, and the in-page ring still holds the
+   * events for on-demand export.
+   */
+  sendAttribution(events: string[], platform: Platform, meetingExternalId?: string): void {
+    if (this.status !== "connected" || !this.ws || events.length === 0) return;
+    if (!meetingExternalId) return;
+    const id = String(this.nextRequestId++);
+    this.pending.push({ kind: "attribution", id });
+    this.sendText({
+      cmd: "ingest.attribution",
+      id,
+      session: { platform, external_id: meetingExternalId },
+      events,
+    });
+  }
+
+  /**
+   * Report a participant's capture death (`ingest.capture_failed`) so the
+   * daemon records the gap in the tagged session's events.jsonl instead of
+   * mistaking it for silence (issue #22). Best-effort like attribution: with
+   * no session tag or the socket down the report is dropped — the
+   * background's console error already said it loudly.
+   */
+  sendCaptureFailed(
+    participantId: string,
+    platform: Platform,
+    reason: string,
+    meetingExternalId?: string,
+  ): void {
+    if (this.status !== "connected" || !this.ws) return;
+    if (!meetingExternalId) return;
+    const id = String(this.nextRequestId++);
+    this.pending.push({ kind: "capture-failed", id });
+    this.sendText({
+      cmd: "ingest.capture_failed",
+      id,
+      source: sourceLabel(platform, participantId),
+      session: { platform, external_id: meetingExternalId },
+      reason,
+    });
+  }
+
+  participantLeft(participantId: string): void {
     const st = this.participants.get(participantId);
     this.participants.delete(participantId);
     if (!st || this.status !== "connected") return;
     if (st.streamId) {
-      this.pending.push({ kind: "close" });
-      this.sendText({ cmd: "ingest.close", stream_id: st.streamId });
+      const id = String(this.nextRequestId++);
+      this.pending.push({ kind: "close", id });
+      this.sendText({ cmd: "ingest.close", id, stream_id: st.streamId });
     }
   }
 
-  // ── Control responses (FIFO) ────────────────────────────────────────────────
+  // ── Control responses (id-matched, FIFO fallback) ───────────────────────────
 
   private onControlResponse(data: unknown): void {
     if (typeof data !== "string") return; // binary from earsd is unexpected
-    const req = this.pending.shift();
+    let parsed: { ok?: boolean; id?: string; data?: { stream_id?: string }; error?: string };
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      // A FIFO daemon's reply still answered one request, however garbled —
+      // consume the slot so the queue stays aligned (an id-echoing daemon
+      // never sends unparseable JSON in the first place).
+      console.error("[ears][transport] bad control response JSON:", data);
+      this.pending.shift();
+      return;
+    }
+
+    let req: PendingRequest | undefined;
+    if (typeof parsed.id === "string") {
+      // The daemon echoed our correlation id: match by id, order-independent.
+      const idx = this.pending.findIndex((p) => p.id === parsed.id);
+      if (idx === -1) {
+        // Unsolicited or duplicated — dropping it (rather than shifting the
+        // queue) is the whole point of the id: nothing else desynchronises.
+        console.warn("[ears][transport] response with unknown correlation id:", data);
+        return;
+      }
+      req = this.pending.splice(idx, 1)[0]!;
+    } else {
+      // No id echoed (an earsd predating the field): replies arrive in
+      // request order, so the head of the queue is the request answered.
+      req = this.pending.shift();
+    }
     if (!req) {
       console.warn("[ears][transport] unsolicited control response:", data);
       return;
     }
-    let parsed: { ok?: boolean; data?: { stream_id?: string }; error?: string };
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      console.error("[ears][transport] bad control response JSON:", data);
-      return;
-    }
 
     if (req.kind === "close") return; // nothing to do on close ack
+    if (req.kind === "attribution") {
+      // Fire-and-forget: the events are already safe in the in-page ring.
+      if (!parsed.ok) console.warn(`[ears][transport] ingest.attribution rejected: ${parsed.error ?? "unknown"}`);
+      return;
+    }
+    if (req.kind === "capture-failed") {
+      // Fire-and-forget: the failure was already logged at error level.
+      if (!parsed.ok) console.warn(`[ears][transport] ingest.capture_failed rejected: ${parsed.error ?? "unknown"}`);
+      return;
+    }
 
     const st = this.participants.get(req.participantId);
     if (!st) return; // participant already left before open resolved
@@ -369,7 +458,7 @@ export class EarsSocket {
    * mode this guards is a recording that looks complete and is missing a
    * person. A silent drop here is indistinguishable from someone not speaking.
    */
-  private giveUp(participantId: ParticipantId, st: ParticipantState): void {
+  private giveUp(participantId: string, st: ParticipantState): void {
     st.gaveUp = true;
     const held = st.queue.length;
     st.queue = [];

@@ -47,15 +47,48 @@ Produce one or more summaries of one or more transcripts from configurable promp
 
 ### Behaviour
 1. Read the transcripts named — explicit paths, or `--session <id>` to resolve the session's *cleaned* transcript (falling back to its raw one if none was published). No sibling redirection: the caller names its input, and the daemon chain passes cleanup's output forward.
-2. Read each selected preset's companion `notes` file, if it configures one — as plain Markdown, no frontmatter parsing, no sidecar. Every input is read before any write.
+
+   An input that doesn't parse as an ears document is **summarized anyway**, from its text, with a warning. The stage's job is "summarize the transcript at this path", and a vault holds plenty of Markdown transcripts this pipeline never produced — exports from other tools, hand-written notes of a call. The parse exists to recover metadata a foreign transcript simply lacks, so what its absence costs is the header (no title, start or speaker roll-call), not the summary. A `frontmatter = true` preset's summary then records `model: { name: unknown, … }` and a zero range: ignorance stated, rather than this pipeline's ASR claimed for a transcript it never touched.
+2. Read each selected preset's companion `notes` file, if it configures one — as plain Markdown, no frontmatter parsing, no sidecar. Every input is read before any write. The template's own path is used when it exists; otherwise the note is **searched for** (see "Finding the notes" below).
 3. For each selected preset (`[[summarize.preset]]`), run its prompt over the result. With notes present the LLM input is labelled — `## Jotted notes` then `## Transcript` — so a prompt can address each; with no notes the transcript is sent bare.
+
+   Each transcript is rendered as a short `title:` / `started:` / `transcript:` / `speakers:` header followed by one `[HH:MM:SS] Speaker: text` line per turn. The header is not decoration: without it a preset asked to date the conversation or link its transcript has nothing to date or link it *from*, and answers by flagging the note or inventing a path. `speakers:` marks every speaker captured on `mic` as `(me)`, which is how a prompt tells the note's author from its subject — a display name cannot, as a mislabelled remote track will happily carry the local participant's name. Nobody is marked when *every* speaker resolves to the mic, since that is equally the shape of a single-source room recording and of a Markdown parse with no sidecar to separate them.
 4. Write `<...>.summary.md` (or `<...>.<preset>.summary.md` when multiple), frontmatter `kind: summary` with `preset` and `derived_from`.
+5. Stamp `note:` into each input transcript's frontmatter, naming the summary just written — the inverse of the `transcript:` link the summary carries, so the pair is navigable from either end.
+
+   This is the one place `summarize` writes to its own input, and it happens only after that input is fully read and the summary is on disk, so the read-before-write ordering `out = "{notes}"` depends on still holds. The edit is a text splice into the YAML block (`TranscriptFrontmatterEditor`), not a parse/render round trip: a transcript's turns are never rewritten to add a link. A multi-preset run leaves the last preset's destination there. Failure to write it is a warning, never the preset's failure — the summary exists and is correct, and losing it over an unwritable source file would be the worse outcome.
+
+   A transcript with no frontmatter block at all gets one holding just this field. Adding a link is not the same act as inventing capture metadata: it is a fact about the file, known for certain at the moment it is written, and a foreign transcript is the case that most needs it — nothing else in the file records where its summary went.
+
+   Link targets are vault-relative when the destination sits inside an Obsidian vault and absolute otherwise (`VaultPath`, which detects a vault by its `.obsidian` marker rather than taking a config key — the fact is already on disk, and a stale key would produce links resolving to nothing). The absolute fallback is deliberately still a path: a bare filename would *look* like a working wikilink while resolving to nothing, or to an unrelated note sharing the name.
 
 Presets are named prompt files, so summary styles (brief, decisions, action items) are user configuration, not code. Three optional keys let a preset publish on its own terms:
 
-- **`notes`** — a path template for a companion notes file. A configured notes file that doesn't exist is **a warning, not a failure**: the preset runs with an empty `## Jotted notes` section, so a call with nothing jotted still gets summarized from its transcript. (This failed the preset until it turned out the common case is the opposite one — most captured calls have no note waiting at the templated path, and failing there left every such session with a transcript and no summary.)
+- **`notes`** — a path template for a companion notes file, treated as the ideal location rather than the only one (see "Finding the notes"). A configured notes file that is neither there nor findable is **a warning, not a failure**: the preset runs with an empty `## Jotted notes` section, so a call with nothing jotted still gets summarized from its transcript. (This failed the preset until it turned out the common case is the opposite one — most captured calls have no note waiting at the templated path, and failing there left every such session with a transcript and no summary.)
 - **`out`** — a path template for this preset's destination, overriding the default sibling naming. It may reference `{notes}` to write back over the notes file; overwrite is the intended semantics, and the prompt is responsible for carrying the jotted notes forward into its output. Safe because every input is read first and writes are atomic. There is no append or section-merge mode. `--out` on the command line outranks this template (as `--notes` outranks `notes`), which is how a one-off run redirects a `{notes}` preset away from the note it would otherwise overwrite.
 - **`frontmatter = false`** — emit the summary body alone: no YAML block, and no JSON sidecar either. The artifact is then plain Markdown rather than an ears document, which is what writing into a vault that owns its own frontmatter needs.
+
+### Finding the notes
+
+A path template is a good way to write a file and a poor way to find one, and `notes` is doing the second job: an exact-match lookup for a file a human created and named, keyed on a string a machine generated on the other side of the call. Anything that moves either side misses — a session whose title never resolved past the platform's meeting id, a vault whose filing convention grew a directory level, a note named "Matt Barras" for an attendee the roster calls "Matthew Barras" — and the miss is silent: the fold-in prompt runs with an empty notes section and the jottings are absent from the note that replaces them.
+
+So when the template's path isn't there, `NotesLocator` searches its directory and one level below, scoring each `.md` file on the signals a person would use to recognise their own note:
+
+- **filed under the right day** — in the filename or in a directory component. A precondition, not a score: a note from another day is not this call's notes however well it scores otherwise.
+- **names someone who was on the call** — matched against the transcript's `attendees:` (excluding the local participant, since a note is named after the other person), token by token, so "Matt" finds "Matthew".
+- **edited while the call was running** — close to decisive on its own; few files are touched during any given meeting.
+
+A candidate with no positive signal is not returned, and a tie between the top two returns nothing: an unmatched note leaves the run where it was, while a wrongly matched one overwrites a note about something else. A match found this way is reported, and the note says so.
+
+### Overwrite safety
+
+Any destination that already exists is copied to `~/.local/state/ears-note-backups/<stem>.handnotes.md` before it is written. The fold-in pattern reads hand-typed jottings and replaces them with a summary; when that goes wrong — a prompt needing another pass, a transcript whose speakers were mislabelled — the input is gone, and hand-typed notes exist nowhere else. An existing backup is never replaced, only numbered past, so the *original* jottings survive however many times a preset is re-run while a prompt is iterated on. A backup that fails stops the write: losing a summary is recoverable, losing the note is not.
+
+### Warnings reach the note
+
+A degraded run puts an Obsidian `> [!warning]` callout at the top of the note's prose (after its own frontmatter, which must stay first in the file) listing the transcript's `warnings:` plus anything `summarize` itself had to say — jottings that could not be found, or that were matched by search rather than by name. The transcript's warnings also go into the prompt header verbatim, so the model can hedge the specific claims a degraded run undermines rather than the note as a whole.
+
+This exists because every failure behind a mislabelled note was already being detected and reported — to a log nobody reads. A false positive costs one line in a note; a false negative costs the note.
 
 ### CLI
 ```

@@ -248,6 +248,12 @@ public actor EarsDaemon {
   /// individual `ingest.open` still gets its own fresh id to route binary
   /// frames and a later `ingest.close` by.
   private var ingestStreams: [String: SourceID] = [:]
+  /// stream_id → the membership tag its `ingest.open` carried, echoed to
+  /// `SessionRegistry.ingestStreamClosed(source:session:)` so the orphan
+  /// grace clock is scoped to the stream's own session on close exactly as
+  /// it is on open (#24) — never to an unrelated session that happens to
+  /// share the slot-style source label.
+  private var ingestStreamIdentities: [String: SessionIdentity] = [:]
   private var nextIngestStreamID = 0
   private var ingestWebSocketServer: IngestWebSocketServer?
   private var ingestServerRunTask: Task<Void, Never>?
@@ -574,6 +580,12 @@ public actor EarsDaemon {
       },
       onClose: { [weak self] streamID in
         await self?.closeIngestSource(streamID: streamID)
+      },
+      onAttribution: { [weak self] session, events in
+        await self?.appendAttributionEvents(session: session, events: events)
+      },
+      onCaptureFailed: { [weak self] source, session, reason in
+        await self?.recordCaptureFailure(source: source, session: session, reason: reason)
       })
     ingestWebSocketServer = ingestServer
     ingestServerRunTask = Task { await ingestServer.run() }
@@ -679,13 +691,13 @@ public actor EarsDaemon {
   ///
   /// Visibility of a dynamically-created source elsewhere in the daemon:
   /// `ControlServer`'s map is kept in sync via `registerDynamicSource`
-  /// (`status`/`sources.list`), and `SessionRegistry.knownSourceIDs` is a
+  /// (`status`/`sources.list`), `SessionRegistry.knownSourceIDs` is a
   /// live lookup back into this actor (see `start()`), so a session can
-  /// name a browser source created by a later `ingest.open`. Known remaining gap: `PowerObserver` still holds the
-  /// `captureActors` *snapshot* it was built with at `start()`, so a
-  /// dynamic source created afterwards is not paused/resumed on sleep/wake
-  /// — a documented follow-up (Phase 6 scoped it out as separable), not
-  /// silently assumed fixed.
+  /// name a browser source created by a later `ingest.open` — and
+  /// `PowerObserver` reads the live actor map the same way (via
+  /// `currentPausables()`, queried on each sleep/wake transition), so a
+  /// dynamic source created after `start()` is paused/resumed like any
+  /// config-declared one.
   public func openIngestSource(
     label: SourceID, format: AudioFormatSpec, session: SessionIdentity? = nil
   ) async throws -> String {
@@ -768,6 +780,7 @@ public actor EarsDaemon {
     nextIngestStreamID += 1
     let streamID = "s\(nextIngestStreamID)"
     ingestStreams[streamID] = label
+    ingestStreamIdentities[streamID] = identity
     // Feed the session registry's orphan-grace tracking: a live stream on a
     // session's source cancels its pending grace expiry. The membership tag
     // (when the extension sent one) links the source into its session
@@ -775,6 +788,66 @@ public actor EarsDaemon {
     // upserts never arrive.
     await sessionRegistry?.ingestStreamOpened(source: label, session: session)
     return streamID
+  }
+
+  /// `ingest.attribution`: append a batch of the extension's attribution
+  /// flight-recorder lines to the tagged session's `attribution.jsonl`
+  /// (``SessionAttributionLog``), beside its `events.jsonl`.
+  ///
+  /// Best-effort like the `events.jsonl` timeline — never load-bearing. A tag
+  /// that resolves to no live session drops the batch with a log line rather
+  /// than erroring: unlike `ingest.open`, there is no client retry loop here
+  /// (the extension's in-page ring keeps the events exportable), and evidence
+  /// arriving a beat before `session.start` is expected, not a fault.
+  public func appendAttributionEvents(session: SessionIdentity, events: [String]) async {
+    guard let sessionID = await sessionRegistry?.sessionID(for: session) else {
+      log(
+        "ingest.attribution dropped: no live session for \(session.platform)/\(session.externalID) "
+          + "(\(events.count) event(s))")
+      return
+    }
+    do {
+      let appended = try SessionAttributionLog.append(
+        lines: events, dataRoot: configuration.dataRoot, sessionID: sessionID)
+      if appended < events.count {
+        log(
+          "session \(sessionID): attribution append skipped \(events.count - appended) "
+            + "malformed line(s)")
+      }
+    } catch {
+      log("session \(sessionID): attribution.jsonl append failed: \(error)")
+    }
+  }
+
+  /// `ingest.capture_failed`: record that a source's capture died mid-call in
+  /// the tagged session's `events.jsonl` timeline — the aim of issue #22.
+  /// Without this record, a decoder that gave up leaves a recorded gap
+  /// indistinguishable from the speaker going quiet; with it, the gap is
+  /// attributable where the session's other domain events already live.
+  ///
+  /// Best-effort like every `events.jsonl` append: a tag resolving to no live
+  /// session drops the report with a log line rather than erroring (matching
+  /// `ingest.attribution` — evidence a beat ahead of `session.start` is
+  /// expected, not a fault).
+  public func recordCaptureFailure(
+    source: SourceID, session: SessionIdentity, reason: String
+  ) async {
+    guard let sessionID = await sessionRegistry?.sessionID(for: session) else {
+      log(
+        "ingest.capture_failed dropped: no live session for "
+          + "\(session.platform)/\(session.externalID) (source \(source.rawValue))")
+      return
+    }
+    log(
+      "⚠ capture failed: session=\(sessionID) source=\(source.rawValue) reason=\(reason)")
+    let entry = SessionEventLog.Entry(
+      t: ISO8601InstantCodec.format(clock.now()), event: "capture_failed",
+      source: source.rawValue, reason: reason)
+    do {
+      try SessionEventLog.append(entry, dataRoot: configuration.dataRoot, sessionID: sessionID)
+    } catch {
+      log("session \(sessionID): events.jsonl capture_failed append failed: \(error)")
+    }
   }
 
   /// Routes one decoded PCM buffer to the `CaptureActor` behind `streamID`,
@@ -917,13 +990,15 @@ public actor EarsDaemon {
   /// them rather than starting over.
   public func closeIngestSource(streamID: String) async {
     guard let label = ingestStreams.removeValue(forKey: streamID) else { return }
+    let identity = ingestStreamIdentities.removeValue(forKey: streamID)
     await flushIngestStats(source: label)
     if let actor = captureActors[label] {
       await actor.stop()
     }
     // When this was a browser session's last live stream, its ingest-close
-    // grace clock starts now.
-    await sessionRegistry?.ingestStreamClosed(source: label)
+    // grace clock starts now — scoped by the stream's own membership tag,
+    // mirroring the open side.
+    await sessionRegistry?.ingestStreamClosed(source: label, session: identity)
   }
 
   /// Stops and forgets the `CaptureActor` + `PushCaptureBackend` behind a

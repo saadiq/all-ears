@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  CONFIRM_THRESHOLD,
   MeetAdapter,
   SELF_MARKER,
   findLocalDeviceId,
@@ -9,10 +8,10 @@ import {
   extractParticipantId,
   findMediaElementForTrack,
   findParticipantTile,
-  rosterDelta,
   type DocumentLike,
   type MediaElementLike,
 } from "./meet";
+import { CONFIRM_THRESHOLD } from "./meet-identity-engine";
 
 // Hand-rolled fake DOM (repo prefers small fakes over jsdom — see
 // rtc-hook.test.ts; vitest runs in the node environment). Implements exactly
@@ -327,48 +326,15 @@ describe("findMediaElementForTrack", () => {
   });
 });
 
-describe("rosterDelta", () => {
-  it("emits every (id → name) pair on first sight and records them as emitted", () => {
-    const names = new Map([
-      ["spaces/s/devices/445", "Tom Elliot"],
-      ["spaces/s/devices/446", "Tom E"],
-    ]);
-    const emitted = new Map<string, string>();
-
-    const fresh = rosterDelta(names, emitted);
-
-    expect(fresh).toEqual([
-      { participantId: "spaces/s/devices/445", displayName: "Tom Elliot" },
-      { participantId: "spaces/s/devices/446", displayName: "Tom E" },
-    ]);
-    // Recorded, so a second identical scan is a no-op.
-    expect(rosterDelta(names, emitted)).toEqual([]);
-  });
-
-  it("re-emits only when a name changes (Meet swaps a placeholder for the real one)", () => {
-    const emitted = new Map<string, string>();
-    rosterDelta(new Map([["spaces/s/devices/445", "Guest"]]), emitted);
-
-    const fresh = rosterDelta(new Map([["spaces/s/devices/445", "Tom Elliot"]]), emitted);
-
-    expect(fresh).toEqual([{ participantId: "spaces/s/devices/445", displayName: "Tom Elliot" }]);
-    expect(emitted.get("spaces/s/devices/445")).toBe("Tom Elliot");
-  });
-});
-
-describe("CONFIRM_THRESHOLD", () => {
-  it("requires at least 2 corroborating turns (2026-08-05: a 1-turn join misattributed under same-room audio)", () => {
-    expect(CONFIRM_THRESHOLD).toBeGreaterThanOrEqual(2);
-  });
-});
-
 // ── Track ↔ device binding (journal #158) ───────────────────────────────────
 //
-// MeetAdapter reaches `window` only in its constructor (setCollectionsListener);
-// onTrackSpeaking/onDeviceSpeaking/applyMatch touch no DOM at all, so a bare
-// window stub is enough to drive the binding rules end to end. Turns go
-// through the speaking-ring correlator — the per-turn signal that carried the
-// live misbinding.
+// The binding rules themselves live in MeetIdentityEngine and are tested
+// exhaustively in meet-identity-engine.test.ts. These tests drive the same
+// behaviours through the adapter shell — real entry points, real track
+// objects — so the shell→engine wiring (observation forwarding, TrackPresence,
+// callback translation) stays covered end to end. MeetAdapter reaches `window`
+// only in its constructor (setCollectionsListener); onTrackSpeaking/
+// onDeviceSpeaking touch no DOM at all, so a bare window stub is enough.
 
 class FakeTrack {
   constructor(
@@ -382,11 +348,11 @@ describe("MeetAdapter track ↔ device binding", () => {
 
   /** One clean turn: the track's audio onset, then that device's ring burst
    * 50ms later. Turns are 5s apart — clear of the 1s onset debounce and of the
-   * 3s history that holds consumed pairings. */
+   * 3s history that holds consumed pairings. Timestamps are plain arguments —
+   * the adapter's entry points take the caller's clock, no timers to fake. */
   function turn(adapter: MeetAdapter, track: FakeTrack, deviceId: string): void {
     clock += 5000;
-    vi.setSystemTime(clock);
-    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true);
+    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true, clock);
     adapter.onDeviceSpeaking(deviceId, clock + 50);
   }
 
@@ -397,18 +363,13 @@ describe("MeetAdapter track ↔ device binding", () => {
   function newAdapter(): { adapter: MeetAdapter; joins: Array<[string, string]> } {
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     return { adapter, joins };
   }
 
   beforeEach(() => {
     clock = 100_000;
-    vi.useFakeTimers();
     (globalThis as { window?: unknown }).window ??= {};
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   it("refuses to rebind a track that already carries a device (the 86-generation flip-flop)", () => {
@@ -423,15 +384,6 @@ describe("MeetAdapter track ↔ device binding", () => {
     expect(joins).toEqual([["track-remote", "devices/160"]]);
   });
 
-  it("refuses a second live track's claim on a device another live track already carries", () => {
-    const { adapter, joins } = newAdapter();
-
-    confirm(adapter, new FakeTrack("track-a"), "devices/160");
-    confirm(adapter, new FakeTrack("track-b"), "devices/160");
-
-    expect(joins).toEqual([["track-a", "devices/160"]]);
-  });
-
   it("lets a fresh track claim a device whose previous track has ended (a rejoin)", () => {
     const { adapter, joins } = newAdapter();
     const first = new FakeTrack("track-a");
@@ -443,18 +395,6 @@ describe("MeetAdapter track ↔ device binding", () => {
     expect(joins).toEqual([
       ["track-a", "devices/160"],
       ["track-a2", "devices/160"],
-    ]);
-  });
-
-  it("still upgrades an unbound track to an unclaimed device", () => {
-    const { adapter, joins } = newAdapter();
-
-    confirm(adapter, new FakeTrack("track-a"), "devices/160");
-    confirm(adapter, new FakeTrack("track-b"), "devices/161");
-
-    expect(joins).toEqual([
-      ["track-a", "devices/160"],
-      ["track-b", "devices/161"],
     ]);
   });
 });
@@ -538,19 +478,16 @@ describe("MeetAdapter local-participant exclusion", () => {
 
   function turn(adapter: MeetAdapter, track: { id: string }, deviceId: string): void {
     clock += 5000;
-    vi.setSystemTime(clock);
-    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true);
+    adapter.onTrackSpeaking(track as unknown as MediaStreamTrack, true, clock);
     adapter.onDeviceSpeaking(deviceId, clock + 50);
   }
 
   beforeEach(() => {
     clock = 100_000;
-    vi.useFakeTimers();
     (globalThis as { window?: unknown }).window ??= {};
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     delete (globalThis as { document?: unknown }).document;
   });
 
@@ -564,7 +501,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     ]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities(); // roster scan latches the local device
 
     for (let i = 0; i < 6; i++) turn(adapter, { id: "track-remote" }, "devices/107");
@@ -579,7 +516,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     ]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities();
 
     for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, { id: "track-remote" }, "devices/108");
@@ -593,7 +530,7 @@ describe("MeetAdapter local-participant exclusion", () => {
     stubDocument([tileEl("devices/107", "Tom Elliot"), tileEl("devices/108", "Priya Raman")]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities();
 
     for (let i = 0; i < CONFIRM_THRESHOLD; i++) turn(adapter, { id: "track-remote" }, "devices/108");
@@ -605,16 +542,16 @@ describe("MeetAdapter local-participant exclusion", () => {
     stubDocument([tileEl("devices/107", "Tom Elliot (You)")]);
     const adapter = new MeetAdapter();
     const joins: Array<[string, string]> = [];
-    adapter.onIdentify((track, id) => joins.push([track.id, id]));
+    adapter.onIdentity((trackId, id) => joins.push([trackId, id]));
     adapter.pollIdentities();
 
     // Drive the unmute correlator: track unmute + the local device's mic-open.
     for (let i = 0; i < 6; i++) {
       clock += 5000;
-      vi.setSystemTime(clock);
-      adapter.onTrackUnmute({ id: "track-remote" } as unknown as MediaStreamTrack);
-      (adapter as unknown as { onCollectionsEvent(e: { deviceId: string; micOpen: boolean }): void })
-        .onCollectionsEvent({ deviceId: "devices/107", micOpen: true });
+      adapter.onTrackUnmute({ id: "track-remote" } as unknown as MediaStreamTrack, clock);
+      (adapter as unknown as {
+        onCollectionsEvent(e: { deviceId: string; micOpen: boolean }, at: number): void;
+      }).onCollectionsEvent({ deviceId: "devices/107", micOpen: true }, clock);
     }
 
     expect(joins).toEqual([]);

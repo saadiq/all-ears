@@ -115,7 +115,7 @@ describe("EarsSocket", () => {
 
     socket.sendPcm("jane-a1b2", "meet", new Uint8Array([1, 2]));
     expect(textSent(ws)).toEqual([
-      { cmd: "ingest.open", source: sourceLabel("meet", "jane-a1b2"), format: INGEST_FORMAT },
+      { cmd: "ingest.open", id: "1", source: sourceLabel("meet", "jane-a1b2"), format: INGEST_FORMAT },
     ]);
     expect(binarySent(ws)).toHaveLength(0); // queued until ingest.open resolves
 
@@ -138,6 +138,7 @@ describe("EarsSocket", () => {
     expect(textSent(ws)).toEqual([
       {
         cmd: "ingest.open",
+        id: "1",
         source: sourceLabel("meet", "jane-a1b2"),
         format: INGEST_FORMAT,
         session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
@@ -162,9 +163,10 @@ describe("EarsSocket", () => {
     // absent→present transition is the retry trigger — no waiting on a clock.
     socket.sendPcm("jane", "meet", new Uint8Array([2]), "kQ0DRVtDaekB");
     expect(opens(ws)).toEqual([
-      { cmd: "ingest.open", source: sourceLabel("meet", "jane"), format: INGEST_FORMAT },
+      { cmd: "ingest.open", id: "1", source: sourceLabel("meet", "jane"), format: INGEST_FORMAT },
       {
         cmd: "ingest.open",
+        id: "2",
         source: sourceLabel("meet", "jane"),
         format: INGEST_FORMAT,
         session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
@@ -241,7 +243,7 @@ describe("EarsSocket", () => {
     ws.respond({ ok: true, data: { stream_id: "s7" } });
 
     socket.participantLeft("jane");
-    expect(textSent(ws).at(-1)).toEqual({ cmd: "ingest.close", stream_id: "s7" });
+    expect(textSent(ws).at(-1)).toEqual({ cmd: "ingest.close", id: "2", stream_id: "s7" });
 
     // A later frame for the same id is treated as a brand-new participant.
     socket.sendPcm("jane", "meet", new Uint8Array([2]));
@@ -276,5 +278,129 @@ describe("EarsSocket", () => {
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(1);
     void ws;
+  });
+
+  it("ships an attribution batch as ingest.attribution with the session tag, lines verbatim", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+
+    const lines = ['{"schema":1,"type":"track-ended","t":1,"trackId":"trk-1"}'];
+    socket.sendAttribution(lines, "meet", "kQ0DRVtDaekB");
+    expect(textSent(ws)).toEqual([
+      {
+        cmd: "ingest.attribution",
+        id: "1",
+        session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
+        events: lines,
+      },
+    ]);
+  });
+
+  it("drops an attribution batch with no session tag — there is nowhere to file it", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+    socket.sendAttribution(['{"schema":1,"type":"track-ended","t":1}'], "meet", undefined);
+    expect(textSent(ws)).toEqual([]);
+  });
+
+  it("ships a capture-failed report as ingest.capture_failed with source and session tag", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+
+    socket.sendCaptureFailed("t3", "meet", "decoder gave up", "kQ0DRVtDaekB");
+    expect(textSent(ws)).toEqual([
+      {
+        cmd: "ingest.capture_failed",
+        id: "1",
+        source: sourceLabel("meet", "t3"),
+        session: { platform: "meet", external_id: "kQ0DRVtDaekB" },
+        reason: "decoder gave up",
+      },
+    ]);
+  });
+
+  it("drops a capture-failed report with no session tag — there is nowhere to file it", () => {
+    const socket = new EarsSocket(47811);
+    const ws = connectAndOpen(socket);
+    socket.sendCaptureFailed("t3", "meet", "decoder gave up", undefined);
+    expect(textSent(ws)).toEqual([]);
+  });
+
+  it("matches replies by correlation id, so reordered daemon responses still land on the right open", () => {
+    const opened: string[] = [];
+    const socket = new EarsSocket(47811);
+    socket.onStreamOpened = (id) => opened.push(id);
+    const ws = connectAndOpen(socket);
+
+    socket.sendPcm("jane", "meet", new Uint8Array([1]));
+    socket.sendPcm("kim", "meet", new Uint8Array([2]));
+    const [janeOpen, kimOpen] = opens(ws) as Array<{ id: string }>;
+
+    // The daemon answers the SECOND open first. FIFO matching would hand
+    // kim's stream to jane and desynchronise everything after; id matching
+    // routes each reply to its own request.
+    ws.respond({ ok: true, id: kimOpen!.id, data: { stream_id: "s-kim" } });
+    ws.respond({ ok: true, id: janeOpen!.id, data: { stream_id: "s-jane" } });
+
+    expect(opened).toEqual(["kim", "jane"]);
+    const frames = binarySent(ws).map(decodeFrame);
+    expect(frames.find((f) => f.pcm[0] === 1)!.streamId).toBe("s-jane");
+    expect(frames.find((f) => f.pcm[0] === 2)!.streamId).toBe("s-kim");
+  });
+
+  it("ignores a response with an unknown id without desynchronising the pending queue", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const opened: string[] = [];
+    const socket = new EarsSocket(47811);
+    socket.onStreamOpened = (id) => opened.push(id);
+    const ws = connectAndOpen(socket);
+
+    socket.sendPcm("jane", "meet", new Uint8Array([1]));
+    // Unsolicited or duplicated daemon reply: its id matches nothing pending.
+    // Under FIFO it would consume jane's slot; with ids it is logged and dropped.
+    ws.respond({ ok: true, id: "9999", data: { stream_id: "s-ghost" } });
+    expect(opened).toEqual([]);
+
+    ws.respond({ ok: true, id: (opens(ws)[0] as { id: string }).id, data: { stream_id: "s1" } });
+    expect(opened).toEqual(["jane"]);
+    expect(decodeFrame(binarySent(ws)[0]!).streamId).toBe("s1");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("unknown correlation id"),
+      expect.anything(),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("falls back to FIFO matching against a daemon that does not echo ids", () => {
+    // An older earsd replies in request order with no id field. Two opens in
+    // flight must still resolve, first reply to first request.
+    const opened: string[] = [];
+    const socket = new EarsSocket(47811);
+    socket.onStreamOpened = (id) => opened.push(id);
+    const ws = connectAndOpen(socket);
+
+    socket.sendPcm("jane", "meet", new Uint8Array([1]));
+    socket.sendPcm("kim", "meet", new Uint8Array([2]));
+    ws.respond({ ok: true, data: { stream_id: "s1" } });
+    ws.respond({ ok: true, data: { stream_id: "s2" } });
+
+    expect(opened).toEqual(["jane", "kim"]);
+    const frames = binarySent(ws).map(decodeFrame);
+    expect(frames.find((f) => f.pcm[0] === 1)!.streamId).toBe("s1");
+    expect(frames.find((f) => f.pcm[0] === 2)!.streamId).toBe("s2");
+  });
+
+  it("keeps the FIFO response matching straight when attribution acks interleave with opens", () => {
+    const opened: string[] = [];
+    const socket = new EarsSocket(47811);
+    socket.onStreamOpened = (id) => opened.push(id);
+    const ws = connectAndOpen(socket);
+
+    socket.sendAttribution(['{"schema":1,"type":"dom-burst","t":1,"deviceId":"d"}'], "meet", "kQ0");
+    socket.sendPcm("jane", "meet", new Uint8Array([1]), "kQ0");
+    ws.respond({ ok: true, data: {} }); // the attribution ack, first in FIFO order
+    ws.respond({ ok: true, data: { stream_id: "s1" } }); // then the open's reply
+    expect(opened).toEqual(["jane"]); // the open's reply reached the open, not the ack
+    expect(decodeFrame(binarySent(ws)[0]!).streamId).toBe("s1");
   });
 });

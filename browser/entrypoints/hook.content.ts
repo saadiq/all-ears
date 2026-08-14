@@ -1,13 +1,13 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import {
-  installHook,
-  hookDebugState,
-  livePeerConnections,
-  setMeetGraphSinks,
-  stopMeetGraphProbe,
-} from "../lib/rtc-hook";
+import { installHook, hookDebugState, livePeerConnections } from "../lib/rtc-hook";
+import { setMeetGraphSinks, stopMeetGraphProbe } from "../lib/meet-webaudio-probe";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
+import {
+  attributionDebugState,
+  exportAttributionLog,
+  setAttributionPlatform,
+} from "../lib/attribution-recorder";
 import { mainPerf } from "../lib/perf-main";
 import { selectAdapter, type PlatformAdapter } from "../lib/identity/adapter";
 import { MeetMeetingIdWatcher } from "../lib/identity/meet-meeting-id";
@@ -73,7 +73,13 @@ export default defineContentScript({
     });
 
     const host = location.host;
-    const adapter = selectAdapter(host);
+    // Adapters are per-epoch: each startEpoch mints a fresh one, and the
+    // epoch's teardown (audio-tap.ts initCapture's supersede chain) disposes
+    // it, so identity state is epoch-scoped rather than page-lifetime
+    // (attribution refactor R2; bug B10). This page-load instance only
+    // establishes the platform and the missing-adapter warning — the first
+    // epoch replaces it.
+    let adapter = selectAdapter(host);
     const platform = platformForHost(host, adapter);
     if (!adapter) console.warn(`[ears][hook] no identity adapter for ${host} — using speaker-<n>`);
 
@@ -83,6 +89,9 @@ export default defineContentScript({
     let lastMeetingId: string | null = null;
 
     perfTag("platform", platform);
+    // Attribution batches are labelled per page, once — evidence recorded
+    // before capture ever starts (e.g. collections edges) still ships.
+    setAttributionPlatform(platform);
 
     // On-demand state snapshot for the popup's "Report state" button. Dumps to
     // THIS tab's console (where the [ears] logs already live) so it can be read
@@ -96,10 +105,16 @@ export default defineContentScript({
         meetingId: lastMeetingId,
         ...hookDebugState(),
         capture: captureDebugState(),
+        attribution: attributionDebugState(),
       };
       console.debug("[ears][debug][state]", snapshot);
     };
     (window as unknown as { __earsReportState?: () => void }).__earsReportState = reportDebugState;
+    // On-demand export of the attribution flight recorder's per-call ring as
+    // JSONL — call from this tab's DevTools console mid- or post-call:
+    //   copy(__earsExportAttribution())
+    (window as unknown as { __earsExportAttribution?: () => string }).__earsExportAttribution =
+      exportAttributionLog;
 
     // Debug logging: tap the console and forward entries to the isolated relay
     // (which ships them to the background store). This realm is the page's own,
@@ -138,6 +153,9 @@ export default defineContentScript({
       if (msg.kind !== "capture-state" || msg.enabled === captureOn) return;
       captureOn = msg.enabled;
       if (captureOn) {
+        // Fresh adapter for the fresh epoch — the previous epoch's teardown
+        // disposed its adapter, and a disposed adapter is inert by contract.
+        adapter = selectAdapter(host);
         startEpoch(platform, adapter);
         stopMeetingWatch = startMeetingWatch(platform, (id) => {
           lastMeetingId = id;
@@ -148,7 +166,9 @@ export default defineContentScript({
         if (platform === "meet" && adapter?.onDeviceSpeaking) {
           stopSpeakingWatch = startMeetSpeakingWatch((deviceId, at) => {
             try {
-              adapter.onDeviceSpeaking?.(deviceId, at);
+              // Reads the current binding, not a capture: a dev re-inject
+              // swaps the adapter without restarting this watch.
+              adapter?.onDeviceSpeaking?.(deviceId, at);
             } catch {
               // identity is best-effort; a bad onset must never reach the page
             }
@@ -173,7 +193,11 @@ export default defineContentScript({
         __earsDevCapture?: (stream: MediaStream, id: string) => void;
       };
       dev.__earsDevReinit = () => {
-        if (captureOn) startEpoch(platform, adapter);
+        if (!captureOn) return;
+        // Same per-epoch adapter rule as the real toggle path: the superseded
+        // epoch's teardown disposes the adapter it was given.
+        adapter = selectAdapter(host);
+        startEpoch(platform, adapter);
       };
       dev.__earsDevCapture = (stream, id) => __devCaptureStream(stream, id);
     }
@@ -261,7 +285,7 @@ function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => voi
   const onMessage = (event: MessageEvent): void => {
     if (event.source !== window || !isMainEnvelope(event.data)) return;
     const msg = event.data.msg;
-    if (msg.kind === "participant-joined") watcher.observeCandidate(msg.participantId);
+    if (msg.kind === "participant-joined") watcher.observeCandidate(msg.participant.id);
   };
   window.addEventListener("message", onMessage);
 

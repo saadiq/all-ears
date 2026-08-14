@@ -3,7 +3,8 @@ import {
   type AttendeeUpsert,
   type EventFrame,
   type SessionWire,
-  type ParticipantId,
+  type ParticipantOrigin,
+  type ParticipantRef,
   type Platform,
   type RosterEntry,
   type SnapshotWire,
@@ -16,7 +17,8 @@ import {
 //
 //   meeting-started      → session.start (idempotent on platform+external id)
 //   meeting name scraped → session.rename (compare-and-set on rev)
-//   participant joined   → session.attendee upsert (display name)
+//   participant joined   → session.attendee upsert (synthetic track-handle row)
+//   identity confirmed   → session.attendee upsert (platform id + name + source)
 //   ingest stream opened → session.attendee upsert (source link)
 //   participant left     → session.attendee upsert (left timestamp)
 //   popup pause toggle   → session.pause / session.resume (marks, never capture)
@@ -66,10 +68,16 @@ export interface SessionControl {
  * browser:* source, so the daemon never classified it as a browser session).
  */
 type PendingPortEvent =
-  | { kind: "joined"; platform: Platform; participantId: ParticipantId; displayName?: string }
-  | { kind: "stream"; platform: Platform; participantId: ParticipantId }
+  | { kind: "joined"; platform: Platform; participant: ParticipantRef }
+  | { kind: "stream"; platform: Platform; participantId: string }
   | { kind: "roster"; platform: Platform; entries: RosterEntry[] }
-  | { kind: "renamed"; platform: Platform; fromId: ParticipantId; toId: ParticipantId };
+  | {
+      kind: "identified";
+      platform: Platform;
+      participantId: string;
+      captureId: string;
+      displayName?: string;
+    };
 
 // Guard against unbounded growth if a port never declares a session (e.g. a
 // non-meeting tab that still opens a pcm port). Far above any real pre-declare
@@ -104,7 +112,11 @@ interface SessionRecord {
   ended: boolean;
   /** Attendee upserts observed before the session id was known. */
   pendingAttendees: AttendeeUpsert[];
-  participants: Set<ParticipantId>;
+  /** Capture participants by id → the ref's provenance kind, when known.
+   * Membership drives the `left` stamping; the kind lets a later stream-opened
+   * upsert carry the same origin the join declared. `undefined` kind means the
+   * id arrived on a path that never declared provenance (stream before join). */
+  participants: Map<string, ParticipantOrigin | undefined>;
 }
 
 export class SessionTracker {
@@ -179,7 +191,7 @@ export class SessionTracker {
       paused: false,
       ended: false,
       pendingAttendees: [],
-      participants: new Set(),
+      participants: new Map(),
       renamesSent: new Set(),
       ...(title ? { title } : {}),
     };
@@ -231,20 +243,17 @@ export class SessionTracker {
     if (record) this.endSession(record);
   }
 
-  /** A participant's identity (with display name, when known) from the
-   * tab's DOM layer — upserted onto the daemon session's roster. */
-  participantJoined(
-    portId: string,
-    platform: Platform,
-    participantId: ParticipantId,
-    displayName?: string,
-  ): void {
+  /** A capture participant (a track-scoped handle) from the tab's capture
+   * layer — enrolled for `left` stamping and upserted onto the daemon
+   * session's roster as a synthetic row. Identity arrives separately, via
+   * `participantIdentified` / `rosterUpdate`. */
+  participantJoined(portId: string, platform: Platform, participant: ParticipantRef): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
-      this.enqueuePending(portId, { kind: "joined", platform, participantId, displayName });
+      this.enqueuePending(portId, { kind: "joined", platform, participant });
       return;
     }
-    this.applyJoined(record, participantId, displayName);
+    this.applyJoined(record, participant);
   }
 
   /**
@@ -266,31 +275,33 @@ export class SessionTracker {
   }
 
   /**
-   * A late identity join from the tab (see protocol.ts "participant-renamed"):
-   * `fromId`'s track died before its identity upgrade could restart the
-   * pipeline, so the audio already recorded stays under `fromId`'s source.
-   * Attach that source to the *named* `toId` attendee so name and source land
-   * on one roster row — which is what the transcript's speaker-name map keys
-   * on. Identity only: `toId` is not enrolled as a capture participant.
+   * A confirmed identity for a captured source (see protocol.ts
+   * "participant-identified"): the audio recorded under `captureId`'s source
+   * belongs to the platform-identified `participantId`. Attach that source
+   * (and the display name, when resolved) to the *named* attendee so name and
+   * source land on one roster row — which is what the transcript's
+   * speaker-name map keys on. Identity only: `participantId` is not enrolled
+   * as a capture participant.
    */
-  participantRenamed(
+  participantIdentified(
     portId: string,
     platform: Platform,
-    fromId: ParticipantId,
-    toId: ParticipantId,
+    participantId: string,
+    captureId: string,
+    displayName?: string,
   ): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
-      this.enqueuePending(portId, { kind: "renamed", platform, fromId, toId });
+      this.enqueuePending(portId, { kind: "identified", platform, participantId, captureId, displayName });
       return;
     }
-    this.applyRename(record, platform, fromId, toId);
+    this.applyIdentified(record, platform, participantId, captureId, displayName);
   }
 
   /** An ingest stream for this participant is confirmed open on earsd — link
    * the attendee to their per-participant source (which downstream feeds the
    * transcript's speaker-name map). */
-  streamOpened(portId: string, platform: Platform, participantId: ParticipantId): void {
+  streamOpened(portId: string, platform: Platform, participantId: string): void {
     const record = this.findRecord(portId, platform);
     if (!record) {
       this.enqueuePending(portId, { kind: "stream", platform, participantId });
@@ -299,31 +310,40 @@ export class SessionTracker {
     this.applyStream(record, platform, participantId);
   }
 
-  private applyJoined(record: SessionRecord, participantId: ParticipantId, displayName?: string): void {
-    record.participants.add(participantId);
+  private applyJoined(record: SessionRecord, participant: ParticipantRef): void {
+    record.participants.set(participant.id, participant.kind);
     this.upsertAttendee(record, {
-      id: participantId,
-      ...(displayName ? { display_name: displayName } : {}),
+      id: participant.id,
+      origin: participant.kind,
     });
   }
 
-  private applyStream(record: SessionRecord, platform: Platform, participantId: ParticipantId): void {
-    record.participants.add(participantId);
+  private applyStream(record: SessionRecord, platform: Platform, participantId: string): void {
+    if (!record.participants.has(participantId)) record.participants.set(participantId, undefined);
+    // The join declared this id's provenance; a stream for an id no join
+    // declared has none, and unknown is sent as absent, never guessed.
+    const origin = record.participants.get(participantId);
     this.upsertAttendee(record, {
       id: participantId,
       source: sourceLabel(platform, participantId),
+      ...(origin ? { origin } : {}),
     });
   }
 
-  private applyRename(
+  private applyIdentified(
     record: SessionRecord,
     platform: Platform,
-    fromId: ParticipantId,
-    toId: ParticipantId,
+    participantId: string,
+    captureId: string,
+    displayName?: string,
   ): void {
+    // An identity link joins a captured source to a *confirmed platform id* —
+    // that is the whole meaning of the message (protocol.ts).
     this.upsertAttendee(record, {
-      id: toId,
-      source: sourceLabel(platform, fromId),
+      id: participantId,
+      ...(displayName ? { display_name: displayName } : {}),
+      source: sourceLabel(platform, captureId),
+      origin: "platform",
     });
   }
 
@@ -333,7 +353,14 @@ export class SessionTracker {
       // Identity only — deliberately NOT added to record.participants: no
       // capture pipeline backs this id, so no pipeline-teardown `left` should
       // ever be stamped on it.
-      this.upsertAttendee(record, { id: entry.participantId, display_name: entry.displayName });
+      // Roster ids are harvested from the platform's own UI — always
+      // platform-minted (protocol.ts RosterEntry).
+      this.upsertAttendee(record, {
+        id: entry.participantId,
+        display_name: entry.displayName,
+        origin: "platform",
+        ...(entry.isLocal ? { self: true } : {}),
+      });
     }
   }
 
@@ -351,9 +378,10 @@ export class SessionTracker {
     this.pendingByPort.delete(portId);
     for (const event of queue) {
       if (event.platform !== record.platform) continue; // different platform on the same port — not this session
-      if (event.kind === "joined") this.applyJoined(record, event.participantId, event.displayName);
+      if (event.kind === "joined") this.applyJoined(record, event.participant);
       else if (event.kind === "roster") this.applyRoster(record, event.entries);
-      else if (event.kind === "renamed") this.applyRename(record, event.platform, event.fromId, event.toId);
+      else if (event.kind === "identified")
+        this.applyIdentified(record, event.platform, event.participantId, event.captureId, event.displayName);
       else this.applyStream(record, event.platform, event.participantId);
     }
   }
@@ -365,7 +393,7 @@ export class SessionTracker {
    * killed a live session 17s in and lost the rest of the meeting. Real ends
    * come from meeting-ended, the port disconnect (Meet's post-call redirect),
    * and the daemon's ingest-idle / superseded nets. */
-  participantLeft(portId: string, participantId: ParticipantId): void {
+  participantLeft(portId: string, participantId: string): void {
     for (const record of this.sessions.values()) {
       if (!record.portIds.has(portId) || record.ended) continue;
       if (!record.participants.delete(participantId)) continue;

@@ -417,6 +417,235 @@ struct TranscribePipelineTests {
     #expect(markdown.contains("hello from jane"))
   }
 
+  @Test(
+    "--session names track-scoped sources from the attribution log's binding hints (R3)"
+  )
+  func sessionAttributionHintsDriveSpeakerNames() async throws {
+    let dataRoot = makeTempDirectory("session-hints")
+    let sessionID = "hints-session"
+
+    // Track-handle sources carry no identity, the roster rows carry no
+    // source links, and with two named remotes counting can force nothing —
+    // only the attribution log's identity links can name the sources.
+    var local = SessionAttendee(id: "devices/1", joined: now.advanced(by: -20))
+    local.displayName = "Tom Elliot"
+    local.isLocal = true
+    var ana = SessionAttendee(id: "devices/2", joined: now.advanced(by: -15))
+    ana.displayName = "Ana Flores"
+    var bram = SessionAttendee(id: "devices/3", joined: now.advanced(by: -14))
+    bram.displayName = "Bram Okafor"
+    let session = Session(
+      id: sessionID,
+      title: "call",
+      state: .ended,
+      started: now.advanced(by: -20),
+      ended: now,
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
+      attendees: [local, ana, bram],
+      sources: ["browser:meet:t1", "browser:meet:t2"])
+    try SessionStore.write(session, dataRoot: dataRoot)
+    try SessionAttributionLog.append(
+      lines: [
+        #"{"schema":1,"type":"provisional-binding","t":1723500000100,"trackId":"trk-1","deviceId":"devices/2","correlator":"dom","confirmations":2,"outcome":"bound"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000200,"trackId":"trk-1","captureId":"t1","participantId":"devices/2"}"#,
+        #"{"schema":1,"type":"identity-link","t":1723500000300,"trackId":"trk-2","captureId":"t2","participantId":"devices/3"}"#,
+      ], dataRoot: dataRoot, sessionID: sessionID)
+
+    for sourceID: SourceID in ["browser:meet:t1", "browser:meet:t2"] {
+      try await writeFixtureSource(
+        sourceID: sourceID,
+        dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+        chunkStart: now.advanced(by: -20), chunkDuration: 20,
+        vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+    }
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from ana")],
+      [Segment(start: 4, end: 6, text: "hello from bram")],
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let markdown = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
+    // Turns render under the hinted names — the opaque source ids appear
+    // nowhere as speaker labels.
+    #expect(markdown.contains("] Ana Flores**"))
+    #expect(markdown.contains("] Bram Okafor**"))
+    #expect(!markdown.contains("] browser:meet:t1**"))
+    #expect(!markdown.contains("] browser:meet:t2**"))
+  }
+
+  /// A session whose stored `[[speaker]]` map was written by an older
+  /// reconciler and carries the wrong conclusion: the local participant's
+  /// name on the one remote track, with the actual remote attendee unheard.
+  /// The current reconciler settles the same roster correctly by counting.
+  private func writeStaleMapSession(
+    sessionID: String, dataRoot: URL, reconcilerVersion: Int
+  ) throws {
+    var local = SessionAttendee(id: "tom", joined: now.advanced(by: -20))
+    local.displayName = "Tom Elliot"
+    local.isLocal = true
+    var remote = SessionAttendee(id: "jane", joined: now.advanced(by: -15))
+    remote.displayName = "Jane Doe"
+    let session = Session(
+      id: sessionID,
+      title: "call",
+      state: .ended,
+      started: now.advanced(by: -20),
+      ended: now,
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
+      attendees: [local, remote],
+      speakers: [
+        SessionSpeaker(
+          source: SourceID("browser:meet:speaker-1"), name: "Tom Elliot",
+          confidence: .correlated)
+      ],
+      sources: ["browser:meet:speaker-1"],
+      reconcilerVersion: reconcilerVersion)
+    try SessionStore.write(session, dataRoot: dataRoot)
+  }
+
+  @Test("--session re-derives a speaker map stored by an older reconciler")
+  func staleReconcilerVersionIsRederived() async throws {
+    let dataRoot = makeTempDirectory("stale-map")
+    let sessionID = "stale-map-session"
+    // Version 0: what every session.toml written before versioning carries.
+    try writeStaleMapSession(sessionID: sessionID, dataRoot: dataRoot, reconcilerVersion: 0)
+
+    try await writeFixtureSource(
+      sourceID: "browser:meet:speaker-1",
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from the remote track")]
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let markdown = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
+    // The stale map's wrong conclusion is repaired: the turn renders under
+    // the one remote participant, not the local user the old map named.
+    #expect(markdown.contains("] Jane Doe**"))
+    #expect(!markdown.contains("] Tom Elliot**"))
+  }
+
+  @Test("--session trusts a stored speaker map at the current reconciler version")
+  func currentVersionMapIsTrusted() async throws {
+    let dataRoot = makeTempDirectory("current-map")
+    let sessionID = "current-map-session"
+    try writeStaleMapSession(
+      sessionID: sessionID, dataRoot: dataRoot, reconcilerVersion: RosterReconciler.version)
+
+    try await writeFixtureSource(
+      sourceID: "browser:meet:speaker-1",
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from the remote track")]
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let markdown = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
+    // Same wrong-looking map, but stamped by the current reconciler: it is
+    // the derivation's own conclusion and stands as stored.
+    #expect(markdown.contains("] Tom Elliot**"))
+    #expect(!markdown.contains("] Jane Doe**"))
+  }
+
+  @Test("--rereconcile re-derives even a map at the current reconciler version")
+  func rereconcileForcesRederivation() async throws {
+    let dataRoot = makeTempDirectory("rereconcile")
+    let sessionID = "rereconcile-session"
+    // The same map "--session trusts a stored speaker map…" leaves standing:
+    // only the explicit flag overrides a current-version map.
+    try writeStaleMapSession(
+      sessionID: sessionID, dataRoot: dataRoot, reconcilerVersion: RosterReconciler.version)
+
+    try await writeFixtureSource(
+      sourceID: "browser:meet:speaker-1",
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let scripted = ScriptedTranscriber(results: [
+      [Segment(start: 0, end: 2, text: "hello from the remote track")]
+    ])
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil, rereconcile: true),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: { scripted },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { line in Issue.record("unexpected stderr: \(line)") }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let markdown = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).markdown)
+    #expect(markdown.contains("] Jane Doe**"))
+    #expect(!markdown.contains("] Tom Elliot**"))
+
+    // The sidecar records the map this run was actually labelled with — the
+    // re-derivation, not the stored map, which `session.toml` keeps untouched.
+    // That record is what lets an offline harness replay an archived session
+    // through the current reconciler and read the conclusion back off disk.
+    let sidecar = try outputText(
+      at: TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID).sidecar)
+    #expect(sidecar.contains("\"source\": \"browser:meet:speaker-1\""))
+    #expect(sidecar.contains("\"name\": \"Jane Doe\""))
+    #expect(sidecar.contains("\"confidence\": \"inferred\""))
+    #expect(!sidecar.contains("Tom Elliot"))
+  }
+
   @Test("--session merges an optional vocab/<session-id>.txt into the transcribe context")
   func sessionVocabKeyedBySessionID() async throws {
     let dataRoot = makeTempDirectory("session-vocab")

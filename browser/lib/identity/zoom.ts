@@ -1,5 +1,5 @@
 import { registerAdapter, type PlatformAdapter } from "./adapter";
-import type { ParticipantId } from "../protocol";
+import type { PlatformParticipantId } from "./adapter";
 
 // Zoom identity (Phase 5). Strongest of the three: the participant id is
 // intrinsic to the track, parsed from the MSID/stream id — stable across
@@ -14,7 +14,7 @@ import type { ParticipantId } from "../protocol";
  * Parse a stable Zoom participant id from a stream/MSID, or null if the id
  * isn't a per-participant Zoom audio stream. Exported for unit tests.
  */
-export function parseZoomParticipantId(msid: string | null | undefined): ParticipantId | null {
+export function parseZoomParticipantId(msid: string | null | undefined): PlatformParticipantId | null {
   if (!msid) return null;
   let decoded: string;
   try {
@@ -52,9 +52,9 @@ export function parseZoomMeetingId(pathname: string | null | undefined): string 
 class ZoomAdapter implements PlatformAdapter {
   readonly platform = "zoom" as const;
 
-  identify(track: MediaStreamTrack, stream: MediaStream): ParticipantId | null {
-    // The MSID rides the stream id; fall back to the track's own id.
-    return parseZoomParticipantId(stream.id) ?? parseZoomParticipantId(track.id);
+  identify(_track: MediaStreamTrack, stream: MediaStream): PlatformParticipantId | null {
+    // The MSID rides the stream id.
+    return parseZoomParticipantId(stream.id);
   }
 }
 

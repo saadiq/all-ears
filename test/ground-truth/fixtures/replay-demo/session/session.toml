@@ -1,0 +1,53 @@
+schema = 3
+id = "11111111-2222-4333-8444-555555555555"
+platform = "meet"
+external_id = "demo-fixture"
+title = "replay demo"
+state = "ended"
+started = "2026-08-13T10:00:00Z"
+ended = "2026-08-13T10:02:00Z"
+transcript_completed = ""
+trigger = "browser-extension"
+sources = ["mic", "browser:meet:t1"]
+reconciler_version = 3
+
+[[interval]]
+start = "2026-08-13T10:00:00Z"
+end = "2026-08-13T10:02:00Z"
+
+[[attendee]]
+id = "spaces/demo/devices/1"
+display_name = "GT-Host"
+joined = "2026-08-13T10:00:00Z"
+left = ""
+source = ""
+origin = "platform"
+self = true
+
+[[attendee]]
+id = "spaces/demo/devices/2"
+display_name = "GT-Alpha"
+joined = "2026-08-13T10:00:10Z"
+left = ""
+source = ""
+origin = "platform"
+self = false
+
+[[attendee]]
+id = "t1"
+display_name = ""
+joined = "2026-08-13T10:00:12Z"
+left = ""
+source = "browser:meet:t1"
+origin = "synthetic"
+self = false
+
+# A deliberately stale conclusion at the CURRENT reconciler version: it names
+# a participant the roster never saw, so only a forced re-derivation
+# (`transcribe --rereconcile`, which the replay tier runs) repairs it. The
+# check script asserts the replayed map says GT-Alpha via the binding hint —
+# proving the real reconciler ran, not that the stored answer leaked through.
+[[speaker]]
+source = "browser:meet:t1"
+name = "GT-Stale"
+confidence = "correlated"

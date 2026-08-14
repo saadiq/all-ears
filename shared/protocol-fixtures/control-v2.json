@@ -62,7 +62,21 @@
           "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
           "id": "spaces/x/devices/y",
           "display_name": "Jane Doe",
-          "source": "browser:meet:jane-a1b2"
+          "source": "browser:meet:t3",
+          "origin": "platform"
+        }
+      }
+    },
+    {
+      "name": "session.attendee-upsert-synthetic",
+      "frame": {
+        "id": 10,
+        "method": "session.attendee",
+        "params": {
+          "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
+          "id": "t3",
+          "source": "browser:meet:t3",
+          "origin": "synthetic"
         }
       }
     },
@@ -118,10 +132,25 @@
               "id": "spaces/x/devices/y",
               "display_name": "Jane Doe",
               "joined": "2026-07-19T10:00:12.000Z",
-              "source": "browser:meet:jane-a1b2"
+              "source": "browser:meet:t3",
+              "origin": "platform"
+            },
+            {
+              "id": "spaces/x/devices/z",
+              "display_name": "Tom Elliot",
+              "joined": "2026-07-19T10:00:02.000Z",
+              "self": true
             }
           ],
-          "sources": ["mic", "browser:meet:jane-a1b2"],
+          "speakers": [
+            {
+              "source": "browser:meet:t3",
+              "name": "Jane Doe",
+              "confidence": "correlated"
+            }
+          ],
+          "warnings": [],
+          "sources": ["mic", "browser:meet:t3"],
           "trigger": "browser-extension",
           "rev": 43
         }
@@ -176,7 +205,9 @@
             "started": "2026-07-19T10:00:00.000Z",
             "intervals": [{ "start": "2026-07-19T10:00:00.000Z", "end": "2026-07-19T10:12:30.000Z" }],
             "attendees": [],
-            "sources": ["browser:meet:jane-a1b2"],
+            "speakers": [],
+            "warnings": [],
+            "sources": ["browser:meet:t3"],
             "trigger": "browser-extension",
             "rev": 43
           }

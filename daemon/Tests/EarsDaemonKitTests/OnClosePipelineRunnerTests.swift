@@ -379,6 +379,80 @@ struct OnClosePipelineRunnerTests {
     #expect(bounded.utf8.count < long.utf8.count)
   }
 
+  // MARK: - diagnostics from a successful stage
+
+  @Test("plain diagnostics keep a stage's prose warnings and drop its JSON-Lines log")
+  func plainDiagnosticsKeepsProseOnly() {
+    let captured = """
+      {"ts":"2026-08-12T08:06:08Z","level":"info","event":"run.start"}
+      warning: preset 'meeting': no notes file at /vault/2026-08-12 - meet abc.md; \
+      summarizing from the transcript alone
+      {"ts":"2026-08-12T08:08:15Z","level":"info","event":"run.summary","status":"ok"}
+      """
+    #expect(
+      OnClosePipelineRunner.plainDiagnostics(captured)
+        == "warning: preset 'meeting': no notes file at /vault/2026-08-12 - meet abc.md; "
+        + "summarizing from the transcript alone")
+    // A stage whose stderr is nothing but its structured log has nothing to say.
+    #expect(
+      OnClosePipelineRunner.plainDiagnostics("{\"event\":\"run.summary\",\"status\":\"ok\"}")
+        == "")
+    #expect(OnClosePipelineRunner.plainDiagnostics("") == "")
+  }
+
+  @Test("a stage that exits 0 with a warning still gets that warning into the daemon log")
+  func successfulStageDiagnosticsAreLogged() async throws {
+    let directory = try Self.makeTempDirectory("success-diagnostics")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let brief = try Self.makeFile("t.brief.summary.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      SpawnOutcome(
+        exitCode: 0,
+        stderr: "{\"event\":\"run.start\"}\n"
+          + "warning: preset 'meeting': no notes file at /vault/jotted.md; "
+          + "summarizing from the transcript alone\n",
+        stdout: StageEnvelopeFixtures.summarizeAllPresetsSuccess(
+          presets: [(preset: "brief", path: brief)])),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    _ = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe, .summarize], context: "session-end")
+
+    #expect(
+      logs.snapshot().contains { $0.contains("summarize succeeded for session 'b7acc61f'") })
+    #expect(
+      logs.snapshot().contains {
+        $0.contains("summarize reported for session 'b7acc61f': ")
+          && $0.contains("no notes file at /vault/jotted.md")
+      })
+    // The structured log the stage already fans out elsewhere is not echoed.
+    #expect(!logs.snapshot().contains { $0.contains("run.start") })
+  }
+
+  @Test("a clean successful stage logs no diagnostics line at all")
+  func successfulStageWithNoDiagnosticsStaysQuiet() async throws {
+    let directory = try Self.makeTempDirectory("quiet-success")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      SpawnOutcome(
+        exitCode: 0,
+        stderr: "{\"event\":\"run.summary\",\"status\":\"ok\"}",
+        stdout: StageEnvelopeFixtures.transcribeSuccess(output: transcript))
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    _ = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: [.transcribe], context: "session-end")
+
+    #expect(!logs.snapshot().contains { $0.contains("reported for session") })
+  }
+
   // MARK: - JSON result-envelope consumption (issue #64)
 
   @Test("a v1 transcribe JSON envelope parses and its output path feeds cleanup")

@@ -94,6 +94,45 @@ session id, the extension version and every browser's argv. **The manifest and
 the session id travel together on purpose** — that is what makes an archived run
 re-scorable.
 
+### Signed-in profiles (when anonymous join is refused)
+
+Meet stopped admitting this harness's anonymous guests (see
+[`FINDINGS.md`](./FINDINGS.md#what-is-blocking-the-live-runs)), so participants
+can instead run from **persistent, manually-signed-in Chrome profiles** under
+`.profiles/` — the brief's stated fallback. Once per profile, a human signs in
+by hand, in a browser launched with no debugging port and no automation flags:
+
+```sh
+mkdir -p .profiles
+open -na Chromium --args --user-data-dir="$PWD/.profiles/host"
+# …sign in to the participant's Google account, then quit the browser.
+```
+
+Then hand each participant its profile by label:
+
+```sh
+uv run run.py scenario s2-one-guest \
+  --meet-url https://meet.google.com/xxx-yyyy-zzz \
+  --profile host=host --profile alpha=alpha     # LABEL=dir under .profiles/
+```
+
+What this changes, and what it costs:
+
+- `launch` never wipes a profile named here, and nothing in the harness ever
+  writes to one. `.profiles/` is gitignored — the directories hold **live
+  Google session cookies**; never commit them.
+- An anonymous guest types its display name, so the roster label is ground
+  truth by construction. A signed-in guest shows its **Google account name**,
+  which the harness neither controls nor rewrites — so the ground truth moves
+  from "the name typed at join" to "**which profile played which WAV**". Still
+  by construction (the runner owns that mapping), but the name must now be
+  *observed*: the runner reads the host's own tile while it is alone in the
+  call, and attributes each later-appearing tile name to the guest it had just
+  launched. The observed names land in `run.json` (gitignored) as
+  `observed_display_name`, and the scorer matches the roster on them.
+- The convener role disappears: a signed-in participant revives a dormant call
+  by itself, so `--convener` is only needed for legacy anonymous runs.
+
 ### The tone-viability probe
 
 Run once before trusting the corpus design, and again whenever Meet's audio path
@@ -117,10 +156,13 @@ like silence at the far end.
 `score.py` reports three scores **separately**, because they fail differently.
 
 **1. Roster.** The display names typed at join versus `session.toml`'s attendees,
-their `spaces/<space>/devices/<n>` ids, whether each carries a
-`browser:<platform>:<participant>` source, and join/leave instants versus
-`events.jsonl`. Fails on a declared guest that never appeared, or an attendee
-that is neither declared nor a recorded observer.
+their `spaces/<space>/devices/<n>` ids, whether each guest's voice was
+attributed to a source via the reconciled `[[speaker]]` map, and join/leave
+instants versus `events.jsonl`. Source ids are opaque track handles
+(`browser:<platform>:<track-slug>`) that embed no participant — attribution is
+judged on the map, never parsed out of a label. Fails on a declared guest that
+never appeared, or an attendee that is neither declared nor a recorded
+observer.
 
 **2. Timing/energy.** Each captured source's RMS envelope cross-correlated
 against every reference WAV, zero-lag. Envelopes rather than raw samples: the
@@ -171,19 +213,27 @@ Slot assignment is derived, not written by hand: speaker *k* of *N* takes grid
 slots *k, k+N, k+2N…*, and passages are assigned in order of that speaker's own
 turns (so a late joiner's first turn is still `p1`).
 
-## Re-scoring an archived run against a new algorithm
+## Re-scoring an archived run against a new algorithm: the replay tier
 
-This is the whole point of the corpus, and it needs no daemon and no cooperation
-from the capture side — `docs/architecture.md` makes the on-disk layout the read
-API.
+This is the whole point of the corpus, and it needs no daemon, no call, and no
+cooperation from the capture side — `docs/architecture.md` makes the on-disk
+layout the read API. One command replays a run recorded today against whatever
+the reconciler says next month:
 
 ```sh
-# Same run, new algorithm: re-run the pipeline over the archived session, then re-score.
-transcribe --session <uuid>
-uv run score.py runs/20260806T174500Z-s3-three-guests
+uv run replay.py runs/20260806T174500Z-s3-three-guests
 ```
 
-Two things make this work months later:
+`replay.py` copies the run's archived session store into a scratch data root
+(the archive stays byte-identical), runs the **real `transcribe` binary** from
+this checkout over the copy — `--session <id> --rereconcile --json`, the same
+Swift reconciler the daemon runs, consuming the same evidence: the roster in
+`session.toml` plus the binding hints in `attribution.jsonl` — then scores the
+re-derived speaker map (read back from the replayed transcript's JSON sidecar)
+with the same three scorers as a live run. The replay's record lands in a new
+`runs/<stamp>-replay-<name>/replay.json`; the archived run is never written to.
+
+What makes this work months later:
 
 - `runs/<...>/run.json` holds the slot schedule, the per-participant WAV
   SHA-256s, the corpus fingerprint **and** the session id together.
@@ -191,14 +241,39 @@ Two things make this work months later:
   id, model and seed can return different audio as ElevenLabs updates its models
   — so the bytes are kept next to the hashes that describe them. See
   `docs/engineering-practices.md`.
+- **Archive the session tree beside the run**: copy `sessions/<uuid>/` into
+  `runs/<...>/session/` once the call ends. `replay.py` looks there first, so
+  the run stays replayable after the live store is cleaned up or on another
+  machine. Without the copy it falls back to the live store by session id.
 
-If the session's audio has been evicted by retention (default 2 h after its
-transcript completes), scores 1 and 3 still work; score 2 needs the audio, so
-archive `sessions/<uuid>/sources/` alongside the run if you want to re-score
-timing later.
+Degraded archives degrade the scores honestly rather than silently:
 
-`score.py --session <uuid>` scores a run directory against a different session,
-which is how you compare two pipeline versions over the same corpus.
+- **Audio evicted** (retention default: 2 h after the transcript completes) —
+  the timing score reports `unscored`, not failed; roster/attribution still
+  score fully. Archive `sessions/<uuid>/sources/` beside the run to keep
+  timing re-scorable.
+- **Text** is `unscored` under the default null ASR backend (fast, hermetic,
+  no model). `--asr` runs the real model over archived audio and re-scores it.
+- **No `attribution.jsonl`** — the session predates the R1 flight recorder, so
+  there is no recorded binding evidence to replay: refused with that message.
+  `--roster-only` replays it from the roster alone (still the real
+  reconciler, just hint-less).
+- **Pre-R3 store** (`session.toml` schema ≠ 3) — refused with a clear
+  message: the current reconciler has nothing it can honestly derive from a
+  pre-schema-3 record. (A schema-3 store whose source ids still carry the old
+  participant-labelled shape replays fine — the reconciler reads those labels
+  compatibly.)
+
+The replay path itself is pinned by a committed synthetic archive —
+`fixtures/replay-demo/`, sanitized ids and fixture names only — whose stored
+`[[speaker]]` map is deliberately stale, so a correct replay **must**
+re-derive. `uv run check_replay.py` drives it end to end (needs a built
+daemon: `swift build` in `daemon/`) and asserts the re-derivation, the
+refusals, and that the fixture archive survives byte-identical.
+
+`score.py --session <uuid-or-path>` remains the manual route: score a run
+directory against any session store, which is how you compare two pipeline
+versions over the same corpus by hand.
 
 ## Layout
 
@@ -216,7 +291,10 @@ which is how you compare two pipeline versions over the same corpus.
 | `sessions.py` | reads `earsd`'s audio store straight off disk |
 | `run.py` | the phase-1 runner |
 | `score.py` | the scorer |
-| `build/`, `runs/`, `.work/` | build output and run records (gitignored) |
+| `replay.py` | the replay tier: re-run an archived run through the real reconciler, re-score |
+| `check_replay.py` | hermetic end-to-end check of the replay path over the committed fixture |
+| `fixtures/replay-demo/` | committed synthetic archive (sanitized ids, fixture names) the check replays |
+| `build/`, `runs/`, `.work/`, `.profiles/` | build output, run records, signed-in profiles (all gitignored) |
 
 ## Gotchas worth knowing before you debug something else
 

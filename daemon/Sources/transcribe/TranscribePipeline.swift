@@ -136,6 +136,11 @@ enum TranscribePipeline {
     var session: String? = nil
     var sourceIDs: [String]
     var out: String?
+    /// `--rereconcile`: re-derive the session's speaker map from its roster
+    /// with the current ``RosterReconciler``, ignoring the stored
+    /// `[[speaker]]` map even when its `reconciler_version` is current.
+    /// Only meaningful with `session` — `Transcribe` validates that.
+    var rereconcile: Bool = false
   }
 
   /// Entry point. `socketPath` (when resolvable) lets a `--session` run
@@ -460,15 +465,75 @@ enum TranscribePipeline {
     let modelInfo = TranscriptModelInfo(
       name: transcriber.info.name, backend: backendName, version: transcriber.info.version)
 
-    // The session roster's name map (attendee source → display name) feeds
-    // speaker labels, so real names flow into the transcript directly.
-    var speakers: [String: String] = [:]
-    if let sessionRecord {
-      for attendee in sessionRecord.attendees {
-        if let source = attendee.source, let name = attendee.displayName {
-          speakers[source.rawValue] = name
-        }
-      }
+    // Speaker labels come from the session's *reconciled* map, not from the
+    // roster's raw bindings: `RosterReconciler` has already dropped the
+    // impossible ones and filled what the roster determines by elimination,
+    // and re-deriving it here from `attendee.source` would reinstate exactly
+    // the bindings it rejected. Several sources naming one speaker is normal
+    // and intended — turns group by resolved label, so a participant split
+    // across an identity upgrade reassembles into one speaker.
+    //
+    // A session with no map — or one whose map an *older* reconciler wrote —
+    // is reconciled here instead. That covers every session captured before
+    // reconciliation existed, and every session reconciled before the latest
+    // fix: re-transcribing one applies the current invariants and repairs its
+    // labels retroactively. It is only possible because the derivation is a
+    // pure function of the roster, so running it late gives the same answer
+    // as running it at session end would today. The re-derived map is used
+    // for this run, never written back — `session.toml` stays the daemon's
+    // record of what its own reconciliation concluded.
+    var reconciled: RosterReconciler.Outcome? = nil
+    if let sessionRecord, !sessionRecord.attendees.isEmpty,
+      inputs.rereconcile || sessionRecord.speakers.isEmpty
+        || sessionRecord.reconcilerVersion < RosterReconciler.version
+    {
+      // The attribution log's binding hints feed the re-derivation exactly as
+      // they feed the daemon's own session.end reconciliation: sources are
+      // opaque track handles, and the log carries links the roster's single
+      // `source` field per attendee lost. Best-effort — no log, no hints.
+      let attributionURL = SessionAttributionLog.fileURL(
+        dataRoot: dataRoot, sessionID: sessionRecord.id)
+      let hints =
+        (try? String(contentsOf: attributionURL, encoding: .utf8))
+        .map { AttributionBindingHints.parse(jsonl: $0) } ?? []
+      let outcome = RosterReconciler.reconcile(
+        attendees: sessionRecord.attendees, sources: sessionRecord.sources,
+        sessionStart: sessionRecord.started, hints: hints)
+      reconciled = outcome
+      let reason =
+        inputs.rereconcile
+        ? "re-reconciliation requested (--rereconcile)"
+        : sessionRecord.speakers.isEmpty
+          ? "no stored speaker map"
+          : "stored speaker map is reconciler v\(sessionRecord.reconcilerVersion), "
+            + "current is v\(RosterReconciler.version)"
+      dependencies.log(
+        "session \(sessionRecord.id): \(reason); reconciled the roster into "
+          + "\(outcome.speakers.count) speaker(s) with \(outcome.warnings.count) warning(s)")
+    }
+    // The full rows (name + confidence per source), not a flattened lookup:
+    // assembly labels turns from them *and* records them in the sidecar, the
+    // one durable trace of a re-derived map (`session.toml` never sees it).
+    let speakers = reconciled?.speakers ?? sessionRecord?.speakers ?? []
+    // Everyone the roster named, whether or not any audio was matched to them
+    // — the fact that survives a total attribution failure. The local
+    // participant is marked the way the summarize prompt's own `speakers:`
+    // roll call marks them, so both lines speak one vocabulary.
+    var derivedTitle: String? = nil
+    if let sessionRecord, let reconciled, sessionRecord.hasDefaultTitle,
+      let derived = RosterReconciler.derivedTitle(
+        attendees: sessionRecord.attendees, localAttendeeID: reconciled.localAttendeeID)
+    {
+      derivedTitle = derived
+      dependencies.log(
+        "session \(sessionRecord.id): titling this transcript \"\(derived)\" from the roster; "
+          + "the session itself is still named \"\(sessionRecord.title)\"")
+    }
+    let localAttendeeID = reconciled?.localAttendeeID
+    let attendees: [String] = (sessionRecord?.attendees ?? []).compactMap { attendee in
+      guard let name = attendee.displayName, !name.isEmpty else { return nil }
+      let isLocal = attendee.isLocal || attendee.id == localAttendeeID
+      return isLocal ? "\(name) (me)" : name
     }
 
     // The chosen lookup order, recorded in frontmatter so a wrong-store read is
@@ -491,8 +556,16 @@ enum TranscribePipeline {
       // The path-template context every downstream stage reads back from the
       // document rather than being told again on the command line, so a
       // manual rerun files exactly where the daemon-spawned run did.
-      title: sessionRecord?.title,
+      // A session that ended before reconciliation existed still carries the
+      // platform's meeting id as its title, and that title is what every
+      // downstream path template interpolates — including the `notes` lookup
+      // that has to match a note the user named after a person. Re-deriving
+      // it here means re-running the chain over an old session files it under
+      // a readable name, the same as a session captured today.
+      title: derivedTitle ?? sessionRecord?.title,
       started: sessionRecord?.started ?? requestedRange.start,
+      attendees: attendees,
+      warnings: reconciled?.warnings ?? sessionRecord?.warnings ?? [],
       speakers: speakers,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,

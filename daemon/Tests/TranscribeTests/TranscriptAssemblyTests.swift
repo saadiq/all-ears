@@ -204,8 +204,11 @@ struct TranscriptAssemblyTests {
     // [speakers] map points both at the same display name, so they render as
     // one speaker and never split each other.
     let speakers = [
-      "browser:meet:speaker-1": "Priya",
-      "browser:meet:spaces-x769r-devices-261": "Priya",
+      SessionSpeaker(
+        source: SourceID("browser:meet:speaker-1"), name: "Priya", confidence: .correlated),
+      SessionSpeaker(
+        source: SourceID("browser:meet:spaces-x769r-devices-261"), name: "Priya",
+        confidence: .inferred),
     ]
     let early = SourceTranscription(
       sourceID: "browser:meet:speaker-1",
@@ -246,6 +249,9 @@ struct TranscriptAssemblyTests {
 
     #expect(document.segments.map(\.speaker) == ["Priya", "Priya"])
     #expect(document.segments.map(\.segment.text) == ["before the upgrade", "after the upgrade"])
+    // The map itself travels on the document, so the sidecar can record the
+    // attribution conclusion this run was labelled with.
+    #expect(document.speakers == speakers)
   }
 
   @Test("word count sums split text words when a segment has no word timings")

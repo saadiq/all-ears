@@ -127,8 +127,12 @@ def manifest_for(
                 "audio_start_grid_seconds": p.audio_start_grid,
                 "intended_join_grid_seconds": p.join_grid,
                 "intended_leave_grid_seconds": p.leave_grid,
+                # Browser source ids are opaque per-track handles (t1, t2, …)
+                # carrying no participant; which source is whose voice is the
+                # session's reconciled [[speaker]] map, and that is what the
+                # scorer judges. Only `mic` is a fixed, predictable id.
                 "expected_source_id": (
-                    "mic" if p.local else f"browser:meet:<resolved-at-run-time>"
+                    "mic" if p.local else "browser:meet:<opaque-track-handle>"
                 ),
                 "turns": [
                     {

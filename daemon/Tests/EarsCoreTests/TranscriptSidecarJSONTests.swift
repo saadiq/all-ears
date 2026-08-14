@@ -145,6 +145,46 @@ struct TranscriptSidecarJSONTests {
     #expect(rendered.contains("\"segments\": []"))
   }
 
+  @Test("the speaker map that labeled the run is recorded, even with no segments")
+  func speakersRendered() {
+    // The map is the run's own attribution conclusion — which may be a fresh
+    // re-derivation (`transcribe --rereconcile`) that `session.toml` never
+    // sees, so the sidecar is its only durable record. Rendered even for a
+    // segment-less run: an offline replay harness re-runs reconciliation over
+    // an archived store whose audio may be long evicted, and reads the map
+    // from here.
+    var document = Self.document(segments: [])
+    document.speakers = [
+      SessionSpeaker(
+        source: SourceID("browser:meet:t3"), name: "Jane Doe", confidence: .correlated),
+      SessionSpeaker(
+        source: SourceID("browser:meet:t7"), name: "Sam Roe", confidence: .inferred),
+    ]
+
+    let rendered = TranscriptRenderer.renderJSON(document)
+    let expected = """
+        "speakers": [
+          {
+            "source": "browser:meet:t3",
+            "name": "Jane Doe",
+            "confidence": "correlated"
+          },
+          {
+            "source": "browser:meet:t7",
+            "name": "Sam Roe",
+            "confidence": "inferred"
+          }
+        ],
+      """
+    #expect(rendered.contains(expected))
+  }
+
+  @Test("a run with no speaker map omits the speakers key entirely")
+  func noSpeakersOmitsKey() {
+    let rendered = TranscriptRenderer.renderJSON(Self.document(segments: []))
+    #expect(!rendered.contains("speakers"))
+  }
+
   @Test("multiple segments render in order as separate array entries")
   func multipleSegments() throws {
     let segments = [

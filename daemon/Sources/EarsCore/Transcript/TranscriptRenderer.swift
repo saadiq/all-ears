@@ -22,6 +22,7 @@ public enum TranscriptRenderer {
   /// Renders the canonical `.transcript.json` sidecar.
   public static func renderJSON(_ document: TranscriptDocument) -> String {
     SidecarJSONRenderer.render(
-      document.segments, diarization: document.frontmatter.diarization)
+      document.segments, diarization: document.frontmatter.diarization,
+      speakers: document.speakers)
   }
 }

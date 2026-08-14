@@ -395,6 +395,100 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
+  @Test("a batched ingest.attribution lands in attribution.jsonl under the right session")
+  func attributionBatchLandsInSessionDirectory() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
+
+    let configuration = EarsDaemonConfiguration(
+      sources: [],
+      dataRoot: dataRoot,
+      socketPath: tempSocketPath())
+
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in SyntheticCaptureBackend(source: descriptor.id, buffers: []) },
+      clock: clock)
+    try await daemon.start()
+
+    // An earlier session for a different meeting, already superseded when the
+    // batch arrives — the batch must land under the CURRENT session, not here.
+    let earlier = try await daemon.startSessionForTesting(
+      SessionStartParams(
+        platform: "meet", externalID: "old-meeting", sources: [], trigger: .browserExtension))
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(
+        platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
+
+    // Sanitized synthetic lines only, per the flight-recorder privacy rule.
+    let lines = [
+      #"{"schema":1,"type":"dom-burst","t":1000,"deviceId":"spaces/demo/devices/1"}"#,
+      #"{"schema":1,"type":"track-ended","t":1001,"trackId":"trk-1"}"#,
+    ]
+    await daemon.appendAttributionEvents(
+      session: SessionIdentity(platform: "meet", externalID: "abc"), events: lines)
+    // A second batch appends rather than overwriting.
+    let more = [#"{"schema":1,"type":"track-unmuted","t":1002,"trackId":"trk-2"}"#]
+    await daemon.appendAttributionEvents(
+      session: SessionIdentity(platform: "meet", externalID: "abc"), events: more)
+
+    #expect(
+      SessionAttributionLog.readAllLines(dataRoot: dataRoot, sessionID: session.id) == lines + more)
+    #expect(SessionAttributionLog.readAllLines(dataRoot: dataRoot, sessionID: earlier.id).isEmpty)
+
+    // A tag naming no live session drops the batch without writing anywhere.
+    await daemon.appendAttributionEvents(
+      session: SessionIdentity(platform: "meet", externalID: "never-started"), events: lines)
+    let sessionsDir = DataStoreLayout.sessionsDirectory(dataRoot: dataRoot)
+    let sessionDirs = try FileManager.default.contentsOfDirectory(atPath: sessionsDir.path)
+    #expect(Set(sessionDirs) == Set([earlier.id, session.id]))
+
+    await daemon.stop()
+  }
+
+  @Test("an ingest.capture_failed report lands in events.jsonl under the right session")
+  func captureFailureLandsInSessionTimeline() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
+
+    let configuration = EarsDaemonConfiguration(
+      sources: [],
+      dataRoot: dataRoot,
+      socketPath: tempSocketPath())
+
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in SyntheticCaptureBackend(source: descriptor.id, buffers: []) },
+      clock: clock)
+    try await daemon.start()
+
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(
+        platform: "meet", externalID: "abc", sources: [], trigger: .browserExtension))
+
+    await daemon.recordCaptureFailure(
+      source: "browser:meet:t3",
+      session: SessionIdentity(platform: "meet", externalID: "abc"),
+      reason: "decoder gave up after 5 restarts")
+
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
+    let failure = timeline.first { $0.event == "capture_failed" }
+    #expect(failure != nil)
+    #expect(failure?.source == "browser:meet:t3")
+    #expect(failure?.reason == "decoder gave up after 5 restarts")
+
+    // A tag naming no live session drops the report without creating anything.
+    await daemon.recordCaptureFailure(
+      source: "browser:meet:t3",
+      session: SessionIdentity(platform: "meet", externalID: "never-started"),
+      reason: "decoder gave up")
+    let sessionsDir = DataStoreLayout.sessionsDirectory(dataRoot: dataRoot)
+    let sessionDirs = try FileManager.default.contentsOfDirectory(atPath: sessionsDir.path)
+    #expect(Set(sessionDirs) == Set([session.id]))
+
+    await daemon.stop()
+  }
+
   @Test(
     "reopening the same label after a close resumes the same on-disk source rather than a fresh one"
   )

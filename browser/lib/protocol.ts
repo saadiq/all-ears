@@ -11,11 +11,39 @@ import type { PerfRecord } from "./perf";
 /** Marker on every window.postMessage envelope crossing the world boundary. */
 export const EARS_MARKER = "__ears" as const;
 
-/** Platform tag, mirrored into the earsd `browser:<platform>:<participant>` label. */
+/** Platform tag, mirrored into the earsd `browser:<platform>:<track-slug>` label. */
 export type Platform = "meet" | "zoom" | "teams";
 
-/** Stable within a call; used verbatim as the earsd source-label suffix. */
-export type ParticipantId = string;
+/**
+ * Where a participant reference was minted. `platform` ids come from the
+ * platform itself (a Meet device path like `spaces/x/devices/y`, a Zoom node
+ * id) and can be joined against the platform's own roster; `synthetic` ids
+ * are extension-minted handles that name a captured track, not a person —
+ * the per-track source slugs (`t<n>`) and the dev-only stand-ins
+ * (`graphtap-<n>`). The distinction travels to the daemon as the attendee's
+ * `origin`, so a synthetic roster row is never mistaken for a platform-observed
+ * one (attribution refactor R4; reconciler bug B7).
+ */
+export type ParticipantOrigin = "platform" | "synthetic";
+
+/**
+ * A typed reference to a call participant: the id plus where it was minted.
+ * This is the one participant vocabulary inside the extension; it is flattened
+ * to a plain string only at the wire edges — the earsd source label
+ * (`sourceLabel`) and the `session.attendee` upsert's `id`, where the kind
+ * rides separately as `origin`. Messages that merely *refer back* to a
+ * participant already declared by `participant-joined` (pcm, left,
+ * capture-failed) carry the bare `id` as a key.
+ */
+export interface ParticipantRef {
+  kind: ParticipantOrigin;
+  id: string;
+}
+
+/** A reference under an extension-minted track handle (`t<n>`, …). */
+export function syntheticParticipant(id: string): ParticipantRef {
+  return { kind: "synthetic", id };
+}
 
 /**
  * One (participantId → displayName) pair harvested from the platform's own
@@ -23,13 +51,29 @@ export type ParticipantId = string;
  * has been correlated to this id yet (issue #23). The daemon upserts these onto
  * the session's attendee roster, so a name lands even when the speaking-onset
  * correlation never tied the participant to a captured track (in which case the
- * track stays `speaker-<n>` and this named entry sits beside it, rather than the
- * name being silently lost). `displayName` is always a non-empty string —
- * empties are dropped before an entry is built.
+ * track's source stays an anonymous handle and this named entry sits beside it,
+ * rather than the name being silently lost). `displayName` is always a
+ * non-empty string — empties are dropped before an entry is built.
  */
 export interface RosterEntry {
-  participantId: ParticipantId;
+  /** Always a platform-minted id: roster entries are harvested from the
+   * platform's own UI, which only ever speaks its own ids. */
+  participantId: string;
   displayName: string;
+  /**
+   * This entry is the local participant — you. Present only when the adapter
+   * could establish it beyond doubt; absent means "not known to be you", never
+   * "known not to be you".
+   *
+   * The daemon needs it because the local participant is captured on `mic`,
+   * so a browser-tapped remote track bound to them is an impossible state
+   * rather than an unlikely one — the failure behind journal #158/#172. The
+   * live guard in meet.ts already refuses such a binding, but it fails *open*
+   * when the platform withholds its "(You)" marker, so the flag travels to
+   * the daemon as well and the same invariant is enforced again at session
+   * end, on durable state.
+   */
+  isLocal?: boolean;
 }
 
 /**
@@ -37,8 +81,12 @@ export interface RosterEntry {
  * transferable Int16Array (structured-cloned across the world boundary).
  */
 export type MainMessage =
-  | { kind: "participant-joined"; platform: Platform; participantId: ParticipantId; generation: number; displayName?: string }
-  | { kind: "participant-left"; participantId: ParticipantId; generation: number }
+  // Declares a capture participant — always a track-scoped handle (`t<n>`,
+  // kind `synthetic`): source ids carry no identity (R3). Later messages
+  // refer back by the bare `participantId` key. Identity, when it resolves,
+  // rides `participant-identified` / `participant-roster`, never this.
+  | { kind: "participant-joined"; platform: Platform; participant: ParticipantRef; generation: number }
+  | { kind: "participant-left"; participantId: string; generation: number }
   // A batch of participant identities (id → display name) the adapter resolved
   // from the platform's roster/UI, not necessarily tied to a captured track.
   // Distinct from participant-joined (which is a capture-pipeline lifecycle
@@ -52,27 +100,35 @@ export type MainMessage =
   // distinction the ingest wire previously could not express at all.
   | {
       kind: "pcm";
-      participantId: ParticipantId;
+      participantId: string;
       generation: number;
       samples: Int16Array;
       seq: number;
       sentAt: number;
     }
-  // A confirmed identity for a participant whose capture pipeline can no
-  // longer be restarted under the new id (the track died before the Meet
-  // collections correlation confirmed — the Etel case). The audio already
-  // recorded stays under `fromId`'s source; this message lets the daemon
-  // attach that source to the *named* attendee (`toId`) so the transcript
-  // still labels the speaker by name. Live-track upgrades keep using the
-  // restart path (see audio-tap.ts handleIdentityUpgrade) and never send this.
-  | { kind: "participant-renamed"; platform: Platform; fromId: ParticipantId; toId: ParticipantId }
+  // A confirmed identity for a captured source: the platform id (and display
+  // name, when resolved) that owns the audio recorded under `captureId`'s
+  // source. Source ids are stable per-track handles that never carry identity,
+  // so this upsert is the ONLY way a platform identity reaches the daemon's
+  // roster with a source link — sent whenever the identity is known, whether
+  // at admission (Zoom MSID, a Meet tile hit), after speaking-onset
+  // correlation confirms mid-call, or after the track already died. Nothing
+  // restarts and no audio is lost: the daemon just gains a roster row joining
+  // name and source. `participantId` is always platform-minted.
+  | {
+      kind: "participant-identified";
+      platform: Platform;
+      participantId: string;
+      captureId: string;
+      displayName?: string;
+    }
   | { kind: "status"; text: string }
   // A participant's capture pipeline died for good (e.g. the Meet decoder gave
   // up after exhausting its restart budget). Distinct from participant-left: the
   // participant is still in the call, but their audio after this point is lost.
   // Forwarded to the background so the gap is attributable rather than looking
   // like the source merely went quiet (issue #22).
-  | { kind: "capture-failed"; participantId: ParticipantId; generation: number; reason: string }
+  | { kind: "capture-failed"; participantId: string; generation: number; reason: string }
   // Fired once per call (not per participant): the platform's own meeting id
   // resolved (Meet's spaces/<space> segment — see identity/meet-meeting-id.ts),
   // and the call ended (capture toggled off / teardown). May arrive after
@@ -96,7 +152,13 @@ export type MainMessage =
   // A flush of the MAIN world's perf collector (perf.ts). Kept off the `log`
   // channel on purpose: these must not pass through the console tap, whose
   // synchronous serialization runs on the thread being measured.
-  | { kind: "perf"; records: PerfRecord[] };
+  | { kind: "perf"; records: PerfRecord[] }
+  // A batch of attribution flight-recorder events (attribution-log.ts), each
+  // already encoded as one JSONL line. Pre-encoded on purpose: the relay,
+  // background, and daemon all treat the lines as opaque and append them
+  // verbatim to the session's attribution.jsonl, so what lands on disk is
+  // byte-for-byte what the MAIN world recorded.
+  | { kind: "attribution"; platform: Platform; events: string[] };
 
 /** The envelope actually posted; `event.source === window` + marker gate it. */
 export interface MainEnvelope {
@@ -176,43 +238,61 @@ export function isControlEnvelope(data: unknown): data is ControlEnvelope {
 export type PortMessage =
   | {
       type: "pcm";
-      participantId: ParticipantId;
+      participantId: string;
       platform: Platform;
       b64: string;
       seq: number;
       sentAt: number;
     }
-  // Participant identity (with display name, when the DOM knows it) — what
-  // the background upserts onto the daemon session's roster.
-  | { type: "joined"; participantId: ParticipantId; platform: Platform; displayName?: string }
+  // A capture participant (track-scoped handle) — what the background upserts
+  // onto the daemon session's roster as a synthetic row. Carries the full
+  // ref: the upsert needs `kind` to stamp the attendee's `origin`.
+  | { type: "joined"; participant: ParticipantRef; platform: Platform }
   // Identity-only roster names (see MainMessage "participant-roster"). The
   // background upserts each onto the daemon session's attendee roster without
   // treating them as capture participants (no `left` is ever stamped on them).
   | { type: "roster"; platform: Platform; entries: RosterEntry[] }
-  // A late identity for a dead-track participant (see MainMessage
-  // "participant-renamed"): the background upserts `fromId`'s source label
-  // onto the `toId` attendee, joining name and source on one roster row.
-  | { type: "renamed"; platform: Platform; fromId: ParticipantId; toId: ParticipantId }
-  | { type: "left"; participantId: ParticipantId }
+  // A confirmed identity for a captured source (see MainMessage
+  // "participant-identified"): the background upserts `captureId`'s source
+  // label onto the `participantId` attendee, joining name and source on one
+  // roster row.
+  | {
+      type: "identified";
+      platform: Platform;
+      participantId: string;
+      captureId: string;
+      displayName?: string;
+    }
+  | { type: "left"; participantId: string }
   // A participant's capture died mid-call (see MainMessage "capture-failed").
-  | { type: "capture-failed"; participantId: ParticipantId; platform: Platform; reason: string }
+  | { type: "capture-failed"; participantId: string; platform: Platform; reason: string }
   | { type: "meeting-started"; platform: Platform; externalMeetingId: string; title?: string }
   | { type: "meeting-renamed"; platform: Platform; externalMeetingId: string; title: string }
-  | { type: "meeting-ended"; platform: Platform; externalMeetingId: string };
+  | { type: "meeting-ended"; platform: Platform; externalMeetingId: string }
+  // A batch of attribution flight-recorder events (see MainMessage
+  // "attribution"): opaque pre-encoded JSONL lines the background ships to
+  // earsd as `ingest.attribution`, filed under the port's live session.
+  | { type: "attribution"; platform: Platform; events: string[] };
 
 // ── earsd wire (background.ts → earsd) ───────────────────────────────────────
 
 /** v1 always declares 16 kHz mono pcm_s16le; keys match earsd's AudioFormatSpec. */
 export const INGEST_FORMAT = { sample_rate: 16000, channels: 1, encoding: "pcm_s16le" } as const;
 
-/** earsd source labels are `[A-Za-z0-9._-]`; sanitize the participant suffix. */
+/** earsd source labels are `[A-Za-z0-9._-]`; sanitize the capture-id suffix.
+ * Today's track slugs (`t<n>`) are already clean — this guards the label
+ * grammar against any historic or dev-minted id shape. */
 export function sanitizeLabel(id: string): string {
   const cleaned = id.replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
   return cleaned || "unknown";
 }
 
-export function sourceLabel(platform: Platform, participantId: ParticipantId): string {
-  return `browser:${platform}:${sanitizeLabel(participantId)}`;
+/** Wire edge: the earsd source label for a capture participant. `captureId`
+ * is the track-scoped handle the audio is recorded under — an opaque slug,
+ * never an identity (R3). Whose voice the source carries rides separately, on
+ * the `session.attendee` upsert linking this label. */
+export function sourceLabel(platform: Platform, captureId: string): string {
+  return `browser:${platform}:${sanitizeLabel(captureId)}`;
 }
 
 // ── earsd control-plane wire (background.ts → earsd ws://…/control) ──────────
@@ -275,6 +355,9 @@ export interface SessionWire {
     joined?: string;
     left?: string;
     source?: string;
+    /** Provenance of `id` (see {@link ParticipantOrigin}); absent on rosters
+     * recorded before provenance existed. */
+    origin?: ParticipantOrigin;
   }>;
   sources: string[];
   trigger: string;
@@ -296,6 +379,18 @@ export interface AttendeeUpsert {
   joined?: string;
   left?: string;
   source?: string;
+  /** Where `id` was minted — the flattened `ParticipantRef.kind`. Platform
+   * ids came from the platform's own roster/streams; synthetic ids are
+   * extension stand-ins (`speaker-<n>`, …) that name a track, not a person.
+   * The reconciler counts only platform-origin rows as named remote
+   * participants (bug B7). Omitted when the sender doesn't know (a stream
+   * link for an id whose join was never seen) — absent means unknown, and
+   * the daemon leaves the stored value untouched. */
+  origin?: ParticipantOrigin;
+  /** This attendee is the local participant (see `RosterEntry.isLocal`).
+   * Omitted rather than sent `false`: the daemon latches it and never clears
+   * it, so a later upsert that simply doesn't know cannot un-flag them. */
+  self?: boolean;
 }
 
 /**

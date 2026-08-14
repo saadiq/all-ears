@@ -99,6 +99,16 @@ enum SummarizePipeline {
     /// The configured `output_root`, already `~`-expanded.
     var outputRoot: String = ""
     var weekNumbering: WeekNumbering = .us
+    /// Where a note about to be overwritten is copied first. Empty disables
+    /// backups.
+    ///
+    /// Defaulted **off**, and set explicitly by ``SummarizeRuntime`` — the one
+    /// production caller. A default of the real path meant every unit test
+    /// that constructs `Inputs` wrote its fixture notes into the user's home
+    /// directory, which is a thing a test suite must never do; opting in at
+    /// the single site that has a real user to protect is the safer default
+    /// in the direction that matters.
+    var backupDirectory: String = ""
   }
 
   static func run(inputs: Inputs, dependencies: Dependencies) async -> Int32 {
@@ -112,7 +122,7 @@ enum SummarizePipeline {
       return ExitClass.usage.code
     }
 
-    var documents: [TranscriptDocument] = []
+    var transcripts: [TranscriptInput] = []
     var resolvedNames: [String] = []
     for path in inputs.transcriptPaths {
       let resolvedURL = URL(fileURLWithPath: path)
@@ -126,19 +136,29 @@ enum SummarizePipeline {
       }
       let sidecarURL = resolvedURL.deletingPathExtension().appendingPathExtension("json")
       let jsonSidecar = try? String(contentsOf: sidecarURL, encoding: .utf8)
-      do {
-        documents.append(try TranscriptParser.parse(markdown: markdown, jsonSidecar: jsonSidecar))
-      } catch {
+      // A transcript that isn't an *ears* transcript still summarizes. The
+      // stage's job is "summarize the transcript at this path", and a vault
+      // holds plenty of Markdown transcripts this pipeline never produced —
+      // exports from other tools, hand-written notes of a call. Refusing them
+      // bought nothing: the prompt reads prose either way, and the parse only
+      // exists to recover metadata that a foreign transcript simply lacks.
+      // What it costs is the header: no title, start or speaker roll-call,
+      // so the prompt sees the file's own speaker labels and nothing more.
+      let document = try? TranscriptParser.parse(markdown: markdown, jsonSidecar: jsonSidecar)
+      if document == nil {
         dependencies.writeStderr(
-          "error: could not parse transcript at \(resolvedURL.path): \(error)")
-        return ExitClass.inputMissing.code
+          "warning: \(resolvedURL.path) is not an ears transcript; summarizing its text with "
+            + "no title, start time or speaker roll-call")
       }
+      transcripts.append(
+        TranscriptInput(path: path, document: document, rawText: markdown))
       resolvedNames.append(resolvedURL.lastPathComponent)
     }
 
-    let combinedText = documents.map(bodyText).joined(separator: "\n\n")
+    let now = dependencies.clock.now()
+    let combinedText = transcripts.map(bodyText).joined(separator: "\n\n")
     let baseFrontmatter = mergedFrontmatter(
-      documents.map(\.frontmatter), now: dependencies.clock.now())
+      transcripts.map { $0.document?.frontmatter ?? unknownFrontmatter(now: now) }, now: now)
     let baseOutputURL = outputBaseURL(
       for: URL(fileURLWithPath: inputs.transcriptPaths[0]), explicitOut: inputs.out)
 
@@ -146,16 +166,37 @@ enum SummarizePipeline {
     // notes file read, **before any write happens**. That ordering is what
     // makes an `out = "{notes}"` preset safe: the file it overwrites has
     // already been read, by this preset and by any other.
-    let context = templateContext(inputs, baseFrontmatter, documents)
+    let context = templateContext(inputs, baseFrontmatter)
     let plans = inputs.presets.map { preset -> PresetPlan in
-      let notesPath =
-        inputs.notes ?? preset.notes.map { $0.expand(context) }
+      // `--notes` is an explicit instruction and is used verbatim; only a
+      // template-derived path is searched for, because only a template can be
+      // wrong about where the user actually filed the note.
+      var locatorReason: String? = nil
+      let notesPath: String?
+      if let explicit = inputs.notes {
+        notesPath = explicit
+      } else if let template = preset.notes {
+        switch NotesLocator.locate(locatorContext(template.expand(context), baseFrontmatter)) {
+        case .exact(let path):
+          notesPath = path
+        case .matched(let path, let reason):
+          notesPath = path
+          locatorReason = reason
+        case .notFound:
+          // The template's path, still — it is what the miss is reported
+          // against, and what `out = "{notes}"` would have written to.
+          notesPath = template.expand(context)
+        }
+      } else {
+        notesPath = nil
+      }
       var notesContext = context
       notesContext.notes = notesPath
       let notesContent = notesPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
       return PresetPlan(
         preset: preset,
         notesPath: notesPath,
+        locatorReason: locatorReason,
         // A configured path that doesn't resolve degrades to `""` rather than
         // `nil`: the prompt keeps the two-section shape it was written for,
         // and `nil` stays reserved for "this preset configures no notes".
@@ -194,6 +235,11 @@ enum SummarizePipeline {
         dependencies.writeStderr(
           "warning: preset '\(preset.name)': no notes file at \(notesPath); "
             + "summarizing from the transcript alone")
+      }
+      if let reason = plan.locatorReason, let notesPath = plan.notesPath {
+        dependencies.log(
+          "preset '\(preset.name)': notes matched at \(notesPath) (\(reason)) rather than the "
+            + "path the template constructs")
       }
 
       let prompt = LLMPrompt(
@@ -235,8 +281,21 @@ enum SummarizePipeline {
         // ears document — so it gets no YAML block, and no JSON sidecar
         // either: a stray `.json` beside a vault note is pollution, and there
         // is no ears document for it to describe.
+        // Nothing that was typed by hand is destroyed without a copy
+        // surviving. This runs for any destination that already exists, not
+        // just `out = "{notes}"`, because "the file I am about to replace
+        // might be irreplaceable" is true of every one of them. A backup that
+        // *fails* stops the write: losing the summary is recoverable (rerun
+        // it), losing the note is not.
+        if !inputs.backupDirectory.isEmpty,
+          let backup = try NoteBackup.preserve(
+            outputURL.path, directory: inputs.backupDirectory)
+        {
+          dependencies.log("preset '\(preset.name)': backed up \(outputURL.path) to \(backup)")
+        }
         let body = summaryText.hasSuffix("\n") ? summaryText : summaryText + "\n"
-        let markdown = preset.frontmatter ? TranscriptRenderer.renderMarkdown(document) : body
+        let annotated = annotate(body, warnings: noteWarnings(plan, baseFrontmatter))
+        let markdown = preset.frontmatter ? TranscriptRenderer.renderMarkdown(document) : annotated
         try AtomicFileIO.writeAtomically(to: outputURL) { tempURL in
           try markdown.write(to: tempURL, atomically: false, encoding: .utf8)
         }
@@ -254,6 +313,14 @@ enum SummarizePipeline {
         if firstFailure == nil { firstFailure = .stageFailed }
         continue
       }
+      // The inverse link, now that this preset's destination is known and on
+      // disk: each input transcript gets a `note:` pointing at it, so the
+      // pair is navigable from either end. Best-effort — a summary that was
+      // written is a successful preset whether or not its source could be
+      // annotated, so a failure here warns and leaves the result alone.
+      stampNoteLink(
+        into: inputs.transcriptPaths, target: outputURL.path, preset: preset.name,
+        dependencies: dependencies)
       dependencies.log("run.summary: preset=\(preset.name) output=\(outputURL.path)")
       // Standardized so the reported path is always absolute with no `.`/`..`
       // components — consumers (the daemon, `--json` scripting) read it from
@@ -268,12 +335,91 @@ enum SummarizePipeline {
     return (firstFailure ?? .success).code
   }
 
+  /// Writes `note: "[[…]]"` into each input transcript's frontmatter, naming
+  /// the summary just published from it.
+  ///
+  /// This is the one place `summarize` writes to its own input, and it happens
+  /// only after that input has been fully read and the summary is on disk —
+  /// the "every input is read before any write" ordering the `out = "{notes}"`
+  /// case depends on still holds. The edit is a text splice into the YAML
+  /// block (``TranscriptFrontmatterEditor``), not a parse/render round trip,
+  /// so a transcript's turns are never rewritten to add a link.
+  ///
+  /// Failure is not this preset's failure: the summary exists and is
+  /// correct, and losing it over an unwritable source file would be a worse
+  /// outcome than a missing back-link. The absence is warned about instead.
+  private static func stampNoteLink(
+    into transcriptPaths: [String], target: String, preset: String, dependencies: Dependencies
+  ) {
+    let link = "[[\(VaultPath.linkTarget(target))]]"
+    for path in transcriptPaths {
+      do {
+        let markdown = try String(contentsOfFile: path, encoding: .utf8)
+        let updated = TranscriptFrontmatterEditor.settingNote(link, in: markdown)
+        guard updated != markdown else { continue }
+        if !TranscriptFrontmatterEditor.hasFrontmatterBlock(markdown) {
+          dependencies.writeStderr(
+            "warning: preset '\(preset)': \(path) had no frontmatter; added one holding "
+              + "just its note: link")
+        }
+        try AtomicFileIO.writeAtomically(to: URL(fileURLWithPath: path)) { tempURL in
+          try updated.write(to: tempURL, atomically: false, encoding: .utf8)
+        }
+      } catch {
+        dependencies.writeStderr(
+          "warning: preset '\(preset)': could not link \(path) back to its note: \(error)")
+      }
+    }
+  }
+
+  /// One input transcript: its path, its parse if it is an ears document, and
+  /// its raw text either way.
+  ///
+  /// ``document`` is `nil` for a Markdown transcript this pipeline did not
+  /// produce — a vault full of exports from other tools is the common case,
+  /// and those summarize perfectly well from their text alone.
+  private struct TranscriptInput: Sendable {
+    var path: String
+    var document: TranscriptDocument?
+    var rawText: String
+  }
+
+  /// Stand-in frontmatter for an input with none, used only to give a
+  /// `frontmatter = true` preset's summary a document to be derived from.
+  ///
+  /// Every field records ignorance rather than a plausible value: the model
+  /// that produced a foreign transcript is genuinely unknown, and a summary
+  /// claiming it came from this pipeline's ASR would be a lie told in
+  /// metadata, where it is hardest to notice. A zero range and empty sources
+  /// say the same thing about timing and capture.
+  private static func unknownFrontmatter(now: Instant) -> TranscriptFrontmatter {
+    TranscriptFrontmatter(
+      schema: 1,
+      kind: .transcript,
+      sources: [],
+      range: TimeRange(start: now, end: now),
+      model: TranscriptModelInfo(name: "unknown", backend: "unknown", version: "unknown"),
+      diarization: TranscriptDiarizationInfo(enabled: false),
+      generated: now,
+      durationSeconds: 0,
+      speechSeconds: 0,
+      wordCount: 0,
+      vocab: [])
+  }
+
   /// One preset's fully-resolved destination and companion notes, computed
   /// for every preset before any write happens.
   private struct PresetPlan: Sendable {
     var preset: Preset
-    /// The expanded `notes` path, when this preset configures one.
+    /// The resolved `notes` path, when this preset configures one — the
+    /// template's own path when that file exists, otherwise whatever
+    /// ``NotesLocator`` matched (or, on a miss, the template's path again, so
+    /// the failure is reported against the place that was looked).
     var notesPath: String?
+    /// Why ``notesPath`` differs from what the template constructed, when it
+    /// does. `nil` for an exact hit — the ordinary case, which needs no
+    /// remark.
+    var locatorReason: String?
     /// That file's contents. `nil` only when this preset configures no notes
     /// at all; a configured-but-absent file reads as `""` so the prompt still
     /// gets its labelled `## Jotted notes` section (see ``notesMissing``).
@@ -284,6 +430,87 @@ enum SummarizePipeline {
     var notesMissing: Bool = false
     /// The expanded `out` path, or `nil` for the default sibling naming.
     var outputURL: URL?
+  }
+
+  /// Everything about this run the note's reader needs to know and cannot see
+  /// from the prose: attribution that was inferred or left unresolved
+  /// upstream, and jottings that were looked for and not found.
+  ///
+  /// The upstream half arrives in the transcript's `warnings:` frontmatter,
+  /// having been produced at session end by `RosterReconciler`. It was
+  /// already being written to a log at the time; the log is not where anyone
+  /// looks, which is why a call could be transcribed under the wrong person's
+  /// name and be discovered days later by reading the note.
+  private static func noteWarnings(
+    _ plan: PresetPlan, _ frontmatter: TranscriptFrontmatter
+  ) -> [String] {
+    var warnings = frontmatter.warnings
+    if plan.notesMissing, let notesPath = plan.notesPath {
+      warnings.append(
+        "no jotted notes were found for this call — searched \(notesPath) and the folders "
+          + "beside it. This note was written from the transcript alone; if you did jot "
+          + "something, it is still wherever you filed it.")
+    }
+    if let reason = plan.locatorReason, let notesPath = plan.notesPath {
+      warnings.append(
+        "jotted notes were matched by search, not by name: used \(notesPath) (\(reason)).")
+    }
+    return warnings
+  }
+
+  /// Inserts an Obsidian callout carrying `warnings` at the top of `body`'s
+  /// prose.
+  ///
+  /// A callout rather than a comment or a frontmatter key because it renders,
+  /// in the reader, at the top of the note — the one place a caveat about the
+  /// note's reliability is certain to be seen by the person deciding whether
+  /// to trust it. A clean run adds nothing at all.
+  ///
+  /// "Top of the prose", not top of the file: a fold-in preset's model is
+  /// instructed to open its output with the note's own `---` frontmatter, and
+  /// YAML frontmatter is only frontmatter when it is the first thing in the
+  /// file. So a leading block is stepped over and the callout goes directly
+  /// after it.
+  static func annotate(_ body: String, warnings: [String]) -> String {
+    guard !warnings.isEmpty else { return body }
+    var lines = ["> [!warning] All Ears"]
+    for warning in warnings {
+      lines.append("> - \(warning)")
+    }
+    let callout = lines.joined(separator: "\n")
+
+    guard body.hasPrefix("---\n"),
+      let close = body.dropFirst(4).range(of: "\n---\n")
+    else {
+      return callout + "\n\n" + body
+    }
+    let headEnd = close.upperBound
+    let head = String(body[body.startIndex..<headEnd])
+    let rest = String(body[headEnd...])
+    return head + "\n" + callout + "\n\n" + rest.drop(while: { $0 == "\n" })
+  }
+
+  /// The search context for a preset's `notes` template, assembled from the
+  /// transcript's own frontmatter — the same source every other downstream
+  /// decision reads, so a manual rerun searches exactly as the daemon's run
+  /// did.
+  ///
+  /// The local participant is filtered out of the name list: `attendees`
+  /// marks them `(me)` (see ``TranscriptFrontmatter/attendees``), and a note
+  /// about a call is named after the *other* person.
+  private static func locatorContext(
+    _ expandedPath: String, _ frontmatter: TranscriptFrontmatter
+  ) -> NotesLocator.Context {
+    let start = frontmatter.started ?? frontmatter.range.start
+    let names = frontmatter.attendees
+      .filter { !$0.hasSuffix("(me)") }
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+    return NotesLocator.Context(
+      expandedPath: expandedPath,
+      date: UTCCalendar.isoDate(start),
+      names: names,
+      start: start,
+      end: frontmatter.range.end)
   }
 
   /// The LLM input. With a companion notes file both halves are labelled, so
@@ -299,7 +526,7 @@ enum SummarizePipeline {
   /// merged frontmatter — the same context `cleanup` publishes by, so a
   /// preset's `notes`/`out` templates address the same session.
   private static func templateContext(
-    _ inputs: Inputs, _ frontmatter: TranscriptFrontmatter, _ documents: [TranscriptDocument]
+    _ inputs: Inputs, _ frontmatter: TranscriptFrontmatter
   ) -> PathTemplate.Context {
     PathTemplate.Context(
       outputRoot: inputs.outputRoot,
@@ -312,9 +539,104 @@ enum SummarizePipeline {
         .deletingPathExtension().lastPathComponent)
   }
 
-  private static func bodyText(_ document: TranscriptDocument) -> String {
-    document.segments.map { "\($0.speaker): \($0.segment.text)" }.joined(separator: "\n")
+  /// One transcript rendered for the LLM: a short header naming the
+  /// conversation, when it started, and who was in it, then one
+  /// `[HH:MM:SS] Speaker: text` line per turn.
+  ///
+  /// Both halves of that header used to be absent — the body was bare
+  /// `Speaker: text` lines and the frontmatter was dropped on the floor — and
+  /// a prompt asked to date the conversation had nothing to date it from. The
+  /// 2026-08-12 meeting note came back with *"date unknown (check — not
+  /// stated in transcript)"* stamped across it, which was true of what the
+  /// model received and false of the file it was derived from. Timestamps go
+  /// back for the same reason: "they said X early on, then walked it back" is
+  /// not recoverable from a wall of undifferentiated lines.
+  ///
+  /// The speaker roll-call marks whichever speakers were captured on `mic` as
+  /// `(me)`. A prompt written for these transcripts otherwise has no way to
+  /// tell the note's author from its subject except by guessing at the names,
+  /// which is exactly how that same note profiled the wrong participant: a
+  /// mislabelled remote track put the local participant's name on the other
+  /// person's speech, and nothing in the LLM's input contradicted it. Source
+  /// is authoritative where a display name is not.
+  ///
+  /// The header also names the file this text was read from, so a prompt that
+  /// wants to link the transcript can quote a path instead of reconstructing
+  /// one. Asked for a link with no path in evidence, a model invents a
+  /// plausible-looking one.
+  ///
+  /// A transcript that is not an ears document gets the `transcript:` line and
+  /// its own text, unaltered. Everything else in the header is read off
+  /// frontmatter it does not have, and a header line stating a title or a
+  /// start time this pipeline had to guess at would be worse than its absence.
+  private static func bodyText(_ input: TranscriptInput) -> String {
+    guard let document = input.document else {
+      return "transcript: \(VaultPath.linkTarget(input.path))\n\n\(input.rawText)"
+    }
+    let frontmatter = document.frontmatter
+    let rangeStart = frontmatter.range.start
+    var header: [String] = []
+    if let title = frontmatter.title, !title.isEmpty {
+      header.append("title: \(title)")
+    }
+    header.append("started: \(UTCCalendar.iso8601(frontmatter.started ?? rangeStart))")
+    // Vault-relative where that resolves: the note this feeds is an Obsidian
+    // note, and an absolute path inside a `[[…]]` links to nothing.
+    header.append("transcript: \(VaultPath.linkTarget(input.path))")
+    // The roster, and separately the speakers actually heard. They are not
+    // the same list and the difference matters: `attendees` is who the
+    // platform says was on the call — known from the moment they joined, and
+    // true whatever happened to the audio — while `speakers` is who the
+    // capture managed to attribute turns to. When attribution fails, the
+    // second list loses a name the first still has, and a model given only
+    // the second will name the call after whoever it *did* resolve. Sending
+    // both is what lets it write the right name even then.
+    if !frontmatter.attendees.isEmpty {
+      header.append("attendees: \(frontmatter.attendees.joined(separator: ", "))")
+    }
+    let speakers = speakerRollCall(document.segments)
+    if !speakers.isEmpty {
+      header.append("speakers: \(speakers.joined(separator: ", "))")
+    }
+    // Verbatim, so the model can hedge the specific claims a degraded run
+    // undermines rather than the note as a whole.
+    for warning in frontmatter.warnings {
+      header.append("warning: \(warning)")
+    }
+
+    let turns = document.segments.map { turn in
+      "[\(UTCCalendar.timeOfDay(rangeStart.advanced(by: turn.segment.start)))] "
+        + "\(turn.speaker): \(turn.segment.text)"
+    }
+    return (header + [""] + turns).joined(separator: "\n")
   }
+
+  /// The distinct speakers in first-appearance order, each annotated `(me)`
+  /// when *any* of its turns came from the `mic` source. "Any" rather than
+  /// "all" deliberately: a name landing on both the mic and a remote track is
+  /// a capture-side identity bug, and flagging it beats silently picking one
+  /// reading of a transcript that contradicts itself.
+  ///
+  /// Nobody is marked when *every* speaker resolves to the mic, which is the
+  /// two cases where the annotation would be a lie: a genuinely single-source
+  /// recording (one mic, several people in the room), and a Markdown
+  /// transcript parsed without its JSON sidecar, where ``TranscriptParser``
+  /// resolves every unmarked turn to `sources.first` as a documented guess.
+  /// The mark is only worth making where the source data actually separates
+  /// the participants.
+  private static func speakerRollCall(_ segments: [TranscriptSegment]) -> [String] {
+    var order: [String] = []
+    var onMic: Set<String> = []
+    var seen: Set<String> = []
+    for segment in segments {
+      if seen.insert(segment.speaker).inserted { order.append(segment.speaker) }
+      if segment.source == micSource { onMic.insert(segment.speaker) }
+    }
+    guard onMic.count < order.count else { return order }
+    return order.map { onMic.contains($0) ? "\($0) (me)" : $0 }
+  }
+
+  private static let micSource = SourceID(rawValue: "mic")
 
   /// Merges multiple input transcripts' frontmatter into one summary
   /// frontmatter: sources/vocab are unioned, the range spans the earliest
@@ -358,6 +680,12 @@ enum SummarizePipeline {
       // one names, and this is what a preset's `notes`/`out` expand against.
       title: first.title,
       started: first.started,
+      // Carried forward with the rest of the session context: the roster and
+      // the caveats belong to the same call the title and start do, and both
+      // are read back out — the roster to find this call's notes and to name
+      // the other party, the caveats to warn in the note itself.
+      attendees: first.attendees,
+      warnings: first.warnings,
       sources: sources,
       range: TimeRange(start: start, end: end),
       model: first.model,
