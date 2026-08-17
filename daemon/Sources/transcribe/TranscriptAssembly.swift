@@ -23,12 +23,10 @@ struct SourceTranscription {
 enum TranscriptAssembly {
   /// Speaker label for a source with no diarization stage (not implemented
   /// yet -- see `docs/specs/model-interface.md`'s `Diarizer`
-  /// protocol, out of scope for this pass): a `speakers` name-map entry
-  /// (`docs/data-formats.md`'s `[speakers]` -- e.g. a session roster's
-  /// attendee names) wins; otherwise `mic` maps to `You` per the
-  /// source-level attribution rule; any other source is labelled with its
-  /// own raw source id, a defensible placeholder until per-speaker
-  /// diarization exists.
+  /// protocol, out of scope for this pass): reconciled speaker name
+  /// (from `speakers`) beats descriptor label beats raw source id.
+  /// The precedence chain is: reconciled name → mic→You → descriptor
+  /// label → raw id.
   ///
   /// Because the merge groups turns by this *resolved label* rather than by
   /// the raw source id, two source ids that resolve to the same label are
@@ -38,10 +36,13 @@ enum TranscriptAssembly {
   /// the pre- and post-upgrade sources at the same Meet display name, so they
   /// render under one consistent label instead of two.
   static func speakerLabel(
-    for sourceID: SourceID, speakers: [String: String] = [:]
+    for sourceID: SourceID, speakers: [String: String] = [:],
+    sourceLabels: [String: String] = [:]
   ) -> String {
     if let name = speakers[sourceID.rawValue] { return name }
-    return sourceID == SourceID("mic") ? "You" : sourceID.rawValue
+    if sourceID == SourceID("mic") { return "You" }
+    if let label = sourceLabels[sourceID.rawValue], !label.isEmpty { return label }
+    return sourceID.rawValue
   }
 
   /// Refines a source's base speaker label with the diarizer's within-source
@@ -153,6 +154,7 @@ enum TranscriptAssembly {
     attendees: [String] = [],
     warnings: [String] = [],
     speakers: [SessionSpeaker] = [],
+    sourceLabels: [String: String] = [:],
     diarization: [SourceID: [SpeakerSpan]] = [:],
     diarizationBackend: String? = nil,
     model: TranscriptModelInfo,
@@ -170,7 +172,8 @@ enum TranscriptAssembly {
     }
     var turns: [TranscriptSegment] = []
     for transcription in transcriptions {
-      let base = speakerLabel(for: transcription.sourceID, speakers: names)
+      let base = speakerLabel(
+        for: transcription.sourceID, speakers: names, sourceLabels: sourceLabels)
       let spans = diarization[transcription.sourceID] ?? []
       for segment in transcription.segments {
         turns.append(

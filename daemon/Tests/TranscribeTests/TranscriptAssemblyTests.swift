@@ -24,6 +24,42 @@ struct TranscriptAssemblyTests {
       TranscriptAssembly.speakerLabel(for: SourceID("app:us.zoom.xos")) == "app:us.zoom.xos")
   }
 
+  @Test("descriptor label beats the raw source id")
+  func descriptorLabelFallback() {
+    let label = TranscriptAssembly.speakerLabel(
+      for: SourceID("app:us.zoom.xos"),
+      speakers: [:],
+      sourceLabels: ["app:us.zoom.xos": "Zoom"])
+    #expect(label == "Zoom")
+  }
+
+  @Test("reconciled speaker name beats the descriptor label")
+  func reconciledNameBeatsDescriptorLabel() {
+    let label = TranscriptAssembly.speakerLabel(
+      for: SourceID("app:us.zoom.xos"),
+      speakers: ["app:us.zoom.xos": "Priya"],
+      sourceLabels: ["app:us.zoom.xos": "Zoom"])
+    #expect(label == "Priya")
+  }
+
+  @Test("mic stays You even when it carries a descriptor label")
+  func micStaysYou() {
+    let label = TranscriptAssembly.speakerLabel(
+      for: SourceID("mic"),
+      speakers: [:],
+      sourceLabels: ["mic": "MacBook Microphone"])
+    #expect(label == "You")
+  }
+
+  @Test("empty descriptor label falls through to the raw id")
+  func emptyLabelFallsThrough() {
+    let label = TranscriptAssembly.speakerLabel(
+      for: SourceID("app:us.zoom.xos"),
+      speakers: [:],
+      sourceLabels: ["app:us.zoom.xos": ""])
+    #expect(label == "app:us.zoom.xos")
+  }
+
   @Test("segments from multiple sources are merged and ordered by start time")
   func mergesAndOrdersAcrossSources() {
     let mic = SourceTranscription(
