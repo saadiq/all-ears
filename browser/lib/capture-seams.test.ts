@@ -317,6 +317,15 @@ describe("admitReceiverTrack", () => {
     expect(admitReceiverTrack("meet-encoded-tee", { muted: false, alreadyCapturing: false })).toBe("start");
   });
 
+  it("skips an ENDED track outright, whatever its mute state (journal #176)", () => {
+    expect(
+      admitReceiverTrack("receiver-track", { muted: false, alreadyCapturing: false, ended: true }),
+    ).toBe("skip");
+    expect(
+      admitReceiverTrack("receiver-track", { muted: true, alreadyCapturing: false, ended: true }),
+    ).toBe("skip");
+  });
+
   it("defers a MUTED track instead of minting a phantom attendee (journal #142, #165)", () => {
     // Meet pre-allocates three remote transceivers before anyone fills them.
     // Each one that starts a pipeline becomes a speaker-<n> in session.toml.

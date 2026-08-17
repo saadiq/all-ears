@@ -142,7 +142,7 @@ on_end_stages = ["transcribe"]          # the chain this session's starter decla
                                         #   applies its per-trigger default); [] = an
                                         #   explicit "run no stages". The one field
                                         #   where absent and empty differ.
-reconciler_version = 3                  # which reconciler derived [[speaker]] below;
+reconciler_version = 4                  # which reconciler derived [[speaker]] below;
                                         #   absent = 0 (a file from before versioning,
                                         #   or a session never reconciled) — see
                                         #   "Roster and speaker map"
@@ -312,6 +312,8 @@ At `session.end` the daemon reconciles one into the other, applying invariants a
 3. **A source carries at most one name.** Competing claims on one source resolve deterministically — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
 
 Beside the roster's own `source` links, reconciliation consumes the **binding hints** in the session's `attribution.jsonl` (the `identity-link` events, each joined to the `provisional-binding` decision that caused it): a hint claims a source for a named attendee under the same invariants, after the roster's claims. Hints cover what the roster's single `source` field per attendee cannot — one participant owning several track-handle sources across a call (a rejoin, a seam swap), and an identity confirmed after the row's link was overwritten. A session with no attribution log reconciles from the roster alone, exactly as before.
+
+Reconciliation also consumes the log's **speech evidence**: a browser source whose capture produced no `audio-onset` events was captured but silent, so it draws no inferred speaker row and no warning — silence is unremarkable (Meet routinely allocates decoder tracks that never carry audio). The named-but-unmatched warning survives only for its real purpose, lost audio: it fires when unmatched speech-carrying sources exist, or when the platform's own speaking ring showed the attendee demonstrably talking yet nothing matched. Without a log, every warning behaves as before — absence of proof is not proof of silence.
 
 With two or more remote participants and an unresolved track, nothing is forced and nothing is assigned: an unlabelled turn is recoverable, a confidently mislabelled one is not. Each entry records `confidence` — `correlated` (the client's binding, having survived the invariants) or `inferred` (assigned by elimination).
 

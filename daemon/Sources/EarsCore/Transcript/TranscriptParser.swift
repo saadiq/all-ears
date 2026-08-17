@@ -79,16 +79,21 @@ public enum TranscriptParser {
     let segments: [TranscriptSegment]
     if let jsonSidecar {
       var jsonSegments = try parseJSONSidecar(jsonSidecar)
-      // Overlay sourceProvenance from the Markdown body (see the type doc's
-      // "Known lossy fields") — only when the turn counts agree, so a
-      // mismatched/hand-edited pair degrades to `false` rather than
-      // misattributing flags to the wrong turns.
+      // Overlay the fields only the Markdown body carries (see the type doc's
+      // "Known lossy fields"): sourceProvenance, and isBackchannel — the
+      // sidecar deliberately stores every backchannel as a full segment, so
+      // without this overlay one parse-with-sidecar round trip erases the
+      // demotion and every downstream re-render (cleanup, summarize, the
+      // published note) loses it (journal #180). Only when the turn counts
+      // agree, so a mismatched/hand-edited pair degrades to `false` rather
+      // than misattributing flags to the wrong turns.
       if let markdownTurns = try? parseMarkdownSegments(
         markdown, rangeStart: frontmatter.range.start, fallbackSource: fallbackSource),
         markdownTurns.count == jsonSegments.count
       {
         for index in jsonSegments.indices {
           jsonSegments[index].sourceProvenance = markdownTurns[index].sourceProvenance
+          jsonSegments[index].isBackchannel = markdownTurns[index].isBackchannel
         }
       }
       segments = jsonSegments

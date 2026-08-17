@@ -3,6 +3,8 @@ import {
   MeetAdapter,
   SELF_MARKER,
   findLocalDeviceId,
+  findLocalDeviceIdByTileIcons,
+  resolveLocalDeviceId,
   PARTICIPANT_ID_ATTRIBUTES,
   extractDisplayName,
   extractParticipantId,
@@ -458,6 +460,66 @@ describe("findLocalDeviceId", () => {
 
   it("returns undefined for a document with no tiles at all", () => {
     expect(findLocalDeviceId(fakeTileDoc([]))).toBeUndefined();
+  });
+});
+
+describe("findLocalDeviceIdByTileIcons / resolveLocalDeviceId (journal #178)", () => {
+  const icon = (name: string) => new FakeEl({ tag: "i", text: name });
+  const tile = (id: string, text: string, icons: FakeEl[] = []) =>
+    new FakeEl({ attrs: { "data-participant-id": id }, text, children: icons });
+  const fakeTileDoc = (tiles: FakeEl[]): DocumentLike => ({
+    querySelectorAll: (sel) => (sel.includes("data-participant-id") ? tiles : []),
+    querySelector: () => null,
+  });
+
+  it("returns the device whose tile carries a self-only control icon, even under identical display names", () => {
+    // The live validation call: two devices, one shared display name — every
+    // name-based rule is blind here; only the self-tile controls distinguish.
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/105", "Tom Elliot", [icon("devices")]),
+      tile("spaces/s/devices/104", "Tom Elliot", [icon("frame_person"), icon("visual_effects"), icon("more_vert")]),
+    ]);
+    expect(findLocalDeviceIdByTileIcons(doc)).toBe("spaces/s/devices/104");
+  });
+
+  it("ignores icon ligatures that are not self-only controls", () => {
+    const doc = fakeTileDoc([tile("spaces/s/devices/105", "Priya Raman", [icon("devices"), icon("more_vert")])]);
+    expect(findLocalDeviceIdByTileIcons(doc)).toBeUndefined();
+  });
+
+  it("fail-closed when two devices carry self icons — ambiguous beats wrong", () => {
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/104", "Tom Elliot", [icon("frame_person")]),
+      tile("spaces/s/devices/105", "A Trickster", [icon("visual_effects")]),
+    ]);
+    expect(findLocalDeviceIdByTileIcons(doc)).toBeUndefined();
+  });
+
+  it("resolveLocalDeviceId: icons alone suffice when the People panel was never opened (journal #176)", () => {
+    // No listitem exists, so no "(You)" text anywhere — the failure mode of
+    // the first live call. The grid tile's controls still answer.
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/105", "Priya Raman"),
+      tile("spaces/s/devices/104", "Tom Elliot", [icon("frame_person")]),
+    ]);
+    expect(findLocalDeviceId(doc)).toBeUndefined();
+    expect(resolveLocalDeviceId(doc)).toBe("spaces/s/devices/104");
+  });
+
+  it("resolveLocalDeviceId: the marker alone still suffices", () => {
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/105", "Priya Raman"),
+      tile("spaces/s/devices/104", "Tom Elliot (You)"),
+    ]);
+    expect(resolveLocalDeviceId(doc)).toBe("spaces/s/devices/104");
+  });
+
+  it("resolveLocalDeviceId: disagreeing signals trust neither", () => {
+    const doc = fakeTileDoc([
+      tile("spaces/s/devices/105", "Priya Raman (You)"),
+      tile("spaces/s/devices/104", "Tom Elliot", [icon("visual_effects")]),
+    ]);
+    expect(resolveLocalDeviceId(doc)).toBeUndefined();
   });
 });
 

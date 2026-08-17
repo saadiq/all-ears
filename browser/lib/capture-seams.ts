@@ -186,9 +186,14 @@ export type ReceiverAdmission = "start" | "defer-until-unmute" | "skip";
  */
 export function admitReceiverTrack(
   seam: SeamId,
-  opts: { muted: boolean; alreadyCapturing: boolean },
+  opts: { muted: boolean; alreadyCapturing: boolean; ended?: boolean },
 ): ReceiverAdmission {
   if (opts.alreadyCapturing) return "skip";
+  // An ended track can never produce frames, and MediaStreamTrackProcessor
+  // refuses to construct over one — admitting it is a crash-readmit loop, one
+  // failed generation per reconcile sweep (journal #176: 22 generations of one
+  // ended track at meeting end).
+  if (opts.ended) return "skip";
   // Past the receiver-based seams the tracks are known-silent decoys (#82).
   if (!seamUsesReceiverTracks(seam)) return "skip";
   return opts.muted ? "defer-until-unmute" : "start";

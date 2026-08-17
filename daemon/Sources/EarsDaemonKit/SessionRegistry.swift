@@ -888,10 +888,15 @@ public actor SessionRegistry {
   /// a session with no log — or an unreadable one — reconciles from the
   /// roster alone, exactly as before hints existed; nothing here may block
   /// `session.end`.
-  private func attributionHints(sessionID: String) -> [AttributionBindingHint] {
+  private func attributionEvidence(
+    sessionID: String
+  ) -> (hints: [AttributionBindingHint], speech: AttributionSpeechEvidence?) {
     let url = SessionAttributionLog.fileURL(dataRoot: dataRoot, sessionID: sessionID)
-    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-    return AttributionBindingHints.parse(jsonl: text)
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return ([], nil) }
+    return (
+      AttributionBindingHints.parse(jsonl: text),
+      AttributionBindingHints.speechEvidence(jsonl: text)
+    )
   }
 
   /// Publishes the session as a revision-tagged state event, stamping the
@@ -948,9 +953,10 @@ public actor SessionRegistry {
   /// manual rename both take precedence simply by having changed the title
   /// away from it. The roster is the last resort before an opaque meeting id.
   private func reconcileRoster(_ session: inout Session) {
+    let evidence = attributionEvidence(sessionID: session.id)
     let outcome = RosterReconciler.reconcile(
       attendees: session.attendees, sources: session.sources, sessionStart: session.started,
-      hints: attributionHints(sessionID: session.id))
+      hints: evidence.hints, speech: evidence.speech)
     session.speakers = outcome.speakers
     session.warnings = outcome.warnings
     // Stamp which derivation produced this map, so `transcribe` can tell a

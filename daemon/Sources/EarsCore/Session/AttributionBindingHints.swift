@@ -44,6 +44,27 @@ public struct AttributionBindingHint: Sendable, Hashable {
   }
 }
 
+/// What the flight recorder *heard* during a call — the evidence that
+/// separates "this track / this person was silent" from "we lost their
+/// audio". Consumed by ``RosterReconciler`` to keep silence unremarkable:
+/// a captured-but-silent track deserves no warning and no speaker row, while
+/// a person the platform showed speaking whose audio matched nothing is a
+/// loss worth recording (journal #181).
+public struct AttributionSpeechEvidence: Sendable, Equatable {
+  /// Capture handles (`t1`) whose track produced at least one decoded speech
+  /// onset (`audio-onset` events). A browser source whose handle is absent
+  /// was captured but never carried speech.
+  public var speechCaptures: Set<String>
+  /// `dom-burst` counts per platform device id — the platform's own speaking
+  /// indicator, independent of whether capture decoded anything.
+  public var burstCounts: [String: Int]
+
+  public init(speechCaptures: Set<String> = [], burstCounts: [String: Int] = [:]) {
+    self.speechCaptures = speechCaptures
+    self.burstCounts = burstCounts
+  }
+}
+
 /// Pure parser from attribution-log JSONL text to ``AttributionBindingHint``s.
 /// The browser owns the event vocabulary (`browser/lib/attribution-log.ts`,
 /// per-line `schema`); this reads exactly the two event types the binding
@@ -94,6 +115,28 @@ public enum AttributionBindingHints {
       }
     }
     return hints
+  }
+
+  /// Parses `jsonl` for the speech evidence: which captures produced decoded
+  /// audio onsets, and how often each device's DOM speaking ring fired. Same
+  /// tolerance contract as ``parse(jsonl:)`` — foreign lines, unknown
+  /// schemas, and malformed JSON are skipped, never guessed at.
+  public static func speechEvidence(jsonl: String) -> AttributionSpeechEvidence {
+    var evidence = AttributionSpeechEvidence()
+    for line in jsonl.split(separator: "\n") {
+      guard let object = decode(line) else { continue }
+      switch object["type"] as? String {
+      case "audio-onset":
+        guard let captureId = object["participantId"] as? String else { continue }
+        evidence.speechCaptures.insert(captureId)
+      case "dom-burst":
+        guard let deviceId = object["deviceId"] as? String else { continue }
+        evidence.burstCounts[deviceId, default: 0] += 1
+      default:
+        continue
+      }
+    }
+    return evidence
   }
 
   private static func decode(_ line: Substring) -> [String: Any]? {

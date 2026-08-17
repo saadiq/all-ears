@@ -70,8 +70,19 @@ public enum RosterReconciler {
   /// named-remote count and the derived title (bug B7); 3 — attribution-log
   /// binding hints consumed beside the roster's source links (R3: source ids
   /// are opaque track handles, so one attendee's several sources, and
-  /// identities that confirmed late, arrive as hints).
-  public static let version = 3
+  /// identities that confirmed late, arrive as hints); 4 — speech evidence
+  /// consumed: captured-but-silent tracks draw no inferred rows and no
+  /// warnings (journal #181).
+  public static let version = 4
+
+  /// How many DOM speaking-ring bursts a device must have shown before a
+  /// named-but-unmatched attendee is treated as *demonstrably spoke, audio
+  /// lost* rather than *never really spoke*. Meet's ring flickers a handful
+  /// of times on devices that never carry audio — a Presentation
+  /// pseudo-device showed 4 over a 31-minute call — while a person who
+  /// actually talked shows dozens (17 in four minutes on the call that lost
+  /// audio, journal #176). The floor sits between those observations.
+  public static let domBurstSpeechFloor = 8
 
   /// How far after a session's start an attendee may join and still be taken
   /// for the local participant by ``inferLocalAttendee(_:sessionStart:)``.
@@ -149,9 +160,17 @@ public enum RosterReconciler {
   ///     identity that confirmed after the roster row's link was overwritten.
   ///     Empty for sessions with no attribution log — old sessions reconcile
   ///     exactly as before.
+  ///   - speech: what the flight recorder heard
+  ///     (``AttributionSpeechEvidence``), or nil when the session has no
+  ///     attribution log. With evidence, a browser source whose capture never
+  ///     produced a speech onset is *silent*: it gets no inferred speaker row
+  ///     and draws no warning — silence is unremarkable, and warning about it
+  ///     described turns that never existed (journal #181). Without evidence,
+  ///     every warning behaves exactly as before: absence of proof is not
+  ///     proof of silence.
   public static func reconcile(
     attendees: [SessionAttendee], sources: [SourceID], sessionStart: Instant,
-    hints: [AttributionBindingHint] = []
+    hints: [AttributionBindingHint] = [], speech: AttributionSpeechEvidence? = nil
   ) -> Outcome {
     var warnings: [String] = []
 
@@ -272,8 +291,15 @@ public enum RosterReconciler {
 
     // ── Invariant 2: a one-remote call is settled by counting ────────────
     let assigned = Set(speakers.map(\.source.rawValue))
+    // A browser source label's capture handle is its last `:` component
+    // (`browser:meet:t2` → `t2`) — the id `audio-onset` events carry.
+    func isSilent(_ source: SourceID) -> Bool {
+      guard let speech else { return false }
+      guard let handle = source.rawValue.split(separator: ":").last else { return false }
+      return !speech.speechCaptures.contains(String(handle))
+    }
     let unassigned = sources.filter {
-      $0.sourceClass == .browser && !assigned.contains($0.rawValue)
+      $0.sourceClass == .browser && !assigned.contains($0.rawValue) && !isSilent($0)
     }
     let remoteNames = namedRemoteAttendees(attendees, localID: localID)
 
@@ -301,10 +327,23 @@ public enum RosterReconciler {
     }
 
     // ── Named, but never heard ───────────────────────────────────────────
-    // Worth saying even when nothing is unassigned: it is the difference
-    // between "they said nothing" and "we lost their audio".
+    // The warning exists for exactly one situation: "we lost their audio".
+    // With speech evidence, "they said nothing" is distinguishable and stays
+    // quiet: warn only when unmatched speech-carrying audio exists that could
+    // have been theirs, or when the platform's own speaking ring showed them
+    // demonstrably talking (≥ ``domBurstSpeechFloor`` bursts) yet nothing
+    // matched. Without evidence, warn as before.
     let heard = Set(speakers.map(\.name))
-    for name in remoteNames where !heard.contains(name) {
+    func demonstrablySpoke(_ name: String) -> Bool {
+      guard let speech else { return true }
+      guard unassigned.isEmpty else { return true }
+      let bursts =
+        attendees
+        .filter { $0.displayName == name }
+        .reduce(0) { $0 + (speech.burstCounts[$1.id] ?? 0) }
+      return bursts >= domBurstSpeechFloor
+    }
+    for name in remoteNames where !heard.contains(name) && demonstrablySpoke(name) {
       warnings.append(
         "speaker attribution: \(name) was on the roster but no audio was matched to them")
     }
