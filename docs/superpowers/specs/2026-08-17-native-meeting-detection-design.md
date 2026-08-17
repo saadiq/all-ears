@@ -134,12 +134,17 @@ daemon's episode id:
   `zoom-app`, Teams → `teams-app`), else the bundle id.
 - `external_id`: the episode id — makes the start **idempotent**; a menu bar
   restart or double-click cannot create a duplicate session.
-- `title`: from the matched event; omitted when none, preserving
-  `hasDefaultTitle` semantics and the title-precedence rules in
-  `docs/specs/capture-daemon.md`.
 - `sources`: `mic` + the detected `app:*` source, declared explicitly.
 
-Then `session.attendee` upserts for each calendar attendee:
+No `title` at start time: the calendar fetch that would produce one runs
+*after* `session.start` succeeds, so a first-run calendar-access permission
+dialog can never delay the capture the user just asked for. When a matching
+event has a non-empty title, it is applied via a `session.rename` sent
+immediately after start — the daemon's title precedence
+(`docs/specs/capture-daemon.md`) treats a rename exactly like a start-time
+title, so this changes the title away from the default the same way passing
+it at start would have. Then `session.attendee` upserts follow for each
+calendar attendee:
 
 - `display_name` from the event; new **`origin: calendar`**.
 - The user (EventKit marks the current user's attendee): `self: true`, with

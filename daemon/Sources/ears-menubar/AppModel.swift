@@ -225,11 +225,14 @@ import os
     send(.sessionStart(params), connection)
   }
 
-  /// Starts recording a meeting the daemon already detected, enriched with a
-  /// matching calendar event when one exists: its title, and (after the
-  /// session starts) its attendees upserted onto the roster. Calendar access
-  /// is a garnish, never a gate — denied access or no match still starts the
-  /// session, just unenriched.
+  /// Starts recording a meeting the daemon already detected, then enriches
+  /// it from a matching calendar event when one exists: a `session.rename`
+  /// to the event's title, and its attendees upserted onto the roster.
+  /// Recording starts *before* any calendar fetch — a first-ever calendar
+  /// access on this machine blocks on an OS permission dialog, and that
+  /// must never delay a capture the user just asked for. Calendar access is
+  /// a garnish, never a gate — denied access or no match leaves the session
+  /// running unenriched.
   func startDetectedSession(source: String, episode: String) {
     guard let connection else { return }
     // Against the config as it is *now* — see ``startRecording()``.
@@ -240,37 +243,52 @@ import os
     promptedEpisodes.mark(episode)
     let platform = DetectedSessionIdentity.platform(forBundleID: app.detail ?? app.rawValue)
     let marker = CalendarMatching.marker(forBundleID: app.detail ?? "")
+    // No on_end_stages: the daemon's own policy runs the configured chain
+    // for app-detected sessions (OnEndChainPolicy), unlike manual starts.
+    let params = SessionStartParams(
+      platform: platform, externalID: episode, sources: declared, trigger: .appDetected)
     Task { [weak self] in
-      let events = await self?.calendar.eventsAroundNow()
-      let matched = events.flatMap {
-        CalendarMatching.best(events: $0, now: Self.now(), platformMarker: marker)
-      }
-      // No on_end_stages: the daemon's own policy runs the configured chain
-      // for app-detected sessions (OnEndChainPolicy), unlike manual starts.
-      let params = SessionStartParams(
-        platform: platform,
-        externalID: episode,
-        title: (matched?.title.isEmpty == false) ? matched?.title : nil,
-        sources: declared,
-        trigger: .appDetected)
+      guard let self else { return }
       switch await connection.startSession(params) {
       case .failure(let error):
-        self?.report(error.message)
+        self.report(error.message)
       case .success(let session):
-        self?.actionError = nil
-        guard let matched else { return }
-        for (index, attendee) in matched.attendees.enumerated() {
-          let upsert = SessionAttendeeParams(
-            session: session.id,
-            id: "calendar-\(index)",
-            displayName: attendee.name,
-            origin: .calendar,
-            isLocal: attendee.isCurrentUser ? true : nil)
-          if let error = await connection.perform(.sessionAttendee(upsert)) {
-            self?.report(error.message)
-            break
-          }
-        }
+        self.actionError = nil
+        await self.enrichFromCalendar(session: session, marker: marker, connection: connection)
+      }
+    }
+  }
+
+  /// Task 12's calendar enrichment for a session already started: matches a
+  /// nearby calendar event, renames the session to its title, and upserts
+  /// its attendees. Runs after `session.start` so a first-run permission
+  /// dialog for calendar access never delays capture — see
+  /// ``startDetectedSession(source:episode:)``.
+  private func enrichFromCalendar(
+    session: Session, marker: String?, connection: DaemonConnection
+  ) async {
+    let events = await calendar.eventsAroundNow()
+    guard
+      let matched = events.flatMap({
+        CalendarMatching.best(events: $0, now: Self.now(), platformMarker: marker)
+      })
+    else { return }
+    if !matched.title.isEmpty {
+      let rename = SessionRenameParams(session: session.id, title: matched.title)
+      if let error = await connection.perform(.sessionRename(rename)) {
+        report(error.message)
+      }
+    }
+    for (index, attendee) in matched.attendees.enumerated() {
+      let upsert = SessionAttendeeParams(
+        session: session.id,
+        id: "calendar-\(index)",
+        displayName: attendee.name,
+        origin: .calendar,
+        isLocal: attendee.isCurrentUser ? true : nil)
+      if let error = await connection.perform(.sessionAttendee(upsert)) {
+        report(error.message)
+        break
       }
     }
   }
