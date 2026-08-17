@@ -1,17 +1,14 @@
 import EarsCore
 
-/// One prompt-worthy detected meeting: what to say and the action a click
-/// performs.
+/// One prompt-worthy detected meeting: the episode the caller marks as
+/// prompted, and the notification to post. The source and label a click acts
+/// on ride inside `request.action`, so they are not duplicated here.
 public struct MeetingPrompt: Sendable, Hashable {
-  public var source: SourceID
   public var episode: String
-  public var label: String
   public var request: NotificationRequest
 
-  public init(source: SourceID, episode: String, label: String, request: NotificationRequest) {
-    self.source = source
+  public init(episode: String, request: NotificationRequest) {
     self.episode = episode
-    self.label = label
     self.request = request
   }
 }
@@ -31,9 +28,7 @@ public enum MeetingPromptPolicy {
       .map { activity in
         let label = activity.displayLabel
         return MeetingPrompt(
-          source: activity.source,
           episode: activity.episode,
-          label: label,
           request: NotificationRequest(
             title: "\(label) meeting detected",
             body: "Start recording?",
