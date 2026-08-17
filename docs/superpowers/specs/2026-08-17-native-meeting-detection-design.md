@@ -127,8 +127,8 @@ daemon's episode id:
   matching is pure logic in `EarsMenuKit`**: given fetched events and "now",
   pick an event overlapping now (with slack for early joins and late
   starts), preferring one whose location/notes/URL carries a platform marker
-  (`zoom.us`, `teams.microsoft.com`), else the nearest ongoing event, else
-  none.
+  (`zoom.us`, `teams.microsoft` — matched as a substring, so it also catches
+  `teams.microsoft.com`), else the nearest ongoing event, else none.
 - Calendar access is requested **lazily on first prompt accept**.
   `NSCalendarsFullAccessUsageDescription` is added to
   `packaging/ears-menubar.Info.plist`. Denied access or no matching event
@@ -168,8 +168,8 @@ calendar attendee:
 `transcribe`'s `TranscriptAssembly.speakerLabel` currently renders raw
 source ids for anything but `mic`. Fix: `transcribe` reads each source
 descriptor's `meta.toml` `label` and passes it as a fallback map. Precedence
-becomes: reconciled `[[speaker]]` name → descriptor label ("Zoom") →
-`mic` → "You" → raw id. Pure, test-first, and improves today's manual app
+becomes: reconciled `[[speaker]]` name → `mic` → "You" → descriptor label
+("Zoom") → raw id. Pure, test-first, and improves today's manual app
 sessions immediately.
 
 ## Documentation updates (contracts move with the code)
