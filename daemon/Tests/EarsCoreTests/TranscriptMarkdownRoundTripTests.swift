@@ -109,6 +109,50 @@ struct TranscriptMarkdownRoundTripTests {
     #expect(parsed.map(\.isBackchannel) == [false, false])
   }
 
+  @Test("isBackchannel survives a full document round trip WITH the JSON sidecar (journal #180)")
+  func backchannelSurvivesSidecarParse() throws {
+    // The path cleanup and summarize actually take: parse(markdown:jsonSidecar:)
+    // sources segments from the sidecar, which deliberately carries no
+    // isBackchannel — the flag must be overlaid from the Markdown body, like
+    // sourceProvenance, or every published note silently loses the demotion
+    // (observed live 2026-08-17: session transcript demoted, vault note not).
+    let frontmatter = TranscriptFrontmatter(
+      schema: 1,
+      kind: .transcript,
+      rangeRun: "2026-07-17T10-30-00Z_standup",
+      sources: ["mic", "app:zoom"],
+      range: TimeRange(
+        start: Instant(secondsSinceEpoch: 1_784_284_200),
+        end: Instant(secondsSinceEpoch: 1_784_284_260)),
+      model: TranscriptModelInfo(name: "parakeet", backend: "fluidaudio", version: "0.x"),
+      diarization: TranscriptDiarizationInfo(enabled: false, backend: nil),
+      generated: Instant(secondsSinceEpoch: 1_784_284_260),
+      durationSeconds: 60,
+      speechSeconds: 40,
+      wordCount: 8,
+      vocab: []
+    )
+    let doc = TranscriptDocument(
+      frontmatter: frontmatter,
+      segments: [
+        TranscriptSegment(
+          source: "app:zoom", speaker: "Alan",
+          segment: Segment(start: 10, end: 40, text: "So the plan is basically this.")),
+        TranscriptSegment(
+          source: "mic", speaker: "You",
+          segment: Segment(start: 15, end: 16, text: "Yeah."),
+          isBackchannel: true),
+      ])
+    let reparsed = try TranscriptParser.parse(
+      markdown: TranscriptRenderer.renderMarkdown(doc),
+      jsonSidecar: TranscriptRenderer.renderJSON(doc))
+    #expect(reparsed.segments.map(\.isBackchannel) == [false, true])
+    // And the re-render demotes again — the property the vault note lost.
+    let rerendered = TranscriptRenderer.renderMarkdown(
+      TranscriptDocument(frontmatter: frontmatter, segments: reparsed.segments))
+    #expect(rerendered.contains("> ["))
+  }
+
   @Test("a multi-line turn body keeps its newlines")
   func multiLineBody() throws {
     let markdown = """
