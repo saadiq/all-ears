@@ -20,10 +20,13 @@ import Foundation
   /// Asks for the grant and wires notification clicks to the artifacts they
   /// name.
   ///
+  /// - Parameter startDetected: called on a `.startDetected` click, with the
+  ///   source and episode to start recording.
   /// - Parameter report: receives the resolved availability, here and on every
   ///   later ``refreshAvailability(report:)``.
   func bootstrap(
     dataRoot: String, provider: RecentSessionsProvider,
+    startDetected: @escaping @MainActor @Sendable (String, String) -> Void,
     report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
   ) {
     // `@Sendable` and `async`, so resolving a click never runs the provider's
@@ -36,9 +39,11 @@ import Foundation
       case .revealSession(let session):
         return DataStoreLayout.sessionDirectory(
           dataRoot: URL(fileURLWithPath: dataRoot), sessionID: session)
-      case .none:
+      case .startDetected, .none:
         return nil
       }
+    } startDetected: { source, episode in
+      startDetected(source, episode)
     } report: { availability in
       report(availability)
     }
@@ -67,5 +72,11 @@ import Foundation
     else { return }
     warnedAtRiskSessions.insert(session.id)
     notifier.post(request)
+  }
+
+  /// Posts detection prompts the policy produced. The caller marks the
+  /// episodes prompted.
+  func announceMeetingPrompts(_ prompts: [MeetingPrompt]) {
+    for prompt in prompts { notifier.post(prompt.request) }
   }
 }

@@ -4,6 +4,7 @@ public enum IconVariant: String, Sendable, Hashable {
 
 public enum Verb: Sendable, Hashable {
   case startRecording
+  case startDetected(source: String, episode: String, label: String)
   case pause(session: String)
   case resume(session: String)
   case rename(session: String, currentTitle: String)

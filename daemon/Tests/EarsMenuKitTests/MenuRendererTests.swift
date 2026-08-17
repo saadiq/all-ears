@@ -50,6 +50,22 @@ struct MenuRendererTests {
     #expect(content.verbs == [.startRecording])
   }
 
+  @Test("a detected meeting is offered ahead of the plain Start Recording verb")
+  func detectedMeetingOffersBeforeStart() {
+    var menuState = state()
+    menuState.meetingActivity = [
+      MeetingActivityStatus(
+        source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos", label: "Zoom", active: true,
+        episode: "us.zoom.xos#1")
+    ]
+    let content = MenuRenderer.render(menuState, now: instant(0))
+    #expect(
+      content.verbs == [
+        .startDetected(source: "app:us.zoom.xos", episode: "us.zoom.xos#1", label: "Zoom"),
+        .startRecording,
+      ])
+  }
+
   @Test("an unreachable daemon shows attention and no verbs")
   func unreachableContent() {
     let content = MenuRenderer.render(state(.unreachable), now: instant(0))

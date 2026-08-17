@@ -25,6 +25,9 @@ import os
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
   private let announcements = SessionNotifications()
+  /// Episodes already prompted (or accepted, or dropped for a live session),
+  /// persisted so a menu bar restart mid-meeting doesn't re-prompt.
+  private let promptedEpisodes = PromptedEpisodeStore()
   /// What a manually started session declares. Re-read from disk on every
   /// menu open rather than frozen at launch: this app is a login item, so
   /// "frozen at launch" means "frozen until reboot", and a user who edits
@@ -66,10 +69,14 @@ import os
 
   func start() {
     guard let connection else { return }
-    announcements.bootstrap(dataRoot: dataRoot, provider: recentsProvider) {
-      [weak self] availability in
-      self?.notifications = availability
-    }
+    announcements.bootstrap(
+      dataRoot: dataRoot, provider: recentsProvider,
+      startDetected: { [weak self] source, episode in
+        self?.startDetectedSession(source: source, episode: episode)
+      },
+      report: { [weak self] availability in
+        self?.notifications = availability
+      })
     observeMenuTracking()
     Task { await connection.run() }
     Task { await pump(connection) }
@@ -120,6 +127,27 @@ import os
     if RecentsRefreshPolicy.shouldRefresh(for: frame) {
       refreshRecents()
     }
+    if case .meetingActivity = frame.event {
+      offerDetectedMeetings()
+    }
+  }
+
+  /// Prompts for any newly detected meeting the policy allows, and marks the
+  /// episodes it prompts (or drops) so neither is offered again.
+  private func offerDetectedMeetings() {
+    if state.activeSession != nil {
+      // Dropped, not deferred (the spec's prompt policy): an episode that
+      // began while a session was live never prompts later — marking it
+      // prompted now is what encodes the drop. The menu row still renders
+      // from live state, so manual start remains available.
+      for activity in state.activeMeetings { promptedEpisodes.mark(activity.episode) }
+      return
+    }
+    let prompts = MeetingPromptPolicy.prompts(
+      state: state, alreadyPrompted: promptedEpisodes.episodes)
+    guard !prompts.isEmpty else { return }
+    for prompt in prompts { promptedEpisodes.mark(prompt.episode) }
+    announcements.announceMeetingPrompts(prompts)
   }
 
   /// Surfaces a failed control call: into the menu, where the user who clicked
@@ -159,6 +187,9 @@ import os
     case .startRecording:
       startRecording()
       return
+    case .startDetected(let source, let episode, _):
+      startDetectedSession(source: source, episode: episode)
+      return
     case .pause(let session): call = .sessionPause(session: session)
     case .resume(let session): call = .sessionResume(session: session)
     case .end(let session): call = .sessionEnd(session: session)
@@ -191,6 +222,32 @@ import os
     // that doesn't ask, so "Stop → summary" is this app's promise to make.
     let params = SessionStartParams(sources: sources, onEndStages: onEndStages)
     send(.sessionStart(params), connection)
+  }
+
+  /// Starts recording a meeting the daemon already detected. Task 12 extends
+  /// this with calendar enrichment.
+  func startDetectedSession(source: String, episode: String) {
+    guard let connection else { return }
+    // Against the config as it is *now* — see ``startRecording()``.
+    reloadDeclarations()
+    let app = SourceID(source)
+    var declared = sources.filter { $0 == SourceID("mic") }
+    declared.append(app)
+    promptedEpisodes.mark(episode)
+    // No on_end_stages: the daemon's own policy runs the configured chain for
+    // app-detected sessions (OnEndChainPolicy), unlike manual starts.
+    let params = SessionStartParams(
+      platform: DetectedSessionIdentity.platform(forBundleID: app.detail ?? app.rawValue),
+      externalID: episode,
+      sources: declared,
+      trigger: .appDetected)
+    Task { [weak self] in
+      if case .failure(let error) = await connection.startSession(params) {
+        self?.report(error.message)
+      } else {
+        self?.actionError = nil
+      }
+    }
   }
 
   func dismiss(jobID: String) {
@@ -272,6 +329,7 @@ import os
           &self.state, status.meetingActivity, ifEditsEqual: mark)
       }
       self.rerender()
+      self.offerDetectedMeetings()
     }
   }
 
