@@ -206,8 +206,11 @@ public enum AttendeeOrigin: String, Sendable, Hashable, Codable, CaseIterable {
   case synthetic
   /// An attendee copied from a matched calendar event — a person invited to
   /// the meeting, not necessarily one who spoke. Roster/summary enrichment
-  /// only: calendar rows carry no source binding, and reconciliation treats
-  /// them as named people (never as track stand-ins like ``synthetic``).
+  /// only: the menu bar app upserts a calendar row's own ``SessionAttendee/source``
+  /// as `nil` (it names no track of its own — remote voices share one mixed
+  /// app stream), but ``RosterReconciler`` may still infer a *name* binding
+  /// for it where a browser track exists. Reconciliation treats a calendar
+  /// row as a named person (never as a track stand-in like ``synthetic``).
   case calendar
 }
 

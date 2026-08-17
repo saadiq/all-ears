@@ -102,7 +102,10 @@ min_silence_ms = 700       # gap before declaring silence
 # Native-app meeting detection: watches each configured app:* source's process
 # audio input (e.g. the app:us.zoom.xos source below) and turns confirmed
 # begin/end edges into meeting.activity telemetry, and into the app-idle
-# auto-end policy for a session that started from one.
+# auto-end policy for a session that started from one. idle_grace_s should
+# comfortably exceed debounce_s plus the monitor's ~1s poll interval, or a
+# session could expire before a legitimately-continuing meeting's next
+# confirmed edge arrives; the defaults (90s vs ~3s) leave wide margin.
 [earsd.detection]
 enabled       = true  # master switch
 debounce_s    = 2     # seconds an activity sample must persist before an edge is confirmed
@@ -158,9 +161,11 @@ id    = "system"
 class = "system"
 enabled = false           # opt-in: needs the system-audio-recording permission
 
+# [earsd.detection] watches every configured app:* source's process audio
+# input this way, keyed on the bundle id after the colon.
 [[earsd.source]]
-id    = "app:us.zoom.xos"    # [earsd.detection] watches every configured app:* source's process
-class = "app"                # audio input this way, keyed on the bundle id after the colon
+id    = "app:us.zoom.xos"
+class = "app"
 label = "Zoom"
 
 # --- LLM stages ---

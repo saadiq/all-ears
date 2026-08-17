@@ -15,8 +15,9 @@ public typealias EventSink = @Sendable (EarsEvent) async -> Void
 ///
 /// State events (`session`, `source` — ``EventKind/isState``) each
 /// increment ``currentRev()`` by exactly one and are delivered tagged with
-/// their revision; telemetry events (`vad`, `segment`, `job`) are delivered
-/// untagged and never touch the counter. Because assignment and enqueue
+/// their revision; telemetry events (`vad`, `segment`, `job`,
+/// `meeting.activity`) are delivered untagged and never touch the counter.
+/// Because assignment and enqueue
 /// happen synchronously inside this actor, and a single drain task forwards
 /// frames to the attached sink in enqueue order, subscribers observe state
 /// revisions contiguously — which is exactly the invariant the client-side

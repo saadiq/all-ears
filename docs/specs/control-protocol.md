@@ -118,10 +118,10 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
     {"id": "spaces/x/devices/y", "display_name": "Jane Doe",
      "joined": "2026-07-19T10:00:12Z", "left": null,
      "source": "browser:meet:jane-a1b2",  // optional mapping to a SourceID
-     "origin": "platform"}                // platform | synthetic; absent = unknown
+     "origin": "platform"}                // platform | synthetic | calendar; absent = unknown
   ],
   "sources": ["mic", "browser:meet:jane-a1b2"],
-  "trigger": "browser-extension",         // manual | browser-extension
+  "trigger": "browser-extension",         // manual | browser-extension | app-detected
   "transcript_completed": null,           // set when the auto-transcribe exits 0
   "rev": 43                               // last revision that touched this session
 }
@@ -154,10 +154,11 @@ Semantics:
   extension's DOM layer today). `source` links an attendee to their per-participant audio
   source, which downstream feeds the transcript's speaker labels. `origin` records where
   the attendee's `id` was minted: `platform` (the platform's own id — a Meet device path,
-  a Zoom node id) or `synthetic` (a capture-client stand-in like `speaker-<n>` that names
-  a track, not a person). Absent means unknown (old clients, old files); an upsert that
-  omits it leaves the stored value untouched. Reconciliation counts only platform-origin
-  rows as named remote participants.
+  a Zoom node id), `synthetic` (a capture-client stand-in like `speaker-<n>` that names
+  a track, not a person), or `calendar` (a roster row copied in by the menu bar app from a
+  matched calendar event — enrichment only, carrying no source binding of its own). Absent
+  means unknown (old clients, old files); an upsert that omits it leaves the stored value
+  untouched. Reconciliation counts only platform-origin rows as named remote participants.
 - **Post-processing is declared at `session.start`, not inferred.** The optional `on_end_stages`
   names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
   `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at

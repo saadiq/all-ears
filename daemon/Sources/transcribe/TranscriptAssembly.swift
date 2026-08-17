@@ -23,10 +23,8 @@ struct SourceTranscription {
 enum TranscriptAssembly {
   /// Speaker label for a source with no diarization stage (not implemented
   /// yet -- see `docs/specs/model-interface.md`'s `Diarizer`
-  /// protocol, out of scope for this pass): reconciled speaker name
-  /// (from `speakers`) beats descriptor label beats raw source id.
-  /// The precedence chain is: reconciled name → mic→You → descriptor
-  /// label → raw id.
+  /// protocol, out of scope for this pass). Precedence: reconciled speaker
+  /// name (from `speakers`) → `mic` → "You" → descriptor label → raw id.
   ///
   /// Because the merge groups turns by this *resolved label* rather than by
   /// the raw source id, two source ids that resolve to the same label are

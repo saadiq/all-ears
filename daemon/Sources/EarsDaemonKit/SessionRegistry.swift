@@ -753,10 +753,10 @@ public actor SessionRegistry {
   /// `app-detected` sessions; every other trigger ignores it (the daemon
   /// records, it doesn't decide).
   public func appAudioActivity(source: SourceID, active: Bool) {
-    // Idempotent on repeated calls with the same state: the activity monitor
-    // is expected to poll and report its current reading on every tick, so a
-    // redundant `active: false` must not restart the grace clock — that would
-    // let a level-triggered caller keep an idle session alive forever.
+    // Idempotent on repeated calls with the same state: the monitor reports
+    // only confirmed edges, but this API tolerates a level-triggered caller
+    // too, so a redundant `active: false` must not restart the grace clock —
+    // that would let one keep an idle session alive forever.
     let changed =
       active ? activeAppAudio.insert(source).inserted : activeAppAudio.remove(source) != nil
     guard changed else { return }
