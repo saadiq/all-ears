@@ -80,6 +80,24 @@ struct AttributionBindingHintsTests {
     #expect(hints[0].captureId == "t3")
   }
 
+  @Test("speechEvidence collects onset captures and burst counts, skipping noise")
+  func speechEvidenceParses() {
+    let lines = [
+      #"{"schema":1,"type":"audio-onset","t":1,"participantId":"t1","trackId":"trk-1","state":"start","framePeak":0.01}"#,
+      #"{"schema":1,"type":"audio-onset","t":2,"participantId":"t1","trackId":"trk-1","state":"stop","framePeak":0.0}"#,
+      #"{"schema":1,"type":"dom-burst","t":3,"deviceId":"spaces/s/devices/9"}"#,
+      #"{"schema":1,"type":"dom-burst","t":4,"deviceId":"spaces/s/devices/9"}"#,
+      #"{"schema":1,"type":"dom-burst","t":5,"deviceId":"spaces/s/devices/7"}"#,
+      #"{"schema":2,"type":"audio-onset","t":6,"participantId":"future"}"#,  // unknown schema
+      "not json at all",
+      #"{"schema":1,"type":"track-appeared","t":7,"trackId":"trk-2"}"#,
+    ]
+    let evidence = AttributionBindingHints.speechEvidence(jsonl: lines.joined(separator: "\n"))
+
+    #expect(evidence.speechCaptures == ["t1"])
+    #expect(evidence.burstCounts == ["spaces/s/devices/9": 2, "spaces/s/devices/7": 1])
+  }
+
   @Test("bound-late-rename is a cause too — the track died before confirming")
   func lateRenameBindingJoins() {
     let late = """

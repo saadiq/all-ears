@@ -473,4 +473,139 @@ struct RosterReconcilerTests {
     // different map, so stored v2 maps must re-derive on next transcription.
     #expect(RosterReconciler.version >= 3)
   }
+
+  // ── Speech evidence: silence is unremarkable (journal #181) ────────────
+
+  @Test("silent tracks draw no warnings and no speaker rows")
+  func silentTracksAreUnremarkable() {
+    // The 2026-08-17 Matt call: t1 correlated and carrying all remote speech
+    // (2,896 onsets), t2/t3 captured-but-silent, two named remotes — one a
+    // Presentation pseudo-device with 4 stray ring flickers. The warnings
+    // described turns that never existed.
+    let attendees = [
+      SessionAttendee(
+        id: "devices/473", displayName: "Tom Elliot", joined: Self.at(0), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/472", displayName: "Matt Silva", joined: Self.at(5), origin: .platform),
+      SessionAttendee(
+        id: "devices/476", displayName: "Matt Silva (Presentation)", joined: Self.at(300),
+        origin: .platform),
+      SessionAttendee(id: "t1", joined: Self.at(6), origin: .synthetic),
+      SessionAttendee(id: "t2", joined: Self.at(7), origin: .synthetic),
+      SessionAttendee(id: "t3", joined: Self.at(8), origin: .synthetic),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees,
+      sources: ["mic", "browser:meet:t1", "browser:meet:t2", "browser:meet:t3"],
+      sessionStart: Self.start,
+      hints: [Self.hint("t1", "devices/472", t: 1000)],
+      speech: AttributionSpeechEvidence(
+        speechCaptures: ["t1"],
+        burstCounts: ["devices/472": 64, "devices/473": 108, "devices/476": 4]))
+
+    #expect(outcome.speakers.map(\.source) == [SourceID("browser:meet:t1")])
+    #expect(outcome.warnings.isEmpty)
+  }
+
+  @Test("the one-remote inference skips silent tracks and claims only the one that spoke")
+  func silentTrackNotInferred() {
+    let attendees = [
+      SessionAttendee(
+        id: "devices/1", displayName: "Tom Elliot", joined: Self.at(0), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/2", displayName: "Ana Flores", joined: Self.at(30), origin: .platform),
+      SessionAttendee(id: "t1", joined: Self.at(31), origin: .synthetic),
+      SessionAttendee(id: "t2", joined: Self.at(32), origin: .synthetic),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:meet:t1", "browser:meet:t2"],
+      sessionStart: Self.start,
+      speech: AttributionSpeechEvidence(speechCaptures: ["t1"], burstCounts: [:]))
+
+    #expect(
+      outcome.speakers.map { "\($0.source.rawValue)→\($0.name)" } == [
+        "browser:meet:t1→Ana Flores"
+      ])
+    #expect(outcome.speakers.first?.confidence == SpeakerConfidence.inferred)
+    // The warning counts only the track that actually carried speech.
+    #expect(outcome.warnings.contains { $0.contains("assigned 1 unidentified audio track") })
+  }
+
+  @Test("an unmatched track that carried speech warns exactly as before")
+  func speechTrackStillWarns() {
+    let attendees = [
+      SessionAttendee(
+        id: "devices/1", displayName: "Tom Elliot", joined: Self.at(0), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/2", displayName: "Ana", joined: Self.at(30), origin: .platform),
+      SessionAttendee(
+        id: "devices/3", displayName: "Ben", joined: Self.at(40), origin: .platform),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:x:a"], sessionStart: Self.start,
+      speech: AttributionSpeechEvidence(speechCaptures: ["a"], burstCounts: [:]))
+
+    #expect(outcome.warnings.contains { $0.contains("could not be matched to any of 2") })
+  }
+
+  @Test("without an attribution log the warnings behave exactly as before")
+  func noEvidenceKeepsOldWarnings() {
+    let attendees = [
+      SessionAttendee(
+        id: "devices/1", displayName: "Tom Elliot", joined: Self.at(0), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/2", displayName: "Matt Silva", joined: Self.at(5), origin: .platform),
+      SessionAttendee(
+        id: "devices/3", displayName: "Matt Silva (Presentation)", joined: Self.at(300),
+        origin: .platform),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic", "browser:meet:t2", "browser:meet:t3"],
+      sessionStart: Self.start, speech: nil)
+
+    #expect(outcome.warnings.contains { $0.contains("could not be matched to any of 2") })
+    #expect(outcome.warnings.contains { $0.contains("no audio was matched") })
+  }
+
+  @Test(
+    "named-but-unheard still warns when the platform showed them speaking — the lost-audio case")
+  func lostAudioStillWarns() {
+    // The 2026-08-17 morning call: the remote demonstrably spoke (17 bursts
+    // in four minutes) but capture produced nothing. That warning is the
+    // honest record of lost audio and must survive silence-suppression.
+    let attendees = [
+      SessionAttendee(
+        id: "devices/518", displayName: "Tom Elliot", joined: Self.at(0), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/519", displayName: "Stefni Bridges", joined: Self.at(60), origin: .platform),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic"], sessionStart: Self.start,
+      speech: AttributionSpeechEvidence(speechCaptures: [], burstCounts: ["devices/519": 17]))
+
+    #expect(outcome.warnings.contains { $0.contains("no audio was matched") })
+  }
+
+  @Test("named-but-unheard is suppressed below the burst floor")
+  func strayFlickersDoNotWarn() {
+    let attendees = [
+      SessionAttendee(
+        id: "devices/518", displayName: "Tom Elliot", joined: Self.at(0), origin: .platform,
+        isLocal: true),
+      SessionAttendee(
+        id: "devices/519", displayName: "Quiet Guest", joined: Self.at(60), origin: .platform),
+    ]
+    let outcome = RosterReconciler.reconcile(
+      attendees: attendees, sources: ["mic"], sessionStart: Self.start,
+      speech: AttributionSpeechEvidence(
+        speechCaptures: [],
+        burstCounts: ["devices/519": RosterReconciler.domBurstSpeechFloor - 1]))
+
+    #expect(!outcome.warnings.contains { $0.contains("no audio was matched") })
+  }
 }

@@ -493,12 +493,12 @@ enum TranscribePipeline {
       // `source` field per attendee lost. Best-effort — no log, no hints.
       let attributionURL = SessionAttributionLog.fileURL(
         dataRoot: dataRoot, sessionID: sessionRecord.id)
-      let hints =
-        (try? String(contentsOf: attributionURL, encoding: .utf8))
-        .map { AttributionBindingHints.parse(jsonl: $0) } ?? []
+      let attributionText = try? String(contentsOf: attributionURL, encoding: .utf8)
       let outcome = RosterReconciler.reconcile(
         attendees: sessionRecord.attendees, sources: sessionRecord.sources,
-        sessionStart: sessionRecord.started, hints: hints)
+        sessionStart: sessionRecord.started,
+        hints: attributionText.map { AttributionBindingHints.parse(jsonl: $0) } ?? [],
+        speech: attributionText.map { AttributionBindingHints.speechEvidence(jsonl: $0) })
       reconciled = outcome
       let reason =
         inputs.rereconcile
