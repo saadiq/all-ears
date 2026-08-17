@@ -29,6 +29,15 @@ struct StatusDataTests {
     let decoded = try JSONDecoder().decode(StatusData.self, from: data)
     #expect(decoded == status)
   }
+
+  @Test("status without meeting_activity decodes to empty and empty encodes absent")
+  func statusMeetingActivityIsAdditive() throws {
+    let legacy = #"{"uptime_s":5,"sources":[],"sessions":[]}"#
+    let decoded = try JSONDecoder().decode(StatusData.self, from: Data(legacy.utf8))
+    #expect(decoded.meetingActivity.isEmpty)
+    let encoded = String(data: try JSONEncoder().encode(decoded), encoding: .utf8)!
+    #expect(!encoded.contains("meeting_activity"))
+  }
 }
 
 @Suite("SourcesListData")

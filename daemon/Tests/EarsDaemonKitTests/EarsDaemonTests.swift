@@ -879,6 +879,82 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
+  // MARK: - Native-app meeting detection
+
+  @Test("meeting activity reaches a real-socket subscriber and the status snapshot")
+  func meetingActivityOverTheSocket() async throws {
+    let dataRoot = try makeDataRoot()
+    let socketPath = tempSocketPath()
+    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
+
+    var zoomDescriptor = makeDescriptor(id: "app:us.zoom.xos", sourceClass: .app)
+    zoomDescriptor.label = "Zoom"
+    let configuration = EarsDaemonConfiguration(
+      sources: [zoomDescriptor],
+      dataRoot: dataRoot,
+      socketPath: socketPath,
+      // A non-zero debounce, confirmed only once the clock is advanced past it
+      // below (after the subscriber barrier), so the edge cannot possibly be
+      // confirmed — and published — before the subscription is registered.
+      // ScriptedProbe repeats its single scripted entry forever, so with
+      // nothing gating confirmation, a wall-clock-driven debounce would race
+      // the socket handshake instead: the edge fires on whichever poll lands
+      // after ~1s of real time, independent of subscriber readiness.
+      detection: DetectionSettings(enabled: true, debounceSeconds: 5, appIdleGraceSeconds: 90))
+
+    let probe = ScriptedProbe([["us.zoom.xos": true]])
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in
+        SyntheticCaptureBackend(source: descriptor.id, buffers: [])
+      },
+      clock: clock,
+      activityProbe: probe)
+    try await daemon.start()
+
+    let client = try await ControlSocketClient.connect(toPath: socketPath)
+    _ = try await client.hello(client: "test/0")
+    let (_, events) = try await client.subscribe(SubscribeParams(events: [.meetingActivity]))
+    while await daemon.subscriberCountForTesting() == 0 { await Task.yield() }
+    // The poll barrier, not merely the subscriber one: the tracker's pending
+    // sample must be stamped at 1_000 *before* the advance below. If the
+    // monitor's first poll instead landed after it, every poll would measure
+    // the debounce against a clock frozen at 1_010 — interval 0, never past
+    // 5 — and no edge would ever be confirmed, hanging the `for await` below
+    // rather than failing it.
+    await waitUntil { probe.polls >= 1 }
+
+    // Only now does advancing the clock let the tracker's still-pending
+    // sample clear its debounce on the next poll — the subscriber barrier
+    // above guarantees that poll's confirmed edge has a registered subscriber
+    // to reach.
+    clock.advance(by: 10)
+
+    var received: [EarsEvent] = []
+    for await frame in events {
+      received.append(frame.event)
+      break
+    }
+    #expect(
+      received == [
+        .meetingActivity(
+          MeetingActivityStatus(
+            source: "app:us.zoom.xos", bundleID: "us.zoom.xos", label: "Zoom", active: true,
+            episode: "us.zoom.xos#1"))
+      ])
+
+    let status = try await client.send(.status, expecting: StatusData.self)
+    #expect(
+      status.meetingActivity == [
+        MeetingActivityStatus(
+          source: "app:us.zoom.xos", bundleID: "us.zoom.xos", label: "Zoom", active: true,
+          episode: "us.zoom.xos#1")
+      ])
+
+    await client.close()
+    await daemon.stop()
+  }
+
   @Test("ears status can never show two active sessions: a second start supersedes the first")
   func statusShowsSingleActiveSessionAfterSupersede() async throws {
     let dataRoot = try makeDataRoot()

@@ -1,5 +1,6 @@
 import Dispatch
 import EarsCLISupport
+import EarsCaptureKit
 import EarsConfig
 import EarsCore
 import EarsDaemonKit
@@ -144,7 +145,8 @@ enum EarsdRuntime {
       daemon = try EarsDaemon(
         configuration: resolution.configuration,
         backendFactory: realCaptureBackendFactory(),
-        logSink: daemonLogSink
+        logSink: daemonLogSink,
+        activityProbe: CoreAudioAppActivityProbe()
       )
     } catch {
       await logHandle.emit("failed to construct: \(error)", level: .error)

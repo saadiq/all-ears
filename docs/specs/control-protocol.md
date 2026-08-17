@@ -118,10 +118,10 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
     {"id": "spaces/x/devices/y", "display_name": "Jane Doe",
      "joined": "2026-07-19T10:00:12Z", "left": null,
      "source": "browser:meet:jane-a1b2",  // optional mapping to a SourceID
-     "origin": "platform"}                // platform | synthetic; absent = unknown
+     "origin": "platform"}                // platform | synthetic | calendar; absent = unknown
   ],
   "sources": ["mic", "browser:meet:jane-a1b2"],
-  "trigger": "browser-extension",         // manual | browser-extension
+  "trigger": "browser-extension",         // manual | browser-extension | app-detected
   "transcript_completed": null,           // set when the auto-transcribe exits 0
   "rev": 43                               // last revision that touched this session
 }
@@ -154,10 +154,13 @@ Semantics:
   extension's DOM layer today). `source` links an attendee to their per-participant audio
   source, which downstream feeds the transcript's speaker labels. `origin` records where
   the attendee's `id` was minted: `platform` (the platform's own id — a Meet device path,
-  a Zoom node id) or `synthetic` (a capture-client stand-in like `speaker-<n>` that names
-  a track, not a person). Absent means unknown (old clients, old files); an upsert that
-  omits it leaves the stored value untouched. Reconciliation counts only platform-origin
-  rows as named remote participants.
+  a Zoom node id), `synthetic` (a capture-client stand-in like `speaker-<n>` that names
+  a track, not a person), or `calendar` (a roster row copied in by the menu bar app from a
+  matched calendar event — enrichment only, carrying no source binding of its own). Absent
+  means unknown (old clients, old files); an upsert that omits it leaves the stored value
+  untouched. Reconciliation excludes only `synthetic` rows from the named-remote-participant
+  count — a synthetic row names a captured track, not a person; `platform` and `calendar` rows
+  both count, as do rows with unknown origin (old clients, old files).
 - **Post-processing is declared at `session.start`, not inferred.** The optional `on_end_stages`
   names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
   `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at
@@ -201,7 +204,7 @@ Grouped by capability. All carried in the v2 envelope.
 | Capability | Method | Params → result |
 |---|---|---|
 | — | `hello` | see [Handshake](#handshake) |
-| `observe` | `status` | → `{uptime_s, sources, sessions}` — daemon + per-source state, active sessions |
+| `observe` | `status` | → `{uptime_s, sources, sessions, meeting_activity?}` — daemon + per-source state, active sessions, watched-app meeting activity (omitted when none) |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
 | `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing"; a chain naming a stage the daemon cannot run → `invalid_request`. A re-declare that names a chain replaces the stored one |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
@@ -238,6 +241,7 @@ plus one counter.
 {"event": "vad",     "params": {"source": "mic", "state": "speech", "t": "…"}}
 {"event": "segment", "params": {"session": "0d5e…", "speaker": "You", "start": 604.1, "end": 611.9, "text": "…"}}
 {"event": "job",     "params": {"job": "j3", "kind": "transcribe", "session": "0d5e…", "state": "running"}}
+{"event": "meeting.activity", "params": {"source": "app:us.zoom.xos", "bundle_id": "us.zoom.xos", "label": "Zoom", "active": true, "episode": "us.zoom.xos#1"}}
 ```
 
 Client rule: apply a state notification iff `rev == last_rev + 1`; on a gap, resubscribe (fresh
@@ -247,8 +251,10 @@ therefore be fully stateless: everything it needs to render or resume comes back
 - **Two event classes.** *State* events (`session`, `source`) mutate the synced state,
   carry `rev`, and are **always delivered** to every subscriber — they're low-frequency, and
   unconditional delivery is what keeps `rev` contiguous. *Telemetry* events (`vad`, `segment`,
-  `job`) are fire-and-forget, carry **no** `rev`, never participate in gap detection, and are the
-  kinds `params.events`/`params.sources` filter.
+  `job`, `meeting.activity`) are fire-and-forget, carry **no** `rev`, never participate in gap
+  detection, and are the kinds `params.events`/`params.sources` filter. `meeting.activity`
+  reports one watched `app:*` source's meeting-audio activity (`bundle_id`, `label`, `active`,
+  `episode`) and, like `vad`, is filterable by `params.sources`.
 - **Subscribing is not terminal.** With correlation IDs, a subscribed connection may keep
   issuing requests; one connection per frontend suffices.
 - Late subscribers get the snapshot, not history. Durable history lives on disk
@@ -305,13 +311,26 @@ service worker gone for good. Policy, split by session kind:
   period is what distinguishes a worker respawn or network blip (streams re-open, nothing
   happens) from a real departure. The `ended` line in `events.jsonl` records
   `reason = "ingest-idle"` (vs `"client"` for an explicit `session.end`).
-- **Manual sessions** (no ingest streams to observe): **never auto-ended** — the daemon records,
-  it doesn't decide. `session.end` is required; `ears session list` surfaces stale ones.
+- **App-detected sessions** (`trigger = "app-detected"`, started from the menu bar's
+  detect-and-prompt flow): mirrors the browser policy off audio activity instead of ingest
+  streams. The daemon's meeting-activity monitor reports each configured `app:*` source's
+  activity to `SessionRegistry.appAudioActivity(source:active:)`; once **every** `app:*` source
+  the session names has been reported inactive continuously for `[earsd.detection] idle_grace_s`
+  (default 90 s), the daemon closes the open interval and ends the session with
+  `reason = "app-idle"`. Activity resuming on any of those sources within the grace window
+  cancels the pending expiry, exactly as a re-opened ingest stream does for a browser session. A
+  session that starts (or resumes at boot) with no `app:*` source currently reporting active
+  arms the grace immediately rather than waiting for an activity drop that will never come.
+- **Manual sessions** (no ingest streams or app-audio activity to observe): **never auto-ended**
+  — the daemon records, it doesn't decide. `session.end` is required; `ears session list`
+  surfaces stale ones.
 
 On daemon restart, `active`/`paused` sessions reload from `session.toml`; at most one is chosen
 to resume (the single-active-session invariant), and any others found live on disk are swept
 through the normal end pipeline with `reason = "orphaned"` so their audio isn't stranded. A
-resumed browser session whose streams don't return starts its grace clock from daemon boot.
+resumed browser session whose streams don't return starts its ingest-idle grace clock from
+daemon boot; a resumed app-detected session starts its app-idle grace clock the same way, and
+the activity monitor's next poll cancels it if the meeting is genuinely still live.
 
 ## Failure model
 
@@ -332,8 +351,11 @@ resumed browser session whose streams don't return starts its grace clock from d
 - `browser/dev/stub-server.ts` speaks v2 for extension tests.
 - Daemon tests: idempotent `session.start`; pause/resume interval bookkeeping (capture provably
   untouched); restart recovery of an active session; orphan grace timer (streams closed → grace
-  elapses → ended with `reason="ingest-idle"`; re-open within grace → still active); snapshot +
-  `rev` gap detection with telemetry kinds filtered; per-transport capability enforcement.
+  elapses → ended with `reason="ingest-idle"`; re-open within grace → still active); its
+  app-detected mirror (`app:*` activity goes quiet → grace elapses → ended with
+  `reason="app-idle"`; activity resumes within grace → still active; a boot survivor with no
+  live activity re-arms the same way); snapshot + `rev` gap detection with telemetry kinds
+  filtered; per-transport capability enforcement.
 - `transcribe` test: `--session` unions intervals (paused span provably absent from output) and
   publishes `job` events through the daemon.
 - Extension test: service-worker kill mid-call recovers via `hello` + `subscribe` with no

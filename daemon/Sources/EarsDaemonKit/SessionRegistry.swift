@@ -52,8 +52,15 @@ public enum SessionRegistryError: Error, Sendable, Hashable {
 /// `reason = "ingest-idle"` once their last live ingest stream has been
 /// closed for `graceSeconds` with no re-open — `EarsDaemon` feeds
 /// ``ingestStreamOpened(source:session:)``/``ingestStreamClosed(source:session:)``
-/// from the ingest WebSocket. Manual sessions are never auto-ended: the daemon
-/// records, it doesn't decide.
+/// from the ingest WebSocket. App-detected sessions (`trigger = .appDetected`)
+/// mirror this: they auto-end with `reason = "app-idle"` once every
+/// configured `app:*` source they name has gone quiet for
+/// `appIdleGraceSeconds` with no re-activation — `EarsDaemon`'s meeting-activity
+/// monitor feeds ``appAudioActivity(source:active:)``. A session with no live
+/// app-audio at all (started, or resumed at boot, with nothing yet reported
+/// active) arms the grace immediately rather than waiting for a close it will
+/// never see. Manual sessions are never auto-ended by either policy: the
+/// daemon records, it doesn't decide.
 public actor SessionRegistry {
   /// Why a session ended, recorded in `events.jsonl`'s `ended` line.
   public enum EndReason: String, Sendable {
@@ -61,6 +68,10 @@ public actor SessionRegistry {
     case client
     /// The orphan grace timer fired.
     case ingestIdle = "ingest-idle"
+    /// An app-detected session's app-audio activity stayed quiet past
+    /// `[earsd.detection] idle_grace_s` — the native-app mirror of
+    /// ``ingestIdle``.
+    case appIdle = "app-idle"
     /// A new `session.start` for a different identity force-ended this one to
     /// hold the single-active-session invariant (see ``start(_:)``). One session
     /// ended `superseded` is one grep away from the start that killed it.
@@ -86,6 +97,10 @@ public actor SessionRegistry {
   private let log: @Sendable (String) -> Void
   /// `[earsd.sessions].ingest_close_grace_s`.
   private let graceSeconds: Double
+  /// `[earsd.detection].idle_grace_s`: how long an app-detected session's
+  /// configured `app:*` sources may go quiet before the daemon auto-ends it
+  /// — the native-app mirror of ``graceSeconds``.
+  private let appIdleGraceSeconds: Double
   /// How long a browser-triggered session with a multi-party roster may run
   /// with no `browser:*` source before the daemon logs a loud warning
   /// (`session.browser_audio_missing`). 0 disables the watchdog.
@@ -130,8 +145,19 @@ public actor SessionRegistry {
   /// dropped when the source's last live stream closes first.
   private var pendingIngestLinks: [SourceID: SessionIdentity] = [:]
   /// Grace-timer invalidation: a scheduled expiry only fires if the
-  /// session's generation still matches (a re-opened stream bumps it).
+  /// session's generation still matches (a re-opened stream bumps it). Shared
+  /// by both ``IdleWatch`` cases. The two don't legitimately contend for one
+  /// session's counter: ingest-idle only fires for a session carrying a live
+  /// `browser:*` source, and an app-detected session never acquires one —
+  /// `initialSources`'s `localBrowserSources` fold-in only runs for
+  /// `trigger == .browserExtension`, and `link(source:to:)`'s ingest-tag join
+  /// only ever sees identities the browser extension's own `ingest.open`
+  /// tagged. ``isIdle(_:for:)`` also tests `trigger` for each watch, so the
+  /// exclusion is structural rather than resting on that convention alone.
   private var graceGeneration: [String: Int] = [:]
+  /// Configured `app:*` sources the activity monitor currently reports as
+  /// live, fed by ``appAudioActivity(source:active:)``.
+  private var activeAppAudio: Set<SourceID> = []
   /// Sessions the browser-audio watchdog has already warned about (one
   /// warning per session); cleared on end.
   private var browserAudioWarned: Set<String> = []
@@ -145,6 +171,7 @@ public actor SessionRegistry {
     makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
     bus: EventBus? = nil,
     graceSeconds: Double = 120,
+    appIdleGraceSeconds: Double = 90,
     browserAudioWarnSeconds: Double = 120,
     sleep: @escaping @Sendable (Double) async -> Void = { seconds in
       try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
@@ -161,6 +188,7 @@ public actor SessionRegistry {
     self.makeID = makeID
     self.bus = bus
     self.graceSeconds = graceSeconds
+    self.appIdleGraceSeconds = appIdleGraceSeconds
     self.browserAudioWarnSeconds = browserAudioWarnSeconds
     self.sleep = sleep
     self.onEnded = onEnded
@@ -237,7 +265,10 @@ public actor SessionRegistry {
       byIdentity[identity] = survivor.id
     }
     if survivor.isBrowserSession {
-      scheduleGraceExpiry(sessionID: survivor.id)
+      scheduleIdleExpiry(sessionID: survivor.id, watch: .ingest)
+    }
+    if survivor.trigger == .appDetected {
+      scheduleIdleExpiry(sessionID: survivor.id, watch: .appAudio)
     }
     if survivor.state == .active {
       log("boot: resuming capture for session \(survivor.id) sources=\(sourceLabel(survivor))")
@@ -399,6 +430,9 @@ public actor SessionRegistry {
     await startCapture(session.id, session.sources)
     if trigger == .browserExtension {
       scheduleBrowserAudioCheck(sessionID: session.id)
+    }
+    if trigger == .appDetected, appAudioIsQuiet(session) {
+      scheduleIdleExpiry(sessionID: session.id, watch: .appAudio)
     }
     return session
   }
@@ -670,7 +704,7 @@ public actor SessionRegistry {
     }
     for session in affected
     where session.state != .ended && session.isBrowserSession && !hasLiveIngest(session) {
-      scheduleGraceExpiry(sessionID: session.id)
+      scheduleIdleExpiry(sessionID: session.id, watch: .ingest)
     }
   }
 
@@ -706,6 +740,43 @@ public actor SessionRegistry {
       .sorted { $0.rawValue < $1.rawValue }
     for source in claimed { pendingIngestLinks[source] = nil }
     return claimed
+  }
+
+  // MARK: - App-audio activity tracking (app-idle grace)
+
+  /// The meeting-activity monitor's feed: `active` transitions for one
+  /// configured `app:*` source. Drives the app-idle auto-end policy for
+  /// `app-detected` sessions; every other trigger ignores it (the daemon
+  /// records, it doesn't decide).
+  public func appAudioActivity(source: SourceID, active: Bool) {
+    // Idempotent on repeated calls with the same state: the monitor reports
+    // only confirmed edges, but this API tolerates a level-triggered caller
+    // too, so a redundant `active: false` must not restart the grace clock —
+    // that would let one keep an idle session alive forever.
+    let changed =
+      active ? activeAppAudio.insert(source).inserted : activeAppAudio.remove(source) != nil
+    guard changed else { return }
+    for session in sessions.values
+    where session.state != .ended && session.trigger == .appDetected {
+      guard appSources(of: session).contains(source) else { continue }
+      if active {
+        graceGeneration[session.id, default: 0] += 1
+        log(
+          "app-idle grace cancelled: session=\(session.id) source=\(source.rawValue) "
+            + "generation=\(graceGeneration[session.id]!)")
+      } else if appAudioIsQuiet(session) {
+        scheduleIdleExpiry(sessionID: session.id, watch: .appAudio)
+      }
+    }
+  }
+
+  private func appSources(of session: Session) -> [SourceID] {
+    session.sources.filter { $0.sourceClass == .app }
+  }
+
+  /// Whether every watched `app:*` source of `session` is currently silent.
+  private func appAudioIsQuiet(_ session: Session) -> Bool {
+    appSources(of: session).allSatisfy { !activeAppAudio.contains($0) }
   }
 
   // MARK: - Browser-audio watchdog
@@ -764,39 +835,82 @@ public actor SessionRegistry {
         + "browser/dev/captures/2026-07-24-meet-collections-drift.md)")
   }
 
-  private func scheduleGraceExpiry(sessionID: String) {
-    graceGeneration[sessionID, default: 0] += 1
-    let generation = graceGeneration[sessionID]!
-    let deadline = clock.now().advanced(by: graceSeconds)
-    log(
-      "grace scheduled: session=\(sessionID) "
-        + "deadline=\(ISO8601InstantCodec.format(deadline)) generation=\(generation)")
-    let wait = sleep
-    let seconds = graceSeconds
-    Task { [weak self] in
-      await wait(seconds)
-      await self?.expireIfStillOrphaned(sessionID: sessionID, generation: generation)
+  // MARK: - Idle grace
+
+  /// The two ways a live session falls quiet on its own. Both arm the same
+  /// generation-gated timer and differ only in how long they wait, what
+  /// "still quiet" means when it fires, and the reason they end with.
+  private enum IdleWatch: Sendable {
+    /// A browser-extension session whose `browser:*` streams have all closed.
+    case ingest
+    /// An app-detected session whose watched apps have all stopped capturing.
+    case appAudio
+
+    var reason: EndReason {
+      switch self {
+      case .ingest: .ingestIdle
+      case .appAudio: .appIdle
+      }
+    }
+
+    /// Log prefix, so the two timers stay distinguishable in the daemon log.
+    var label: String {
+      switch self {
+      case .ingest: "ingest-idle"
+      case .appAudio: "app-idle"
+      }
     }
   }
 
-  private func expireIfStillOrphaned(sessionID: String, generation: Int) async {
+  /// Whether `session` still qualifies for `watch`. Re-checked when the timer
+  /// fires: the arming condition may have been undone while it slept. The
+  /// trigger tests are what keep the two watches off each other's sessions,
+  /// structurally rather than by convention.
+  private func isIdle(_ session: Session, for watch: IdleWatch) -> Bool {
+    switch watch {
+    case .ingest:
+      session.trigger != .appDetected && session.isBrowserSession && !hasLiveIngest(session)
+    case .appAudio:
+      session.trigger == .appDetected && appAudioIsQuiet(session)
+    }
+  }
+
+  private func scheduleIdleExpiry(sessionID: String, watch: IdleWatch) {
+    graceGeneration[sessionID, default: 0] += 1
+    let generation = graceGeneration[sessionID]!
+    let seconds =
+      switch watch {
+      case .ingest: graceSeconds
+      case .appAudio: appIdleGraceSeconds
+      }
+    log(
+      "\(watch.label) grace scheduled: session=\(sessionID) "
+        + "deadline=\(ISO8601InstantCodec.format(clock.now().advanced(by: seconds))) "
+        + "generation=\(generation)")
+    let wait = sleep
+    Task { [weak self] in
+      await wait(seconds)
+      await self?.expireIfStillIdle(sessionID: sessionID, watch: watch, generation: generation)
+    }
+  }
+
+  private func expireIfStillIdle(sessionID: String, watch: IdleWatch, generation: Int) async {
     guard graceGeneration[sessionID] == generation,
       let session = sessions[sessionID],
       session.state != .ended,
-      session.isBrowserSession,
-      !hasLiveIngest(session)
+      isIdle(session, for: watch)
     else {
       log(
-        "grace expiry no-op: session=\(sessionID) generation=\(generation) "
+        "\(watch.label) expiry no-op: session=\(sessionID) generation=\(generation) "
           + "current_generation=\(graceGeneration[sessionID].map(String.init) ?? "-")")
       return
     }
-    log("grace expiry firing: session=\(sessionID) generation=\(generation) reason=ingest-idle")
+    log("\(watch.label) expiry firing: session=\(sessionID) generation=\(generation)")
     do {
-      _ = try await end(id: sessionID, reason: .ingestIdle)
-      log("session \(sessionID) ended: ingest idle past grace")
+      _ = try await end(id: sessionID, reason: watch.reason)
+      log("session \(sessionID) ended: \(watch.label) past grace")
     } catch {
-      log("session \(sessionID) orphan expiry failed: \(error)")
+      log("session \(sessionID) \(watch.label) expiry failed: \(error)")
     }
   }
 

@@ -204,6 +204,14 @@ public enum AttendeeOrigin: String, Sendable, Hashable, Codable, CaseIterable {
   /// A capture-client stand-in minted when no platform id was available
   /// (`speaker-<n>`, `webaudio-track-<n>`, `graphtap-<n>`).
   case synthetic
+  /// An attendee copied from a matched calendar event — a person invited to
+  /// the meeting, not necessarily one who spoke. Roster/summary enrichment
+  /// only: the menu bar app upserts a calendar row's own ``SessionAttendee/source``
+  /// as `nil` (it names no track of its own — remote voices share one mixed
+  /// app stream), but ``RosterReconciler`` may still infer a *name* binding
+  /// for it where a browser track exists. Reconciliation treats a calendar
+  /// row as a named person (never as a track stand-in like ``synthetic``).
+  case calendar
 }
 
 /// One roster entry, with join/leave times and an optional mapping to the

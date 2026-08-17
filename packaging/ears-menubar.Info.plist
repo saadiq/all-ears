@@ -22,5 +22,7 @@
     <string>15.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>All Ears reads your calendar to title detected meetings and record who was invited. Nothing is sent anywhere; it only annotates your local session records.</string>
 </dict>
 </plist>

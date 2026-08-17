@@ -28,6 +28,7 @@ struct SessionRegistryTests {
     clock: ManualClock,
     bus: EventBus? = nil,
     graceSeconds: Double = 120,
+    appIdleGraceSeconds: Double = 90,
     sleep: (@Sendable (Double) async -> Void)? = nil,
     onEnded: SessionRegistry.EndedHook? = nil,
     localBrowserSources: [SourceID] = [],
@@ -46,6 +47,7 @@ struct SessionRegistryTests {
       },
       bus: bus,
       graceSeconds: graceSeconds,
+      appIdleGraceSeconds: appIdleGraceSeconds,
       sleep: sleep ?? { _ in },
       onEnded: onEnded,
       localBrowserSources: localBrowserSources,
@@ -817,6 +819,143 @@ struct SessionRegistryTests {
     #expect(try await registry.get(id: session.id).state == .active)
   }
 
+  // MARK: - app-idle grace
+
+  @Test("an app-detected session auto-ends app-idle once activity stays quiet past grace")
+  func appDetectedAutoEndsOnIdle() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(base)
+    let gate = SleepGate()
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: true)
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "zoom-app", externalID: "us.zoom.xos#1",
+        sources: ["mic", "app:us.zoom.xos"], trigger: .appDetected))
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: false)
+
+    await gate.releaseAll()
+    await waitUntil { try await registry.get(id: session.id).state == .ended }
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
+    #expect(timeline.last?.event == "ended")
+    #expect(timeline.last?.reason == "app-idle")
+  }
+
+  @Test("activity resuming inside the grace window keeps the session alive")
+  func activityResumeCancelsAppIdleGrace() async throws {
+    let dataRoot = try makeDataRoot()
+    let gate = SleepGate()
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: ManualClock(base), appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: true)
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "zoom-app", externalID: "us.zoom.xos#1",
+        sources: ["mic", "app:us.zoom.xos"], trigger: .appDetected))
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: false)
+    // The meeting came back inside the grace window.
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: true)
+
+    await gate.releaseAll()
+    // Give the (now-stale) expiry task a chance to run — it must be a no-op.
+    for _ in 0..<50 { await Task.yield() }
+    #expect(try await registry.get(id: session.id).state == .active)
+  }
+
+  @Test("an app-detected session started with no live activity arms the grace immediately")
+  func startWithoutActivityArmsGrace() async throws {
+    let dataRoot = try makeDataRoot()
+    let gate = SleepGate()
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: ManualClock(base), appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+
+    // Accept-after-the-meeting-already-ended: no activity is ever reported.
+    let session = try await registry.start(
+      SessionStartParams(
+        platform: "zoom-app", externalID: "us.zoom.xos#1",
+        sources: ["mic", "app:us.zoom.xos"], trigger: .appDetected))
+
+    await gate.releaseAll()
+    await waitUntil { try await registry.get(id: session.id).state == .ended }
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
+    #expect(timeline.last?.reason == "app-idle")
+  }
+
+  @Test("manual sessions never app-idle out")
+  func manualSessionsUntouchedByActivity() async throws {
+    let dataRoot = try makeDataRoot()
+    let gate = SleepGate()
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: ManualClock(base), appIdleGraceSeconds: 0,
+      sleep: { seconds in await gate.wait(seconds) })
+
+    let session = try await registry.start(
+      SessionStartParams(title: "standup", sources: ["mic", "app:us.zoom.xos"]))
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: true)
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: false)
+
+    await gate.releaseAll()
+    for _ in 0..<50 { await Task.yield() }
+    #expect(try await registry.get(id: session.id).state == .active)
+  }
+
+  @Test("boot resumes an app-detected survivor and arms its app-idle grace")
+  func bootArmsAppIdleGraceForSurvivor() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(base.advanced(by: 10_000))
+    let gate = SleepGate()
+
+    // An app-detected session left `active` on disk by a previous daemon
+    // instance, with no activity monitor yet running to confirm it's live.
+    let survivor = Session(
+      id: "zoom-1", identity: SessionIdentity(platform: "zoom-app", externalID: "us.zoom.xos#1"),
+      title: "Zoom call", state: .active, started: base,
+      intervals: [SessionInterval(start: base)], sources: ["mic", "app:us.zoom.xos"],
+      trigger: .appDetected)
+    try SessionStore.write(survivor, dataRoot: dataRoot)
+
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+    await registry.loadFromDisk()
+
+    await gate.releaseAll()
+    await waitUntil { try await registry.get(id: "zoom-1").state == .ended }
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: "zoom-1")
+    #expect(timeline.last?.reason == "app-idle")
+  }
+
+  @Test("activity reported after boot cancels the survivor's app-idle grace")
+  func bootAppIdleGraceCancelledByActivity() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(base.advanced(by: 10_000))
+    let gate = SleepGate()
+
+    let survivor = Session(
+      id: "zoom-1", identity: SessionIdentity(platform: "zoom-app", externalID: "us.zoom.xos#1"),
+      title: "Zoom call", state: .active, started: base,
+      intervals: [SessionInterval(start: base)], sources: ["mic", "app:us.zoom.xos"],
+      trigger: .appDetected)
+    try SessionStore.write(survivor, dataRoot: dataRoot)
+
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+    await registry.loadFromDisk()
+    // The activity monitor's first poll finds the meeting genuinely still live.
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: true)
+
+    await gate.releaseAll()
+    for _ in 0..<50 { await Task.yield() }
+    #expect(try await registry.get(id: "zoom-1").state == .active)
+  }
+
   // MARK: - daemon-side ingest linking (the `session` tag on ingest.open)
 
   @Test("a tagged stream joins the live session's sources, so the grace can end it")
@@ -1004,36 +1143,6 @@ struct SessionRegistryTests {
     for _ in 0..<50 { await Task.yield() }
 
     #expect(logged.withLock { !$0.contains { $0.contains("session.browser_audio_missing") } })
-  }
-}
-
-/// A controllable stand-in for the registry's sleep seam: waiters block until
-/// released, so grace-timer tests drive expiry explicitly instead of racing
-/// real time.
-private actor SleepGate {
-  private var waiters: [CheckedContinuation<Void, Never>] = []
-  private var released = false
-
-  func wait(_ seconds: Double) async {
-    if released { return }
-    await withCheckedContinuation { waiters.append($0) }
-  }
-
-  func releaseAll() {
-    released = true
-    let pending = waiters
-    waiters = []
-    for waiter in pending { waiter.resume() }
-  }
-}
-
-/// Polls an async condition without real-time sleeps.
-private func waitUntil(
-  _ condition: @Sendable () async throws -> Bool
-) async {
-  for _ in 0..<1_000 {
-    if (try? await condition()) == true { return }
-    await Task.yield()
   }
 }
 

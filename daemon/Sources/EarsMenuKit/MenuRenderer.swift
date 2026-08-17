@@ -47,7 +47,14 @@ public enum MenuRenderer {
 
   static func verbs(for state: MenuState) -> [Verb] {
     guard state.connection == .connected else { return [] }
-    guard let session = state.activeSession else { return [.startRecording] }
+    guard let session = state.activeSession else {
+      let offers = state.activeMeetings.map { activity in
+        Verb.startDetected(
+          source: activity.source.rawValue, episode: activity.episode,
+          label: activity.displayLabel)
+      }
+      return offers + [.startRecording]
+    }
     let toggle: Verb =
       session.state == .paused ? .resume(session: session.id) : .pause(session: session.id)
     return [

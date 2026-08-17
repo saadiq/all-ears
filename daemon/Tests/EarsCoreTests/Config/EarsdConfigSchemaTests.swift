@@ -55,6 +55,11 @@ struct EarsdConfigSchemaTests {
         "evict_after_transcript_seconds": .int(7200),
         "max_audio_age_seconds": .int(604800),
       ]),
+      "detection": .table([
+        "enabled": .bool(true),
+        "debounce_s": .int(2),
+        "idle_grace_s": .int(90),
+      ]),
       "ingest_ws": ingestWS,
       "control_ws": controlWS,
       "source": .array([micSource]),

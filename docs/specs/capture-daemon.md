@@ -118,6 +118,8 @@ Browser audio does **not** flow over the control transports — it uses a dedica
 
 The optional `session` field carries the session identity (`session.start`'s idempotency key: the platform plus the platform's own meeting id) the source belongs to. The daemon links the source into that live session's `sources` itself — stashing the link until the `session.start` lands, if the open raced ahead of it — so the ingest-idle grace policy holds even when the extension's own `session.attendee` source upserts never arrive (an MV3 service worker respawned mid-call has no session state to upsert from). The client's attendee upserts remain the enrichment path (attributing a source to a named attendee); the tag is the membership path. Untagged opens behave exactly as before.
 
+`app-detected` sessions (a native-app meeting the menu bar's detect-and-prompt flow started) auto-end the same way off app-audio activity instead of ingest streams — see [control-protocol "Orphaned sessions"](control-protocol.md#orphaned-sessions) for the full `app-idle` grace policy.
+
 Audio is one binary frame per PCM chunk, multiplexed by `stream_id`. Two shapes, discriminated by the first byte:
 
 ```

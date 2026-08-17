@@ -122,6 +122,13 @@ enum OutputFormatting {
     case .job(let job):
       let target = job.session.map { " session=\($0)" } ?? ""
       return "[job] \(job.job) \(job.kind)\(target) \(job.state.rawValue)"
+    case .meetingActivity(let status):
+      // `displayLabel`, not `label`: a configured `app:*` source may carry no
+      // label at all, and "[meeting] app:us.zoom.xos  active=true" reads as a
+      // formatting bug rather than an unnamed source.
+      return
+        "[meeting] \(status.source.rawValue) \(status.displayLabel) "
+        + "active=\(status.active) episode=\(status.episode)"
     }
   }
 }

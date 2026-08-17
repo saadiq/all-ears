@@ -285,6 +285,19 @@
           "state": "done"
         }
       }
+    },
+    {
+      "name": "meeting-activity-event",
+      "frame": {
+        "event": "meeting.activity",
+        "params": {
+          "source": "app:us.zoom.xos",
+          "bundle_id": "us.zoom.xos",
+          "label": "Zoom",
+          "active": true,
+          "episode": "us.zoom.xos#1"
+        }
+      }
     }
   ]
 }

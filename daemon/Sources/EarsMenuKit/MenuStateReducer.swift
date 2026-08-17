@@ -23,6 +23,16 @@ public enum MenuStateReducer {
     state.sources = snapshot.sources
     state.lastRev = snapshot.rev
     state.jobs.removeAll { $0.state != .failed }
+    // Not part of the snapshot: a reconnect's status catch-up refills it, so
+    // starting from empty avoids showing a meeting as active off a boot the
+    // daemon may not even have made it through.
+    state.meetingActivity = []
+    // Clearing *is* an edit, so it invalidates catch-ups the same way a live
+    // edge does. A `status` round trip issued before this reconnect may still
+    // land after the reconnect's own — its answer describes a connection that
+    // is gone, and without this bump its mark would still match and it would
+    // replace the fresh list wholesale.
+    state.meetingActivityEdits += 1
   }
 
   public static func disconnected(_ state: inout MenuState) {
@@ -50,6 +60,9 @@ public enum MenuStateReducer {
     case .job(let params):
       upsertJob(&state, params)
       return .applied
+    case .meetingActivity(let status):
+      state.upsertMeetingActivity(status)
+      return .applied
     case .vad, .segment:
       return .applied
     }
@@ -57,6 +70,23 @@ public enum MenuStateReducer {
 
   public static func dismissJob(_ state: inout MenuState, id: String) {
     state.jobs.removeAll { $0.job == id }
+  }
+
+  /// `status`'s `meeting_activity` list, applied wholesale — the catch-up a
+  /// freshly connected client does instead of waiting for the next edge.
+  ///
+  /// `mark` is the caller's `state.meetingActivityEdits` from just before it
+  /// asked the daemon for `status`. If a live `.meetingActivity` edge landed
+  /// (and bumped the counter) while that request was in flight, `list` is a
+  /// stale snapshot of a state the edge has already moved past — replacing
+  /// wholesale would silently revert it, and edges are one-shot, so nothing
+  /// would ever correct the mistake. Discarding here is correct: the live
+  /// feed is newer than the catch-up.
+  public static func catchUpMeetingActivity(
+    _ state: inout MenuState, _ list: [MeetingActivityStatus], ifEditsEqual mark: Int
+  ) {
+    guard state.meetingActivityEdits == mark else { return }
+    state.meetingActivity = list
   }
 
   private static func applyState(

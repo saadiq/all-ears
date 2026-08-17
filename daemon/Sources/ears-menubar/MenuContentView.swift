@@ -83,6 +83,7 @@ struct MenuContentView: View {
   private func label(for verb: Verb) -> String {
     switch verb {
     case .startRecording: return "Start Recording"
+    case .startDetected(_, _, let label): return "Start Recording ‘\(label)’ Meeting"
     case .pause: return "Pause"
     case .resume: return "Resume"
     case .rename: return "Rename Session…"

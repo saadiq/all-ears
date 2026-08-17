@@ -1,3 +1,4 @@
+import EarsCaptureKit
 import EarsCore
 import EarsDataStore
 import EarsIPC
@@ -69,6 +70,9 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --session`. Default `["mic"]`; `[]` disables.
   public var browserSessionLocalSources: [SourceID]
+  /// `[earsd.detection]`: native-app meeting detection settings. See
+  /// ``MeetingActivityMonitor``.
+  public var detection: DetectionSettings
   /// `[earsd.sessions].on_end_stages`: the **default** chain, in
   /// ``OnEndStage``'s canonical order, for an ended session whose starter
   /// declared none of its own. Only browser-extension sessions fall back to
@@ -103,6 +107,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     sessionIngestCloseGraceSeconds: Double = 120,
     browserSessionLocalSources: [SourceID] = ["mic"],
+    detection: DetectionSettings = DetectionSettings(),
     onEndStages: [OnEndStage] = [],
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
@@ -121,7 +126,21 @@ public struct EarsDaemonConfiguration: Sendable {
     self.controlWebSocket = controlWebSocket
     self.sessionIngestCloseGraceSeconds = sessionIngestCloseGraceSeconds
     self.browserSessionLocalSources = browserSessionLocalSources
+    self.detection = detection
     self.onEndStages = onEndStages
+  }
+}
+
+/// `[earsd.detection]`: native-app meeting detection. See `MeetingActivityMonitor`.
+public struct DetectionSettings: Sendable {
+  public var enabled: Bool
+  public var debounceSeconds: Double
+  public var appIdleGraceSeconds: Double
+
+  public init(enabled: Bool = true, debounceSeconds: Double = 2, appIdleGraceSeconds: Double = 90) {
+    self.enabled = enabled
+    self.debounceSeconds = debounceSeconds
+    self.appIdleGraceSeconds = appIdleGraceSeconds
   }
 }
 
@@ -227,6 +246,15 @@ public actor EarsDaemon {
   /// a reconnecting client the revision counters reset.
   private let bootID = UUID().uuidString.lowercased()
   private var powerObserver: PowerObserver?
+  /// The real Core Audio app-activity probe, injected by `earsd`'s normal-run
+  /// wiring; `nil` (the default) means every existing daemon test stays
+  /// hermetic, since with no probe ``start()`` builds no
+  /// ``MeetingActivityMonitor`` at all.
+  private let activityProbe: (any AppAudioActivityProbing)?
+  /// Native-app meeting detection: built in ``start()`` only when a probe was
+  /// injected, `[earsd.detection].enabled`, and at least one `app:*` source is
+  /// configured. `nil` otherwise.
+  private var meetingMonitor: MeetingActivityMonitor?
   /// The daemon-owned, timer-driven retention enforcer — deletes each ended
   /// session's audio once its transcript-driven deadline passes. Started in
   /// ``start()`` after the control socket is bound, stopped in ``stop()``.
@@ -294,12 +322,14 @@ public actor EarsDaemon {
     configuration: EarsDaemonConfiguration,
     backendFactory: @escaping CaptureBackendFactory,
     clock: any NowProviding = SystemClock(),
-    logSink: any LogRecordSink = NoOpLogRecordSink()
+    logSink: any LogRecordSink = NoOpLogRecordSink(),
+    activityProbe: (any AppAudioActivityProbing)? = nil
   ) throws {
     self.configuration = configuration
     self.clock = clock
     self.logSink = logSink
     self.backendFactory = backendFactory
+    self.activityProbe = activityProbe
     self.configuredDescriptors = Dictionary(
       configuration.sources.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
 
@@ -466,6 +496,7 @@ public actor EarsDaemon {
       clock: clock,
       bus: eventBus,
       graceSeconds: configuration.sessionIngestCloseGraceSeconds,
+      appIdleGraceSeconds: configuration.detection.appIdleGraceSeconds,
       onEnded: onSessionEnded,
       localBrowserSources: configuration.browserSessionLocalSources,
       knownSourceIDs: { [weak self] in
@@ -485,6 +516,30 @@ public actor EarsDaemon {
     // control server so `status`/`sources.list` see it.
     sessionRegistry = sessions
 
+    // Native-app meeting detection: watch every configured app:* source's
+    // process audio input, publish confirmed edges as meeting.activity
+    // telemetry, and feed the registry's app-idle auto-end policy. Built only
+    // when a probe was injected (earsd's main passes the real Core Audio
+    // one; tests default to none) and there is something to watch.
+    let watchedApps = configuration.sources
+      .filter { $0.sourceClass == .app }
+      .compactMap { descriptor -> WatchedAppSource? in
+        guard let bundleID = descriptor.id.detail else { return nil }
+        return WatchedAppSource(source: descriptor.id, bundleID: bundleID, label: descriptor.label)
+      }
+    if configuration.detection.enabled, let activityProbe, !watchedApps.isEmpty {
+      meetingMonitor = MeetingActivityMonitor(
+        watched: watchedApps,
+        debounceSeconds: configuration.detection.debounceSeconds,
+        probe: activityProbe,
+        clock: clock,
+        onChange: { [eventBus] status in
+          await eventBus.publish(.meetingActivity(status))
+          await sessions.appAudioActivity(source: status.source, active: status.active)
+        })
+    }
+    let monitor = meetingMonitor
+
     let controlServer = ControlServer(
       captureActors: captureActors,
       dataRoot: configuration.dataRoot,
@@ -493,7 +548,8 @@ public actor EarsDaemon {
       // `segment.publish`/`job.publish` → the live feed, and `subscribe`
       // snapshots read the bus's revision.
       bus: eventBus,
-      sessions: sessions)
+      sessions: sessions,
+      meetingActivity: { await monitor?.snapshot() ?? [] })
 
     let socketDirectory = URL(fileURLWithPath: configuration.socketPath).deletingLastPathComponent()
     try FileManager.default.createDirectory(
@@ -534,6 +590,10 @@ public actor EarsDaemon {
       await socketServer.publish(frame)
       await controlWebSocketServer?.publish(frame)
     }
+
+    // Only now that the fan-out is attached does a confirmed edge's
+    // meeting.activity publish actually reach a subscriber.
+    await meetingMonitor?.start()
 
     // Capture is session-scoped, so the set of live actors changes over the
     // daemon's lifetime — the observer reads it live rather than snapshotting
@@ -671,6 +731,11 @@ public actor EarsDaemon {
       await powerObserver.stopObserving()
     }
     powerObserver = nil
+
+    if let meetingMonitor {
+      await meetingMonitor.stop()
+    }
+    meetingMonitor = nil
 
     for actor in captureActors.values {
       await actor.stop()

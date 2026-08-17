@@ -11,6 +11,10 @@ final class Notifier: NSObject {
   /// `async` and `@Sendable`, so it does not inherit this actor: resolving a
   /// click reads the session store, which must not run on the main actor.
   private var resolve: (@Sendable (NotificationRequest.Action) async -> URL?)?
+  /// Starts a detected session from a `.startDetected` click. Runs on the main
+  /// actor directly rather than through `resolve` — there is no artifact URL
+  /// to open, only a session to start.
+  private var startDetected: (@MainActor @Sendable (String, String) -> Void)?
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "notify")
 
   /// - Parameter report: called once the grant resolves, so the menu can say
@@ -19,6 +23,7 @@ final class Notifier: NSObject {
   ///   from "the callback was dropped".
   func bootstrap(
     resolve: @escaping @Sendable (NotificationRequest.Action) async -> URL?,
+    startDetected: @escaping @MainActor @Sendable (String, String) -> Void,
     report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
   ) {
     guard Bundle.main.bundleIdentifier != nil else {
@@ -27,6 +32,7 @@ final class Notifier: NSObject {
     }
     available = true
     self.resolve = resolve
+    self.startDetected = startDetected
     let center = UNUserNotificationCenter.current()
     center.delegate = self
     let log = self.log
@@ -92,15 +98,29 @@ final class Notifier: NSObject {
     switch action {
     case .openSummary(let session): return ["action": "openSummary", "session": session]
     case .revealSession(let session): return ["action": "revealSession", "session": session]
+    case .startDetected(let source, let episode, let label):
+      return ["action": "startDetected", "source": source, "episode": episode, "label": label]
     case .none: return [:]
     }
   }
 
+  /// Switches on `action` first, not on the presence of `session`: unlike the
+  /// other two actions, `.startDetected` carries `source`/`episode`/`label`
+  /// instead of a `session` key.
   nonisolated static func decode(_ userInfo: [AnyHashable: Any]) -> NotificationRequest.Action {
-    guard let session = userInfo["session"] as? String else { return .none }
     switch userInfo["action"] as? String {
-    case "openSummary": return .openSummary(session: session)
-    case "revealSession": return .revealSession(session: session)
+    case "openSummary":
+      guard let session = userInfo["session"] as? String else { return .none }
+      return .openSummary(session: session)
+    case "revealSession":
+      guard let session = userInfo["session"] as? String else { return .none }
+      return .revealSession(session: session)
+    case "startDetected":
+      guard let source = userInfo["source"] as? String,
+        let episode = userInfo["episode"] as? String
+      else { return .none }
+      return .startDetected(
+        source: source, episode: episode, label: userInfo["label"] as? String ?? "")
     default: return .none
     }
   }
@@ -115,6 +135,10 @@ extension Notifier: UNUserNotificationCenterDelegate {
     let userInfo = response.notification.request.content.userInfo
     let action = Notifier.decode(userInfo)
     Task { @MainActor [weak self] in
+      if case .startDetected(let source, let episode, _) = action {
+        self?.startDetected?(source, episode)
+        return
+      }
       guard let resolve = self?.resolve, let url = await resolve(action) else { return }
       switch action {
       case .revealSession: NSWorkspace.shared.activateFileViewerSelecting([url])

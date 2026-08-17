@@ -4,6 +4,7 @@ public struct NotificationRequest: Sendable, Hashable {
   public enum Action: Sendable, Hashable {
     case openSummary(session: String)
     case revealSession(session: String)
+    case startDetected(source: String, episode: String, label: String)
     case none
   }
   public var title: String

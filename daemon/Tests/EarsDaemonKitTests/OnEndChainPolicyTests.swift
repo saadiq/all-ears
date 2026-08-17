@@ -45,4 +45,12 @@ struct OnEndChainPolicyTests {
     #expect(orphaned.stages.isEmpty)
     #expect(orphaned.problems.count == 1)
   }
+
+  @Test("app-detected sessions inherit the configured chain when undeclared")
+  func appDetectedInheritsConfiguredChain() {
+    let result = OnEndChainPolicy.stages(
+      declared: nil, trigger: .appDetected, configured: OnEndStage.allCases)
+    #expect(result.stages == OnEndStage.allCases)
+    #expect(result.problems.isEmpty)
+  }
 }

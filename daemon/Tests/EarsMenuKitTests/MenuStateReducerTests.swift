@@ -200,4 +200,97 @@ struct EventApplicationTests {
     #expect(state.sessions.isEmpty)
     #expect(state.lastRev == nil)
   }
+
+  @Test("meeting.activity telemetry upserts by source and applies without a rev")
+  func meetingActivityUpserts() {
+    var state = MenuState()
+    state.connection = .connected
+    state.lastRev = 1
+    let began = MeetingActivityStatus(
+      source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+      label: "Zoom", active: true, episode: "us.zoom.xos#1")
+    #expect(MenuStateReducer.apply(&state, EventFrame(event: .meetingActivity(began))) == .applied)
+    #expect(state.activeMeetings == [began])
+    var ended = began
+    ended.active = false
+    _ = MenuStateReducer.apply(&state, EventFrame(event: .meetingActivity(ended)))
+    #expect(state.activeMeetings.isEmpty)
+    #expect(state.meetingActivity == [ended])
+  }
+
+  @Test("reconnect clears stale activity until status catches up")
+  func reconnectClearsActivity() {
+    var state = MenuState()
+    state.meetingActivity = [
+      MeetingActivityStatus(
+        source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+        label: "Zoom", active: true, episode: "us.zoom.xos#1")
+    ]
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    #expect(state.meetingActivity.isEmpty)
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#2")
+      ], ifEditsEqual: state.meetingActivityEdits)
+    #expect(state.activeMeetings.count == 1)
+  }
+
+  @Test("a catch-up issued before a reconnect never lands on the reconnected state")
+  func catchUpFromBeforeAReconnectIsDiscarded() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    // The mark the first connection's catch-up captured before asking `status`.
+    let mark = state.meetingActivityEdits
+    // The socket dropped and redialled before that answer arrived.
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#1")
+      ], ifEditsEqual: mark)
+    #expect(state.meetingActivity.isEmpty)
+  }
+
+  @Test("a live edge that lands while a status catch-up is in flight wins over it")
+  func liveEdgeDuringCatchUpWins() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    // The mark a caller would capture right before asking the daemon for `status`.
+    let mark = state.meetingActivityEdits
+    let ended = MeetingActivityStatus(
+      source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+      label: "Zoom", active: false, episode: "us.zoom.xos#1")
+    _ = MenuStateReducer.apply(&state, EventFrame(event: .meetingActivity(ended)))
+
+    // The catch-up's answer arrives after the live edge — it's stale, so it
+    // must not clobber the edge it raced.
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#1")
+      ], ifEditsEqual: mark)
+    #expect(state.meetingActivity == [ended])
+
+    // A catch-up whose mark matches the current count applies normally.
+    let freshMark = state.meetingActivityEdits
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#2")
+      ], ifEditsEqual: freshMark)
+    #expect(state.activeMeetings.count == 1)
+  }
 }

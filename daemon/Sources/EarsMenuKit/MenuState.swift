@@ -14,6 +14,16 @@ public struct MenuState: Sendable, Hashable {
   public var sessions: [Session]
   public var sources: [SourceStatus]
   public var jobs: [JobPublishParams]
+  public var meetingActivity: [MeetingActivityStatus]
+  /// Bumped on every edit to ``meetingActivity`` — each
+  /// ``upsertMeetingActivity(_:)`` and the clear in
+  /// ``MenuStateReducer/connected(_:daemon:snapshot:)``. A status catch-up in
+  /// flight captures this before it asks the daemon; if a live edge (or a
+  /// reconnect) lands and bumps it before the catch-up's answer arrives, the
+  /// catch-up is a stale snapshot of a list that has already moved past it,
+  /// and ``MenuStateReducer/catchUpMeetingActivity(_:_:ifEditsEqual:)``
+  /// discards it rather than clobbering the newer state.
+  public var meetingActivityEdits: Int
   public var lastRev: Int?
 
   public init() {
@@ -22,6 +32,8 @@ public struct MenuState: Sendable, Hashable {
     sessions = []
     sources = []
     jobs = []
+    meetingActivity = []
+    meetingActivityEdits = 0
     lastRev = nil
   }
 
@@ -33,6 +45,9 @@ public struct MenuState: Sendable, Hashable {
   }
   public var failedJobs: [JobPublishParams] {
     jobs.filter { $0.state == .failed }
+  }
+  public var activeMeetings: [MeetingActivityStatus] {
+    meetingActivity.filter(\.active)
   }
 }
 
@@ -51,5 +66,14 @@ extension MenuState {
     } else {
       sources.append(SourceStatus(id: id, state: newState, codec: ""))
     }
+  }
+
+  mutating func upsertMeetingActivity(_ status: MeetingActivityStatus) {
+    if let index = meetingActivity.firstIndex(where: { $0.source == status.source }) {
+      meetingActivity[index] = status
+    } else {
+      meetingActivity.append(status)
+    }
+    meetingActivityEdits += 1
   }
 }

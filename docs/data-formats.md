@@ -133,7 +133,7 @@ started = "2026-07-19T10:00:00Z"
 ended = "2026-07-19T10:31:00Z"          # "" while active/paused
 transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succeeds;
                                         #   the marker retention keys off
-trigger = "browser-extension"           # manual | browser-extension
+trigger = "browser-extension"           # manual | browser-extension | app-detected
 sources = ["mic", "browser:meet:t3"]    # source ids are opaque handles: a browser
                                         #   source names a captured track, never a
                                         #   person (see "Roster and speaker map")
@@ -164,10 +164,10 @@ source = "browser:meet:t3"              # optional link to the source carrying
                                         #   link — how a name reaches a track)
 origin = "platform"                     # where `id` was minted: "platform" (the
                                         #   platform's own id) | "synthetic" (a
-                                        #   capture track handle like t3 that
-                                        #   names a track, not a person); "" or
-                                        #   absent = unknown (files from before
-                                        #   the field existed)
+                                        #   capture track handle) | "calendar"
+                                        #   (a roster copy from a matched event);
+                                        #   "" or absent = unknown (files from
+                                        #   before the field existed)
 self = false                            # true on the local participant — you
 
 [[speaker]]                             # the *reconciled* source → name map,
@@ -180,7 +180,7 @@ confidence = "correlated"               # correlated | inferred
 reconciliation could not resolve or resolved by inference. It travels into the
 transcript's frontmatter and from there into the note itself.
 
-`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, `capture_failed` (a browser source's capture died mid-call — carries `source` and the client's stated `reason`, so a gap in the audio is attributable rather than reading as silence), and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
+`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, `capture_failed` (a browser source's capture died mid-call — carries `source` and the client's stated `reason`, so a gap in the audio is attributable rather than reading as silence), and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the browser orphan grace timer), `"app-idle"` (the app-detected mirror of it — every configured `app:*` source went quiet past grace), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
 Tools reject a `schema` other than 3 rather than guessing — which is exactly how the legacy schema-1 and schema-2 descriptors (above) stay inert on disk.
 
@@ -267,7 +267,7 @@ Rules:
 - **A turn is never split.** Turns are emitted whole in start order, even when two people overlap. Splitting a turn wherever another speaker intrudes is faithful to the audio and unreadable as a document — it shreds both sentences into alternating single words. Nor are a speaker's consecutive segments merged: an ASR pause is a paragraph break a reader wants.
 - **Backchannels are demoted.** A turn of at most four words falling entirely inside another speaker's turn — "Yeah.", "Right." — renders as a `> [HH:MM:SS] speaker: text` blockquote line attached beneath the turn it interrupted, instead of breaking that turn in two. It stays a full segment in the JSON sidecar, so nothing is lost; only the Markdown demotes it.
 - **Turns with no text are dropped.** A heading with no words tells a reader nothing.
-- **Speaker labels** resolve through the session's `[[speaker]]` map: a mapped source renders as its speaker's name, `mic` → `You`, and an unmapped source falls back to its raw (opaque) source id. Within-stream diarization — stable `Speaker N` labels inside a multi-speaker source — ships as the offline refinement pass.
+- **Speaker labels** resolve through the session's `[[speaker]]` map: a mapped source renders as its speaker's name, `mic` → `You`, an unmapped source falls back to its `meta.toml` `label` (so `app:us.zoom.xos` reads as `Zoom`), and a source labelled nowhere falls back to its raw (opaque) source id. Within-stream diarization — stable `Speaker N` labels inside a multi-speaker source — ships as the offline refinement pass.
 - **The path-template context travels here, not on the command line.** `title:` and `started:` are what a publishing stage expands `{title}`/`{date}`/`{week}` against, so a manual rerun files exactly where the daemon-spawned run did.
 - `cleanup` and `summarize` outputs use the same frontmatter convention with `kind: clean` / `kind: summary` and a `derived_from` field naming the source transcript. A summary also carries a `preset` field naming the `[[summarize.preset]]` it was generated from.
 - A `[[summarize.preset]]` with `frontmatter = false` writes its body alone — no YAML block and no JSON sidecar. That output is plain Markdown, not an ears document, which is what a destination owning its own frontmatter (an Obsidian vault) needs.
@@ -308,7 +308,7 @@ Storing only the derived answer meant a failed derivation *erased* a name the se
 At `session.end` the daemon reconciles one into the other, applying invariants a binding must satisfy:
 
 1. **A browser-captured track is never the local participant.** You are captured on `mic`; the browser taps remote streams. A `browser:*` source bound to the attendee marked `self` is impossible, not merely unlikely, and is dropped — the source returns to the unassigned pool. When that `self` flag is itself contradicted on both fronts — the flagged attendee is bound to remote audio *and* join order singles out a different attendee as the one whose arrival started the session — the flag is revised rather than the binding dropped, and the evidence for the revision is recorded in `warnings`.
-2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label). Only rows the platform itself named can be people: a named attendee whose `origin` is `"synthetic"` is a stand-in for a track and never counts as a remote participant (or appears in the derived title), so a junk synthetic row cannot block this inference. Rows with unknown origin (old files) count exactly as they did before the field existed.
+2. **A one-remote call is settled by counting.** With exactly one named non-local attendee, every remote track is theirs, including the several source ids one participant accumulates through an identity upgrade (they share a name, so they coalesce into one speaker label). Only a `synthetic`-origin row is excluded from counting as a person: it is a stand-in for a track, not someone who was invited or joined, so a junk synthetic row cannot block this inference or leak into the derived title. `platform`-origin rows (the platform's own roster) and `calendar`-origin rows (a matched calendar event's attendees) both count as named remote participants; rows with unknown origin (old files) count exactly as they did before the field existed.
 3. **A source carries at most one name.** Competing claims on one source resolve deterministically — the first claimant wins, identically on every re-run — with the losing claim recorded in `warnings` rather than left to a dictionary insertion race downstream.
 
 Beside the roster's own `source` links, reconciliation consumes the **binding hints** in the session's `attribution.jsonl` (the `identity-link` events, each joined to the `provisional-binding` decision that caused it): a hint claims a source for a named attendee under the same invariants, after the roster's claims. Hints cover what the roster's single `source` field per attendee cannot — one participant owning several track-handle sources across a call (a rejoin, a seam swap), and an identity confirmed after the row's link was overwritten. A session with no attribution log reconciles from the roster alone, exactly as before.
@@ -323,7 +323,7 @@ The derivation is a pure function of the roster, so it also runs on demand — a
 
 Two independent layers:
 
-1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side; each `browser:<platform>:<track-slug>` source carries exactly one participant's audio, named through the reconciled `[[speaker]]` map. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
+1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side, labelled with the source's `meta.toml` `label` when no reconciled name exists (falling back to the raw source id); each `browser:<platform>:<track-slug>` source carries exactly one participant's audio, named through the reconciled `[[speaker]]` map. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
 2. **Diarization (offline pass implemented):** an opt-in diarization stage (`[diarize].backend = "sortformer"`) assigns stable `Speaker N` labels within a multi-speaker source, rendered as `<source> · Speaker N` so source attribution stays primary. An optional per-session name map (`Speaker 2` → `Priya`) applied at or after `cleanup`, never mutating timings, remains future work; the live (streaming) pass is a follow-up to the offline pass that ships today.
 
 ## Vocabulary / known-word lists

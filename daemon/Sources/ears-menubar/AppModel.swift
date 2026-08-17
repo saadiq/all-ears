@@ -7,11 +7,13 @@ import Observation
 import os
 
 @MainActor @Observable final class AppModel {
-  private(set) var state = MenuState()
+  // Unrestricted (not `private(set)`): `AppModel+DaemonLifecycle.swift` also
+  // mutates `state`/`uptime` — see the note by `connection` below.
+  var state = MenuState()
   private(set) var content = MenuContent(
     icon: .idle, header: "Connecting to earsd…", verbs: [], pipeline: [])
   private(set) var recents: [RecentSessionItem] = []
-  private(set) var uptime: DaemonUptime?
+  var uptime: DaemonUptime?
   /// The last control call that failed, kept for the menu to show. A verb that
   /// silently does nothing is the worst outcome here: the user walks away
   /// believing a recording stopped when it did not.
@@ -22,16 +24,25 @@ import os
   let configError: String?
   let dataRoot: String
 
-  private let connection: DaemonConnection?
+  // `connection`/`calendar`/`promptedEpisodes` are unrestricted (rather than
+  // `private`) because the detected-meeting flow that reads them lives in
+  // `AppModel+DetectedMeetings.swift` — `private` in Swift is scoped to the
+  // declaring *file*, not the type, so a cross-file extension needs at least
+  // `internal` to reach them. Still invisible outside this module.
+  let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
-  private let announcements = SessionNotifications()
+  let announcements = SessionNotifications()
+  let calendar = CalendarProvider()
+  /// Episodes already prompted (or accepted, or dropped for a live session),
+  /// persisted so a menu bar restart mid-meeting doesn't re-prompt.
+  let promptedEpisodes = PromptedEpisodeStore()
   /// What a manually started session declares. Re-read from disk on every
   /// menu open rather than frozen at launch: this app is a login item, so
   /// "frozen at launch" means "frozen until reboot", and a user who edits
   /// `[[earsd.source]]` and uses this app's own Restart Daemon would keep
   /// starting sessions against the old list — recording nothing but mic while
   /// the menu reports "● Recording" — with no way to tell.
-  private var sources: [SourceID]
+  private(set) var sources: [SourceID]
   private var onEndStages: [String]
   /// Re-resolves the config layers. Injected so the reload path is a seam
   /// rather than a hard call into the filesystem.
@@ -66,10 +77,14 @@ import os
 
   func start() {
     guard let connection else { return }
-    announcements.bootstrap(dataRoot: dataRoot, provider: recentsProvider) {
-      [weak self] availability in
-      self?.notifications = availability
-    }
+    announcements.bootstrap(
+      dataRoot: dataRoot, provider: recentsProvider,
+      startDetected: { [weak self] source, episode in
+        self?.startDetectedSession(source: source, episode: episode)
+      },
+      report: { [weak self] availability in
+        self?.notifications = availability
+      })
     observeMenuTracking()
     Task { await connection.run() }
     Task { await pump(connection) }
@@ -78,12 +93,20 @@ import os
   private func pump(_ connection: DaemonConnection) async {
     for await event in connection.events {
       switch event {
-      case .ready(let daemon, let snapshot):
+      case .ready(let daemon, let bootID, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
         actionError = nil
-        // Re-anchored on every (re)connect, so a restarted daemon's uptime
-        // restarts with it instead of counting from the old process.
-        anchorUptime(connection)
+        // Before any prompting can occur: episode ids are minted from a
+        // per-boot counter, so a prompt history left over from a previous
+        // daemon boot must be discarded before `catchUpStatus` below can
+        // offer anything against it — see ``PromptedEpisodeStore/activate(bootID:)``.
+        promptedEpisodes.activate(bootID: bootID)
+        // Re-fetched on every (re)connect, so a restarted daemon's uptime
+        // restarts with it instead of counting from the old process, and so
+        // `meetingActivity` — cleared by `connected()` because it isn't part
+        // of the snapshot — is refilled instead of sitting empty until the
+        // next edge.
+        catchUpStatus(connection)
       case .event(let frame):
         switch MenuStateReducer.apply(&state, frame) {
         case .gap:
@@ -117,19 +140,33 @@ import os
     if RecentsRefreshPolicy.shouldRefresh(for: frame) {
       refreshRecents()
     }
+    if case .meetingActivity = frame.event {
+      offerDetectedMeetings()
+    }
   }
 
   /// Surfaces a failed control call: into the menu, where the user who clicked
   /// the verb is looking, and into unified logging for the after-the-fact
-  /// question of why a session never ended.
-  private func report(_ message: String) {
+  /// question of why a session never ended. Not `private`: the detected-
+  /// meeting flow in `AppModel+DetectedMeetings.swift` reports through this
+  /// too, so every failure surfaces the same way regardless of which file
+  /// triggered it.
+  func report(_ message: String) {
     log.error("control call failed: \(message, privacy: .public)")
     actionError = message
     rerender()
   }
 
-  /// Runs a control call, reporting a rejection instead of dropping it.
-  private func send(_ call: ControlCall, _ connection: DaemonConnection) {
+  /// Clears a previously reported action error on a call that just
+  /// succeeded, without opening `actionError`'s setter beyond this file.
+  func clearActionError() {
+    actionError = nil
+  }
+
+  /// Runs a control call, reporting a rejection instead of dropping it. Not
+  /// `private`: also used from `AppModel+DaemonLifecycle.swift`'s rename
+  /// prompt.
+  func send(_ call: ControlCall, _ connection: DaemonConnection) {
     Task {
       if let error = await connection.perform(call) {
         report(error.message)
@@ -155,6 +192,9 @@ import os
     switch verb {
     case .startRecording:
       startRecording()
+      return
+    case .startDetected(let source, let episode, _):
+      startDetectedSession(source: source, episode: episode)
       return
     case .pause(let session): call = .sessionPause(session: session)
     case .resume(let session): call = .sessionResume(session: session)
@@ -217,8 +257,9 @@ import os
   /// ``ClientConfig`` is deliberately not adopted: `socketPath` and the two
   /// roots are wired into a live `DaemonConnection` and a
   /// `RecentSessionsProvider` at init, and swapping those under a running app
-  /// is a relaunch, not a refresh.
-  private func reloadDeclarations() {
+  /// is a relaunch, not a refresh. Not `private`: also called from
+  /// `AppModel+DetectedMeetings.swift`.
+  func reloadDeclarations() {
     guard let config = reloadConfig() else { return }
     sources = config.sources
     onEndStages = config.onEndStages
@@ -241,25 +282,8 @@ import os
     }
   }
 
-  /// Re-anchors the Daemon submenu's uptime against the process now on the
-  /// other end of the socket.
-  ///
-  /// Clears the anchor when the `status` round-trip fails instead of leaving
-  /// the previous one: it belongs to a *different* process, so keeping it made
-  /// `daemonLine` report the dead daemon's uptime — "up 2d 6h" for something
-  /// that started thirty seconds ago, telling a user who just clicked Restart
-  /// Daemon that nothing happened. No anchor renders the bare version line,
-  /// which claims nothing.
-  private func anchorUptime(_ connection: DaemonConnection) {
-    Task { [weak self] in
-      let seconds = await connection.status()?.uptimeSeconds
-      guard let self else { return }
-      self.uptime = seconds.map { DaemonUptime(reported: Double($0), anchor: Self.now()) }
-      self.rerender()
-    }
-  }
-
-  private static func now() -> Instant {
+  // Not `private`: used from both extension files as `Self.now()`.
+  static func now() -> Instant {
     Instant(secondsSinceEpoch: Date().timeIntervalSince1970)
   }
 
@@ -268,35 +292,6 @@ import os
     Task.detached { [weak self] in
       let items = provider.load()
       await MainActor.run { self?.recents = items }
-    }
-  }
-
-  private func promptRename(session: String, currentTitle: String) {
-    guard let title = RenamePrompt.run(currentTitle: currentTitle), let connection else { return }
-    send(.sessionRename(SessionRenameParams(session: session, title: title)), connection)
-  }
-
-  var daemonLine: String {
-    DaemonUptime.line(daemon: state.daemon, uptime: uptime, now: Self.now())
-  }
-
-  func restartDaemon() {
-    guard let connection else { return }
-    // `bounce()` is deliberately silent — it yields no `.down` — so the state
-    // transition is this caller's to make. Without it the menu keeps
-    // advertising "● Recording" and offering Pause/End over a socket that no
-    // longer exists, and clicking one answers "⚠ not connected to earsd".
-    MenuStateReducer.resubscribing(&state)
-    uptime = nil
-    rerender()
-    Task { [weak self] in
-      // A failed kickstart is not a no-op from the user's side: the bounce
-      // below still drops the menu to "⚠ Daemon not running", so a discarded
-      // error reads as this button having broken something.
-      if let error = await SystemActions.restartDaemon() {
-        self?.report(error)
-      }
-      await connection.bounce()
     }
   }
 }

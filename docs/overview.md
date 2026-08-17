@@ -50,10 +50,11 @@ Built and in use:
 - LLM cleanup (with validation guardrails) and preset-based summaries via a subprocess backend (the `llm` CLI by default).
 - Browser extension: per-participant capture and real-name identity on Google Meet, Zoom web; `Speaker N` attribution on Teams.
 - Menu bar app (`ears-menubar`, [plan](./plans/menubar-app.md)): dropdown session control, pipeline visibility, and notifications from the daemon's control socket — stage 1 only; a richer dashboard window is future work.
+- Native-app meeting detection: any configured `app:*` source (Zoom, Teams) watched for confirmed microphone use; the menu bar prompts to start a session within seconds of joining, auto-ends it once the app's audio goes quiet, and enriches the title and roster from a matching macOS Calendar event when one exists.
 
 Not built yet:
 
-- Within-stream diarization (`Speaker N` labels inside a multi-speaker source). Labels currently come from the source alone: `mic` → `You`, other sources → the source id.
+- Within-stream diarization (`Speaker N` labels inside a multi-speaker source), and mapping a calendar-enriched attendee to their individual voice within that shared stream. Labels currently come from the source alone: `mic` → `You`, other sources → their descriptor label (falling back to the raw source id).
 - Vocabulary biasing at the ASR decoder — vocabulary currently applies at `cleanup` only.
 - A configurable VAD backend (an energy-threshold VAD is always used) and a configurable ASR backend (Parakeet/FluidAudio is fixed).
 - Signed, notarized builds and automatic launchd registration — build from source, see [distribution](./distribution.md).

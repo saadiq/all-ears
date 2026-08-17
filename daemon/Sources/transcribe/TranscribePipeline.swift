@@ -548,6 +548,9 @@ enum TranscribePipeline {
       ? []
       : plans.map { TranscriptAudioStore(source: $0.sourceID, store: $0.store?.label ?? "none") }
 
+    let sourceLabels = Self.sourceLabels(
+      sourceIDs: sourceIDs, sessionID: inputs.session, dataRoot: dataRoot)
+
     let document = TranscriptAssembly.assemble(
       sourceIDs: sourceIDs,
       transcriptions: transcriptions,
@@ -570,6 +573,7 @@ enum TranscribePipeline {
       attendees: attendees,
       warnings: reconciled?.warnings ?? sessionRecord?.warnings ?? [],
       speakers: speakers,
+      sourceLabels: sourceLabels,
       diarization: diarization,
       diarizationBackend: diarizer?.info.name,
       model: modelInfo,
@@ -676,6 +680,33 @@ enum TranscribePipeline {
     let chunks: Int
     let speech: Int
     let slices: Int
+  }
+
+  /// Raw source id → the descriptor `label` from the source's `meta.toml`,
+  /// consulted per-session first (`sessions/<id>/sources/<source>/`) then the
+  /// global ring — the same order the audio reads use. The first *non-empty*
+  /// label wins, so a session copy written before the source was labelled
+  /// doesn't mask the ring's name. A source labelled nowhere is simply absent:
+  /// `TranscriptAssembly.speakerLabel` falls through to the raw id, exactly as
+  /// before labels existed.
+  static func sourceLabels(
+    sourceIDs: [SourceID], sessionID: String?, dataRoot: URL
+  ) -> [String: String] {
+    var labels: [String: String] = [:]
+    let roots: [URL] =
+      sessionID.map {
+        [DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: $0), dataRoot]
+      } ?? [dataRoot]
+    for sourceID in sourceIDs {
+      for root in roots {
+        guard let descriptor = try? SourceMetaStore.read(sourceID: sourceID, dataRoot: root),
+          !descriptor.label.isEmpty
+        else { continue }
+        labels[sourceID.rawValue] = descriptor.label
+        break
+      }
+    }
+    return labels
   }
 
   /// Resolves each session source to a store, logging every consultation.

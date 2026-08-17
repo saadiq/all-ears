@@ -41,18 +41,28 @@ transcript labels remote speech with the raw source id (`app:us.zoom.xos`).
 
 ## Daemon
 
-### MeetingActivityMonitor (EarsCaptureKit)
+### Detection: `EarsCaptureKit` probe + `EarsDaemonKit` orchestration
 
-A new actor behind a protocol seam (`MeetingActivityMonitoring`), consistent
-with the existing hardware seams. For each watched bundle id it:
+As built, this splits across the package boundary the same way every other
+hardware seam does — only `EarsCaptureKit` may touch Core Audio, so the
+polling/orchestration actor cannot live where it touches the HAL directly:
 
-1. Resolves live PIDs via the existing `RunningApplicationTracking`
-   (`EarsCaptureKit/RunningApplicationTracking.swift`).
-2. Listens to the CoreAudio HAL **process objects'** input-running property —
-   "this app is currently using the microphone". This is the same HAL layer
-   `ProcessTapEngine` already uses; reading it needs no new TCC grant.
-3. Debounces raw flaps (`debounce_s`) into **activity episodes** with stable
-   daemon-generated episode ids: `began(source, episode)` / `ended(source)`.
+- **`EarsCaptureKit`** — `AppAudioActivityProbing` is the protocol seam
+  (mirroring the existing hardware seams); `CoreAudioAppActivityProbe` is its
+  one production conformance. It listens to the CoreAudio HAL **process
+  objects'** input-running property — "this app is currently using the
+  microphone" — by enumerating `kAudioHardwarePropertyProcessObjectList` and
+  reading each object's bundle id and `kAudioProcessPropertyIsRunningInput`
+  directly, no PID resolution needed. This is the same HAL layer
+  `ProcessTapEngine` already uses; reading it needs no new TCC grant.
+  `MeetingEpisodeTracker`, also here, is the pure, clock-injected debounce
+  state machine that turns raw per-poll samples into **activity episodes**
+  with stable daemon-generated ids: `began(source, episode)` / `ended(source)`.
+- **`EarsDaemonKit`** — `MeetingActivityMonitor` is the polling orchestration
+  actor, shaped like the existing `EvictionSweeper` pattern (own poll loop,
+  injected clock/sleep): on each ~1s tick it calls the probe for every
+  watched bundle id, feeds the samples through the tracker, and publishes
+  confirmed edges. It never touches Core Audio itself.
 
 The episode/debounce state machine is pure, clock-injected, tier-0 TDD.
 Only the HAL property listener is a shim.
@@ -117,8 +127,12 @@ daemon's episode id:
   matching is pure logic in `EarsMenuKit`**: given fetched events and "now",
   pick an event overlapping now (with slack for early joins and late
   starts), preferring one whose location/notes/URL carries a platform marker
-  (`zoom.us`, `teams.microsoft.com`), else the nearest ongoing event, else
-  none.
+  (`zoom.us`, `teams.microsoft` — matched as a substring, so it also catches
+  `teams.microsoft.com`), else the nearest ongoing event, else none. **All-day
+  rows are excluded outright**, never merely outranked: "PTO", "WFH", a
+  birthday and a week-long conference all span now, so one would be a
+  candidate for every meeting of the day, and on a day with no other event it
+  would win by default.
 - Calendar access is requested **lazily on first prompt accept**.
   `NSCalendarsFullAccessUsageDescription` is added to
   `packaging/ears-menubar.Info.plist`. Denied access or no matching event
@@ -134,16 +148,22 @@ daemon's episode id:
   `zoom-app`, Teams → `teams-app`), else the bundle id.
 - `external_id`: the episode id — makes the start **idempotent**; a menu bar
   restart or double-click cannot create a duplicate session.
-- `title`: from the matched event; omitted when none, preserving
-  `hasDefaultTitle` semantics and the title-precedence rules in
-  `docs/specs/capture-daemon.md`.
 - `sources`: `mic` + the detected `app:*` source, declared explicitly.
 
-Then `session.attendee` upserts for each calendar attendee:
+No `title` at start time: the calendar fetch that would produce one runs
+*after* `session.start` succeeds, so a first-run calendar-access permission
+dialog can never delay the capture the user just asked for. When a matching
+event has a non-empty title, it is applied via a `session.rename` sent
+immediately after start — the daemon's title precedence
+(`docs/specs/capture-daemon.md`) treats a rename exactly like a start-time
+title, so this changes the title away from the default the same way passing
+it at start would have. Then `session.attendee` upserts follow for each
+calendar attendee:
 
 - `display_name` from the event; new **`origin: calendar`**.
-- The user (EventKit marks the current user's attendee): `self: true`,
-  `source: mic`.
+- The user (EventKit marks the current user's attendee): `self: true`, with
+  **no source binding** — binding `mic` would rename the transcript's "You"
+  turns to the user's own name via the reconciled speaker map.
 - All other attendees: **no source binding** — their voices share the mixed
   app stream. They enrich the roster and downstream summaries only.
 
@@ -152,8 +172,8 @@ Then `session.attendee` upserts for each calendar attendee:
 `transcribe`'s `TranscriptAssembly.speakerLabel` currently renders raw
 source ids for anything but `mic`. Fix: `transcribe` reads each source
 descriptor's `meta.toml` `label` and passes it as a fallback map. Precedence
-becomes: reconciled `[[speaker]]` name → descriptor label ("Zoom") →
-`mic` → "You" → raw id. Pure, test-first, and improves today's manual app
+becomes: reconciled `[[speaker]]` name → `mic` → "You" → descriptor label
+("Zoom") → raw id. Pure, test-first, and improves today's manual app
 sessions immediately.
 
 ## Documentation updates (contracts move with the code)
