@@ -239,6 +239,26 @@ struct EventApplicationTests {
     #expect(state.activeMeetings.count == 1)
   }
 
+  @Test("a catch-up issued before a reconnect never lands on the reconnected state")
+  func catchUpFromBeforeAReconnectIsDiscarded() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    // The mark the first connection's catch-up captured before asking `status`.
+    let mark = state.meetingActivityEdits
+    // The socket dropped and redialled before that answer arrived.
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#1")
+      ], ifEditsEqual: mark)
+    #expect(state.meetingActivity.isEmpty)
+  }
+
   @Test("a live edge that lands while a status catch-up is in flight wins over it")
   func liveEdgeDuringCatchUpWins() {
     var state = MenuState()

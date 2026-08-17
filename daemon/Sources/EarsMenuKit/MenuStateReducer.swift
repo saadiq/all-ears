@@ -27,6 +27,12 @@ public enum MenuStateReducer {
     // starting from empty avoids showing a meeting as active off a boot the
     // daemon may not even have made it through.
     state.meetingActivity = []
+    // Clearing *is* an edit, so it invalidates catch-ups the same way a live
+    // edge does. A `status` round trip issued before this reconnect may still
+    // land after the reconnect's own — its answer describes a connection that
+    // is gone, and without this bump its mark would still match and it would
+    // replace the fresh list wholesale.
+    state.meetingActivityEdits += 1
   }
 
   public static func disconnected(_ state: inout MenuState) {

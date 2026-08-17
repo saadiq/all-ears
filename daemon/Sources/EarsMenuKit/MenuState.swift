@@ -15,12 +15,14 @@ public struct MenuState: Sendable, Hashable {
   public var sources: [SourceStatus]
   public var jobs: [JobPublishParams]
   public var meetingActivity: [MeetingActivityStatus]
-  /// Bumped on every ``upsertMeetingActivity(_:)``. A status catch-up in
-  /// flight captures this before it asks the daemon; if a live edge lands
-  /// and bumps it before the catch-up's answer arrives, the catch-up is a
-  /// stale snapshot of a list the live edge has already moved past, and
-  /// ``MenuStateReducer/catchUpMeetingActivity(_:_:ifEditsEqual:)`` discards
-  /// it rather than clobbering the edge.
+  /// Bumped on every edit to ``meetingActivity`` — each
+  /// ``upsertMeetingActivity(_:)`` and the clear in
+  /// ``MenuStateReducer/connected(_:daemon:snapshot:)``. A status catch-up in
+  /// flight captures this before it asks the daemon; if a live edge (or a
+  /// reconnect) lands and bumps it before the catch-up's answer arrives, the
+  /// catch-up is a stale snapshot of a list that has already moved past it,
+  /// and ``MenuStateReducer/catchUpMeetingActivity(_:_:ifEditsEqual:)``
+  /// discards it rather than clobbering the newer state.
   public var meetingActivityEdits: Int
   public var lastRev: Int?
 
