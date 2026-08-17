@@ -143,4 +143,15 @@ struct SessionDescriptorTOMLTests {
     // The rest of the record is untouched by the field's absence.
     #expect(decoded.speakers == Self.referenceSession().speakers)
   }
+
+  @Test("an app-detected trigger survives the session.toml round trip")
+  func appDetectedTriggerRoundTrips() throws {
+    var session = Session(
+      id: "s1", title: "t", state: .active,
+      started: Instant(secondsSinceEpoch: 1_700_000_000),
+      trigger: .appDetected)
+    session.intervals = [SessionInterval(start: session.started)]
+    let decoded = try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(session))
+    #expect(decoded.trigger == .appDetected)
+  }
 }

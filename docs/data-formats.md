@@ -133,7 +133,7 @@ started = "2026-07-19T10:00:00Z"
 ended = "2026-07-19T10:31:00Z"          # "" while active/paused
 transcript_completed = "2026-07-19T10:31:12Z"  # "" until a transcript run succeeds;
                                         #   the marker retention keys off
-trigger = "browser-extension"           # manual | browser-extension
+trigger = "browser-extension"           # manual | browser-extension | app-detected
 sources = ["mic", "browser:meet:t3"]    # source ids are opaque handles: a browser
                                         #   source names a captured track, never a
                                         #   person (see "Roster and speaker map")
