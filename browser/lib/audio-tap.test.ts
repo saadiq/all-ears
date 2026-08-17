@@ -473,6 +473,24 @@ describe("CaptureOrchestrator admission (fakes)", () => {
     expect(h.ofKind("participant-joined")).toHaveLength(0);
   });
 
+  it("an ended track is never re-admitted after its pipeline dies (journal #176)", () => {
+    const h = makeHarness();
+    const track = new FakeSeamTrack("r1");
+    h.registerLive(track);
+    h.init();
+    expect(h.ofType("admitted")).toHaveLength(1);
+
+    // Meeting end: the track ends and the processor construct fails fatally,
+    // tearing the pipeline down. The live registry still holds the track.
+    track.readyState = "ended";
+    h.frameSources.get("r1")!.onFatal("failed to construct processor: Input track cannot be ended");
+
+    // The reconcile sweep re-offers everything in the live registry.
+    h.orchestrator.reconcile();
+    h.sink(track);
+    expect(h.ofType("admitted")).toHaveLength(1); // one admission ever — no crash-readmit loop
+  });
+
   it("a deferred track whose epoch was superseded before unmute never starts", () => {
     const h = makeHarness();
     const track = new FakeSeamTrack("stale");

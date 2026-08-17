@@ -396,7 +396,14 @@ export class CaptureOrchestrator {
       // while we waited. `muted` is false by definition on this edge.
       if (!this.deps.isCurrentEpoch(epoch)) return;
       const seam = this.activeSeam();
-      if (admitReceiverTrack(seam, { muted: false, alreadyCapturing: this.pipelines.has(track) }) !== "start") return;
+      if (
+        admitReceiverTrack(seam, {
+          muted: false,
+          alreadyCapturing: this.pipelines.has(track),
+          ended: track.readyState === "ended",
+        }) !== "start"
+      )
+        return;
       this.startPipeline(track, { seam, rtc: { stream } });
     };
     const onEnded = (): void => {
@@ -424,7 +431,13 @@ export class CaptureOrchestrator {
     if (!this.cfg || !this.deps.isCurrentEpoch(this.cfg.epoch)) return; // a newer epoch owns capture
     const seam = this.activeSeam();
     this.noteTrackAppeared(track, seam);
-    switch (admitReceiverTrack(seam, { muted: track.muted, alreadyCapturing: this.pipelines.has(track) })) {
+    switch (
+      admitReceiverTrack(seam, {
+        muted: track.muted,
+        alreadyCapturing: this.pipelines.has(track),
+        ended: track.readyState === "ended",
+      })
+    ) {
       case "skip":
         return;
       case "defer-until-unmute":
