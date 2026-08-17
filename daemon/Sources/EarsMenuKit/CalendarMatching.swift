@@ -44,19 +44,14 @@ public enum CalendarMatching {
   public static let joinSlackSeconds: Double = 600
 
   public static func marker(forBundleID bundleID: String) -> String? {
-    switch bundleID {
-    case "us.zoom.xos": return "zoom.us"
-    case "com.microsoft.teams2", "com.microsoft.teams": return "teams.microsoft"
-    default: return nil
-    }
+    KnownMeetingApp.matching(bundleID: bundleID)?.linkMarker
   }
 
   public static func best(
     events: [CalendarEventInfo], now: Instant, platformMarker: String?
   ) -> CalendarEventInfo? {
     let candidates = events.filter { event in
-      now.secondsSinceEpoch >= event.start.secondsSinceEpoch - joinSlackSeconds
-        && now.secondsSinceEpoch <= event.end.secondsSinceEpoch
+      now >= event.start.advanced(by: -joinSlackSeconds) && now <= event.end
     }
     guard !candidates.isEmpty else { return nil }
     func markerMatches(_ event: CalendarEventInfo) -> Bool {
@@ -65,8 +60,8 @@ public enum CalendarMatching {
     }
     return candidates.min { lhs, rhs in
       if markerMatches(lhs) != markerMatches(rhs) { return markerMatches(lhs) }
-      let lhsDistance = abs(now.secondsSinceEpoch - lhs.start.secondsSinceEpoch)
-      let rhsDistance = abs(now.secondsSinceEpoch - rhs.start.secondsSinceEpoch)
+      let lhsDistance = abs(now.interval(since: lhs.start))
+      let rhsDistance = abs(now.interval(since: rhs.start))
       if lhsDistance != rhsDistance { return lhsDistance < rhsDistance }
       return lhs.title < rhs.title
     }

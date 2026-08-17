@@ -46,10 +46,6 @@ public enum MeetingPromptPolicy {
 /// The `session.start` platform slug for a detected native-app meeting.
 public enum DetectedSessionIdentity {
   public static func platform(forBundleID bundleID: String) -> String {
-    switch bundleID {
-    case "us.zoom.xos": return "zoom-app"
-    case "com.microsoft.teams2", "com.microsoft.teams": return "teams-app"
-    default: return bundleID
-    }
+    KnownMeetingApp.matching(bundleID: bundleID)?.platformSlug ?? bundleID
   }
 }
