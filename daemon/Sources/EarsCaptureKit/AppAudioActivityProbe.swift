@@ -47,7 +47,12 @@ public struct CoreAudioAppActivityProbe: AppAudioActivityProbing {
       repeating: 0, count: Int(dataSize) / MemoryLayout<AudioObjectID>.size)
     let status = AudioObjectGetPropertyData(
       AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &objects)
-    return status == noErr ? objects : []
+    guard status == noErr else { return [] }
+    // Truncate to what the second call actually wrote: a process that exited
+    // between the size query and the fetch shrinks the list, leaving the tail
+    // of the buffer at its `0` fill — `kAudioObjectUnknown`, which the loop
+    // above would then probe once per poll for properties it can never have.
+    return Array(objects.prefix(Int(dataSize) / MemoryLayout<AudioObjectID>.size))
   }
 
   private func stringProperty(
