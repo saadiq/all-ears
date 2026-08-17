@@ -902,24 +902,32 @@ struct EarsDaemonTests {
       // after ~1s of real time, independent of subscriber readiness.
       detection: DetectionSettings(enabled: true, debounceSeconds: 5, appIdleGraceSeconds: 90))
 
+    let probe = ScriptedProbe([["us.zoom.xos": true]])
     let daemon = try EarsDaemon(
       configuration: configuration,
       backendFactory: { descriptor in
         SyntheticCaptureBackend(source: descriptor.id, buffers: [])
       },
       clock: clock,
-      activityProbe: ScriptedProbe([["us.zoom.xos": true]]))
+      activityProbe: probe)
     try await daemon.start()
 
     let client = try await ControlSocketClient.connect(toPath: socketPath)
     _ = try await client.hello(client: "test/0")
     let (_, events) = try await client.subscribe(SubscribeParams(events: [.meetingActivity]))
     while await daemon.subscriberCountForTesting() == 0 { await Task.yield() }
+    // The poll barrier, not merely the subscriber one: the tracker's pending
+    // sample must be stamped at 1_000 *before* the advance below. If the
+    // monitor's first poll instead landed after it, every poll would measure
+    // the debounce against a clock frozen at 1_010 — interval 0, never past
+    // 5 — and no edge would ever be confirmed, hanging the `for await` below
+    // rather than failing it.
+    await waitUntil { probe.polls >= 1 }
 
     // Only now does advancing the clock let the tracker's still-pending
-    // sample (set by the monitor's first poll, at or before this point) clear
-    // its debounce on the next poll — the barrier above guarantees that poll's
-    // confirmed edge has a registered subscriber to reach.
+    // sample clear its debounce on the next poll — the subscriber barrier
+    // above guarantees that poll's confirmed edge has a registered subscriber
+    // to reach.
     clock.advance(by: 10)
 
     var received: [EarsEvent] = []
