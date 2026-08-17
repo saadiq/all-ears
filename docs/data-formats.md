@@ -323,7 +323,7 @@ The derivation is a pure function of the roster, so it also runs on demand — a
 
 Two independent layers:
 
-1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side; each `browser:<platform>:<track-slug>` source carries exactly one participant's audio, named through the reconciled `[[speaker]]` map. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
+1. **Source-level (implemented):** every segment carries its originating source. `mic` maps to you; each `app:`/`system` source maps to the other side, labelled with the source's `meta.toml` `label` when no reconciled name exists (falling back to the raw source id); each `browser:<platform>:<track-slug>` source carries exactly one participant's audio, named through the reconciled `[[speaker]]` map. Keeping sources separate through capture and transcription is what makes this attribution free and reliable.
 2. **Diarization (offline pass implemented):** an opt-in diarization stage (`[diarize].backend = "sortformer"`) assigns stable `Speaker N` labels within a multi-speaker source, rendered as `<source> · Speaker N` so source attribution stays primary. An optional per-session name map (`Speaker 2` → `Priya`) applied at or after `cleanup`, never mutating timings, remains future work; the live (streaming) pass is a follow-up to the offline pass that ships today.
 
 ## Vocabulary / known-word lists
