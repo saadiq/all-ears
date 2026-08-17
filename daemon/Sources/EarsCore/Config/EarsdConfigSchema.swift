@@ -48,6 +48,11 @@ public enum EarsdConfigSchema {
         "evict_after_transcript_seconds": .int(7200),
         "max_audio_age_seconds": .int(604800),
       ]),
+      "detection": .table([
+        "enabled": .bool(true),
+        "debounce_s": .int(2),
+        "idle_grace_s": .int(90),
+      ]),
       "source": .array([
         .table([
           "id": .string("mic"),
@@ -196,6 +201,29 @@ public enum EarsdConfigSchema {
                 ]
               ),
               description: "Transcript-driven audio retention."),
+            // Native-app meeting detection: watches each configured app:*
+            // source's process audio input and turns it into meeting.activity
+            // telemetry plus the registry's app-idle auto-end policy. See
+            // `MeetingActivityMonitor`.
+            "detection": ConfigSchema.Field(
+              type: .table,
+              children: ConfigSchema(
+                fields: [
+                  "enabled": ConfigSchema.Field(
+                    type: .bool, description: "Master switch for native-app meeting detection."),
+                  "debounce_s": ConfigSchema.Field(
+                    type: .int,
+                    description:
+                      "Seconds an activity sample must persist before an episode edge is confirmed."
+                  ),
+                  "idle_grace_s": ConfigSchema.Field(
+                    type: .int,
+                    description:
+                      "Seconds of continuous inactivity before an app-detected session auto-ends."
+                  ),
+                ]
+              ),
+              description: "Native-app meeting detection."),
             "source": ConfigSchema.Field(
               type: .array, elementSchema: sourceElementSchema,
               description: "Audio sources to capture (mic, system, app:*, device:*)."),

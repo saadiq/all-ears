@@ -89,6 +89,7 @@ enum DaemonConfigResolution {
       : stringArray(sessionsTable, "local_sources").map { SourceID($0) }
 
     let retentionTable = nestedTable(earsd, "retention")
+    let detectionTable = nestedTable(earsd, "detection")
 
     // `[earsd.sessions].on_end_stages`: absent defaults to the full chain; an
     // explicit (possibly empty) list is resolved leniently — invalid entries
@@ -123,6 +124,10 @@ enum DaemonConfigResolution {
       sessionIngestCloseGraceSeconds: Double(
         int(sessionsTable, "ingest_close_grace_s", default: 120)),
       browserSessionLocalSources: browserSessionLocalSources,
+      detection: DetectionSettings(
+        enabled: bool(detectionTable, "enabled", default: true),
+        debounceSeconds: Double(int(detectionTable, "debounce_s", default: 2)),
+        appIdleGraceSeconds: Double(int(detectionTable, "idle_grace_s", default: 90))),
       onEndStages: onEndStages,
       outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath)
     )

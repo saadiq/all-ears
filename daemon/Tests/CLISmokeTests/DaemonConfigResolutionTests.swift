@@ -279,4 +279,26 @@ struct DaemonConfigResolutionTests {
     #expect(result.configuration.onEndStages == [.transcribe])
     #expect(result.warnings.contains { $0.contains("'sumarize'") })
   }
+
+  @Test("[earsd.detection] resolves with defaults and explicit values")
+  func detectionSettingsResolve() {
+    let defaults = DaemonConfigResolution.resolve(
+      config: .table([:]), now: Instant(secondsSinceEpoch: 0))
+    #expect(defaults.configuration.detection.enabled)
+    #expect(defaults.configuration.detection.debounceSeconds == 2)
+    #expect(defaults.configuration.detection.appIdleGraceSeconds == 90)
+
+    let explicit = DaemonConfigResolution.resolve(
+      config: .table([
+        "earsd": .table([
+          "detection": .table([
+            "enabled": .bool(false), "debounce_s": .int(5), "idle_grace_s": .int(30),
+          ])
+        ])
+      ]),
+      now: Instant(secondsSinceEpoch: 0))
+    #expect(!explicit.configuration.detection.enabled)
+    #expect(explicit.configuration.detection.debounceSeconds == 5)
+    #expect(explicit.configuration.detection.appIdleGraceSeconds == 30)
+  }
 }

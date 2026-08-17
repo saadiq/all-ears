@@ -69,6 +69,9 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --session`. Default `["mic"]`; `[]` disables.
   public var browserSessionLocalSources: [SourceID]
+  /// `[earsd.detection]`: native-app meeting detection settings. See
+  /// ``MeetingActivityMonitor``.
+  public var detection: DetectionSettings
   /// `[earsd.sessions].on_end_stages`: the **default** chain, in
   /// ``OnEndStage``'s canonical order, for an ended session whose starter
   /// declared none of its own. Only browser-extension sessions fall back to
@@ -103,6 +106,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     sessionIngestCloseGraceSeconds: Double = 120,
     browserSessionLocalSources: [SourceID] = ["mic"],
+    detection: DetectionSettings = DetectionSettings(),
     onEndStages: [OnEndStage] = [],
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
@@ -121,7 +125,21 @@ public struct EarsDaemonConfiguration: Sendable {
     self.controlWebSocket = controlWebSocket
     self.sessionIngestCloseGraceSeconds = sessionIngestCloseGraceSeconds
     self.browserSessionLocalSources = browserSessionLocalSources
+    self.detection = detection
     self.onEndStages = onEndStages
+  }
+}
+
+/// `[earsd.detection]`: native-app meeting detection. See `MeetingActivityMonitor`.
+public struct DetectionSettings: Sendable {
+  public var enabled: Bool
+  public var debounceSeconds: Double
+  public var appIdleGraceSeconds: Double
+
+  public init(enabled: Bool = true, debounceSeconds: Double = 2, appIdleGraceSeconds: Double = 90) {
+    self.enabled = enabled
+    self.debounceSeconds = debounceSeconds
+    self.appIdleGraceSeconds = appIdleGraceSeconds
   }
 }
 
