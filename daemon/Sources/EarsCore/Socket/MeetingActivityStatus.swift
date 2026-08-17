@@ -19,6 +19,12 @@ public struct MeetingActivityStatus: Sendable, Hashable, Codable {
     self.episode = episode
   }
 
+  /// What to call this meeting in UI. A configured `app:*` source may carry no
+  /// label; the source id is the honest fallback.
+  public var displayLabel: String {
+    label.isEmpty ? source.rawValue : label
+  }
+
   private enum CodingKeys: String, CodingKey {
     case source, label, active, episode
     case bundleID = "bundle_id"

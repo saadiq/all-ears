@@ -29,7 +29,7 @@ public enum MeetingPromptPolicy {
     return state.activeMeetings
       .filter { !alreadyPrompted.contains($0.episode) }
       .map { activity in
-        let label = activity.label.isEmpty ? activity.source.rawValue : activity.label
+        let label = activity.displayLabel
         return MeetingPrompt(
           source: activity.source,
           episode: activity.episode,

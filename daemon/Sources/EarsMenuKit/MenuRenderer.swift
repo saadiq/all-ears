@@ -51,7 +51,7 @@ public enum MenuRenderer {
       let offers = state.activeMeetings.map { activity in
         Verb.startDetected(
           source: activity.source.rawValue, episode: activity.episode,
-          label: activity.label.isEmpty ? activity.source.rawValue : activity.label)
+          label: activity.displayLabel)
       }
       return offers + [.startRecording]
     }
