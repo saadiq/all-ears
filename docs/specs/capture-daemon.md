@@ -118,6 +118,8 @@ Browser audio does **not** flow over the control transports — it uses a dedica
 
 The optional `session` field carries the session identity (`session.start`'s idempotency key: the platform plus the platform's own meeting id) the source belongs to. The daemon links the source into that live session's `sources` itself — stashing the link until the `session.start` lands, if the open raced ahead of it — so the ingest-idle grace policy holds even when the extension's own `session.attendee` source upserts never arrive (an MV3 service worker respawned mid-call has no session state to upsert from). The client's attendee upserts remain the enrichment path (attributing a source to a named attendee); the tag is the membership path. Untagged opens behave exactly as before.
 
+`app-detected` sessions (a native-app meeting the menu bar's detect-and-prompt flow started) mirror the ingest-idle grace with their own auto-end: once every `app:*` source the session names has gone quiet — no reported audio activity — for `[earsd.detection] idle_grace_s` (default 90 s), the daemon ends it with `reason = "app-idle"`. A session that starts (or is resumed at daemon boot) with none of its `app:*` sources currently active arms the grace immediately rather than waiting for an activity drop it will never see, so an accept that races the meeting's own end still converges to `ended`. As with ingest-idle, activity resuming inside the grace window cancels it. Manual sessions are never auto-ended by either policy: the daemon records, it doesn't decide.
+
 Audio is one binary frame per PCM chunk, multiplexed by `stream_id`. Two shapes, discriminated by the first byte:
 
 ```
