@@ -164,10 +164,10 @@ source = "browser:meet:t3"              # optional link to the source carrying
                                         #   link — how a name reaches a track)
 origin = "platform"                     # where `id` was minted: "platform" (the
                                         #   platform's own id) | "synthetic" (a
-                                        #   capture track handle like t3 that
-                                        #   names a track, not a person); "" or
-                                        #   absent = unknown (files from before
-                                        #   the field existed)
+                                        #   capture track handle) | "calendar"
+                                        #   (a roster copy from a matched event);
+                                        #   "" or absent = unknown (files from
+                                        #   before the field existed)
 self = false                            # true on the local participant — you
 
 [[speaker]]                             # the *reconciled* source → name map,

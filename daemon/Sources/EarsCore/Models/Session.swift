@@ -204,6 +204,11 @@ public enum AttendeeOrigin: String, Sendable, Hashable, Codable, CaseIterable {
   /// A capture-client stand-in minted when no platform id was available
   /// (`speaker-<n>`, `webaudio-track-<n>`, `graphtap-<n>`).
   case synthetic
+  /// An attendee copied from a matched calendar event — a person invited to
+  /// the meeting, not necessarily one who spoke. Roster/summary enrichment
+  /// only: calendar rows carry no source binding, and reconciliation treats
+  /// them as named people (never as track stand-ins like ``synthetic``).
+  case calendar
 }
 
 /// One roster entry, with join/leave times and an optional mapping to the

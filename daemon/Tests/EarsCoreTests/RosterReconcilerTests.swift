@@ -314,6 +314,26 @@ struct RosterReconcilerTests {
     #expect(RosterReconciler.derivedTitle(attendees: attendees, localAttendeeID: "me") == "Ana")
   }
 
+  @Test("calendar attendees count as named people and produce no speaker bindings for app sessions")
+  func calendarAttendeesAreRosterOnly() {
+    let outcome = RosterReconciler.reconcile(
+      attendees: [
+        SessionAttendee(id: "calendar-0", displayName: "Saadiq", origin: .calendar, isLocal: true),
+        SessionAttendee(id: "calendar-1", displayName: "Priya", origin: .calendar),
+      ],
+      sources: [SourceID("mic"), SourceID("app:us.zoom.xos")],
+      sessionStart: Self.start)
+
+    #expect(outcome.speakers.isEmpty)
+    let title = RosterReconciler.derivedTitle(
+      attendees: [
+        SessionAttendee(id: "calendar-0", displayName: "Saadiq", origin: .calendar, isLocal: true),
+        SessionAttendee(id: "calendar-1", displayName: "Priya", origin: .calendar),
+      ],
+      localAttendeeID: "calendar-0")
+    #expect(title?.contains("Priya") == true)
+  }
+
   @Test("excluding synthetic rows from counting is a new derivation — the version says so")
   func countingChangeBumpedTheVersion() {
     // The same roster can now produce a different map (the two tests above),

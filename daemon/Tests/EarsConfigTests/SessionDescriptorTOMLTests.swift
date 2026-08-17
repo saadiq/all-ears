@@ -154,4 +154,16 @@ struct SessionDescriptorTOMLTests {
     let decoded = try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(session))
     #expect(decoded.trigger == .appDetected)
   }
+
+  @Test("a calendar-origin attendee survives the session.toml round trip")
+  func calendarOriginRoundTrips() throws {
+    var session = Session(
+      id: "s1", title: "t", state: .active,
+      started: Instant(secondsSinceEpoch: 1_700_000_000))
+    session.attendees = [
+      SessionAttendee(id: "calendar-0", displayName: "Priya", origin: .calendar)
+    ]
+    let decoded = try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(session))
+    #expect(decoded.attendees.first?.origin == .calendar)
+  }
 }
