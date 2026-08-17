@@ -879,6 +879,60 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
+  // MARK: - Native-app meeting detection
+
+  @Test("meeting activity reaches a real-socket subscriber and the status snapshot")
+  func meetingActivityOverTheSocket() async throws {
+    let dataRoot = try makeDataRoot()
+    let socketPath = tempSocketPath()
+    let clock = ManualClock(Instant(secondsSinceEpoch: 1_000))
+
+    var zoomDescriptor = makeDescriptor(id: "app:us.zoom.xos", sourceClass: .app)
+    zoomDescriptor.label = "Zoom"
+    let configuration = EarsDaemonConfiguration(
+      sources: [zoomDescriptor],
+      dataRoot: dataRoot,
+      socketPath: socketPath,
+      detection: DetectionSettings(enabled: true, debounceSeconds: 0, appIdleGraceSeconds: 90))
+
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in
+        SyntheticCaptureBackend(source: descriptor.id, buffers: [])
+      },
+      clock: clock,
+      activityProbe: ScriptedProbe([["us.zoom.xos": true]]))
+    try await daemon.start()
+
+    let client = try await ControlSocketClient.connect(toPath: socketPath)
+    _ = try await client.hello(client: "test/0")
+    let (_, events) = try await client.subscribe(SubscribeParams(events: [.meetingActivity]))
+
+    var received: [EarsEvent] = []
+    for await frame in events {
+      received.append(frame.event)
+      break
+    }
+    #expect(
+      received == [
+        .meetingActivity(
+          MeetingActivityStatus(
+            source: "app:us.zoom.xos", bundleID: "us.zoom.xos", label: "Zoom", active: true,
+            episode: "us.zoom.xos#1"))
+      ])
+
+    let status = try await client.send(.status, expecting: StatusData.self)
+    #expect(
+      status.meetingActivity == [
+        MeetingActivityStatus(
+          source: "app:us.zoom.xos", bundleID: "us.zoom.xos", label: "Zoom", active: true,
+          episode: "us.zoom.xos#1")
+      ])
+
+    await client.close()
+    await daemon.stop()
+  }
+
   @Test("ears status can never show two active sessions: a second start supersedes the first")
   func statusShowsSingleActiveSessionAfterSupersede() async throws {
     let dataRoot = try makeDataRoot()

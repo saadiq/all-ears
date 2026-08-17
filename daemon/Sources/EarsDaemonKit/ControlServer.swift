@@ -42,6 +42,11 @@ public actor ControlServer {
   /// and `subscribe` snapshots read its revision. `nil` drops publishes and
   /// snapshots at rev 0.
   private let bus: EventBus?
+  /// Reads the ``MeetingActivityMonitor``'s current snapshot for `status`'s
+  /// `meeting_activity` list — a closure rather than a direct reference so a
+  /// caller with no monitor (no probe injected, detection disabled, or no
+  /// `app:*` sources) just returns `[]`.
+  private let meetingActivity: @Sendable () async -> [MeetingActivityStatus]
 
   public init(
     captureActors: [SourceID: CaptureActor],
@@ -49,7 +54,8 @@ public actor ControlServer {
     startInstant: Instant,
     clock: any NowProviding = SystemClock(),
     bus: EventBus? = nil,
-    sessions: SessionRegistry? = nil
+    sessions: SessionRegistry? = nil,
+    meetingActivity: @escaping @Sendable () async -> [MeetingActivityStatus] = { [] }
   ) {
     self.captureActors = captureActors
     self.sessions = sessions
@@ -57,6 +63,7 @@ public actor ControlServer {
     self.startInstant = startInstant
     self.clock = clock
     self.bus = bus
+    self.meetingActivity = meetingActivity
   }
 
   /// The `@Sendable` closure to hand both transports as their handler.
@@ -156,7 +163,8 @@ public actor ControlServer {
       result: StatusData(
         uptimeSeconds: uptime,
         sources: await sourceStatuses(),
-        sessions: liveSessions))
+        sessions: liveSessions,
+        meetingActivity: await meetingActivity()))
   }
 
   /// Builds the `subscribe` snapshot. The revision is read *before* the

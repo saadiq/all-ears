@@ -9,10 +9,10 @@ import EarsCore
 /// - **State frames** (`session`, `source`) are always delivered
 ///   to every subscriber — unconditional delivery is what keeps `rev`
 ///   contiguous — so neither filter list applies to them.
-/// - **Telemetry frames** (`vad`, `segment`, `job`) pass the `events` filter
-///   (empty matches every kind) and, for *sourced* telemetry (`vad`), the
-///   `sources` filter (empty matches every source; sourceless telemetry
-///   always passes it).
+/// - **Telemetry frames** (`vad`, `segment`, `job`, `meetingActivity`) pass
+///   the `events` filter (empty matches every kind) and, for *sourced*
+///   telemetry (`vad`, `meetingActivity`), the `sources` filter (empty
+///   matches every source; sourceless telemetry always passes it).
 public enum EventFilter {
   public static func matches(_ frame: EventFrame, _ subscription: SubscribeParams) -> Bool {
     let event = frame.event
