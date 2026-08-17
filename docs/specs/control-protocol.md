@@ -158,7 +158,9 @@ Semantics:
   a track, not a person), or `calendar` (a roster row copied in by the menu bar app from a
   matched calendar event — enrichment only, carrying no source binding of its own). Absent
   means unknown (old clients, old files); an upsert that omits it leaves the stored value
-  untouched. Reconciliation counts only platform-origin rows as named remote participants.
+  untouched. Reconciliation excludes only `synthetic` rows from the named-remote-participant
+  count — a synthetic row names a captured track, not a person; `platform` and `calendar` rows
+  both count, as do rows with unknown origin (old clients, old files).
 - **Post-processing is declared at `session.start`, not inferred.** The optional `on_end_stages`
   names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
   `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at
