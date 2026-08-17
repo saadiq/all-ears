@@ -246,6 +246,8 @@ public struct SessionArtifacts: Sendable, Equatable {
   public var speechCaptures: Set<String> = []
   /// Whether `sessions/<id>/transcript.md` exists.
   public var transcriptExists = false
+  /// Its absolute path, when it exists — carried for the `--json` view.
+  public var transcriptPath: String?
   /// Turn count parsed from the transcript, when it parsed.
   public var transcriptSegments: Int?
   /// `word_count` from the transcript's frontmatter, when it parsed.
