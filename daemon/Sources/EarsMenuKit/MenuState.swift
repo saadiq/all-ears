@@ -14,6 +14,7 @@ public struct MenuState: Sendable, Hashable {
   public var sessions: [Session]
   public var sources: [SourceStatus]
   public var jobs: [JobPublishParams]
+  public var meetingActivity: [MeetingActivityStatus]
   public var lastRev: Int?
 
   public init() {
@@ -22,6 +23,7 @@ public struct MenuState: Sendable, Hashable {
     sessions = []
     sources = []
     jobs = []
+    meetingActivity = []
     lastRev = nil
   }
 
@@ -33,6 +35,9 @@ public struct MenuState: Sendable, Hashable {
   }
   public var failedJobs: [JobPublishParams] {
     jobs.filter { $0.state == .failed }
+  }
+  public var activeMeetings: [MeetingActivityStatus] {
+    meetingActivity.filter(\.active)
   }
 }
 
@@ -50,6 +55,14 @@ extension MenuState {
       sources[index].state = newState
     } else {
       sources.append(SourceStatus(id: id, state: newState, codec: ""))
+    }
+  }
+
+  mutating func upsertMeetingActivity(_ status: MeetingActivityStatus) {
+    if let index = meetingActivity.firstIndex(where: { $0.source == status.source }) {
+      meetingActivity[index] = status
+    } else {
+      meetingActivity.append(status)
     }
   }
 }

@@ -23,6 +23,10 @@ public enum MenuStateReducer {
     state.sources = snapshot.sources
     state.lastRev = snapshot.rev
     state.jobs.removeAll { $0.state != .failed }
+    // Not part of the snapshot: a reconnect's status catch-up refills it, so
+    // starting from empty avoids showing a meeting as active off a boot the
+    // daemon may not even have made it through.
+    state.meetingActivity = []
   }
 
   public static func disconnected(_ state: inout MenuState) {
@@ -50,13 +54,24 @@ public enum MenuStateReducer {
     case .job(let params):
       upsertJob(&state, params)
       return .applied
-    case .vad, .segment, .meetingActivity:
+    case .meetingActivity(let status):
+      state.upsertMeetingActivity(status)
+      return .applied
+    case .vad, .segment:
       return .applied
     }
   }
 
   public static func dismissJob(_ state: inout MenuState, id: String) {
     state.jobs.removeAll { $0.job == id }
+  }
+
+  /// `status`'s `meeting_activity` list, applied wholesale — the catch-up a
+  /// freshly connected client does instead of waiting for the next edge.
+  public static func catchUpMeetingActivity(
+    _ state: inout MenuState, _ list: [MeetingActivityStatus]
+  ) {
+    state.meetingActivity = list
   }
 
   private static func applyState(

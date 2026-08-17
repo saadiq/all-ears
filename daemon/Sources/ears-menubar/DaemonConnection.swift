@@ -40,7 +40,8 @@ actor DaemonConnection {
         let dialled = try await ControlSocketClient.connect(toPath: socketPath)
         pending = dialled
         let hello = try await dialled.hello(client: "menubar/0.1.0")
-        let (snapshot, frames) = try await dialled.subscribe(SubscribeParams(events: [.job]))
+        let (snapshot, frames) = try await dialled.subscribe(
+          SubscribeParams(events: [.job, .meetingActivity]))
         guard generation == mine else {
           // A bounce() landed mid-dial and already owns a newer generation;
           // abandon this connection instead of adopting it as `client`.
@@ -112,5 +113,20 @@ actor DaemonConnection {
   func status() async -> StatusData? {
     guard let client else { return nil }
     return try? await client.send(.status, expecting: StatusData.self)
+  }
+
+  /// `session.start`, decoding the full session result — the menu needs the
+  /// daemon-assigned id back to upsert calendar attendees against it.
+  func startSession(_ params: SessionStartParams) async -> Result<Session, WireError> {
+    guard let client else {
+      return .failure(WireError(code: .internalError, message: "not connected to earsd"))
+    }
+    do {
+      return .success(try await client.send(.sessionStart(params), expecting: Session.self))
+    } catch let error as WireError {
+      return .failure(error)
+    } catch {
+      return .failure(WireError(code: .internalError, message: "\(error)"))
+    }
   }
 }

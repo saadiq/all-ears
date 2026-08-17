@@ -200,4 +200,42 @@ struct EventApplicationTests {
     #expect(state.sessions.isEmpty)
     #expect(state.lastRev == nil)
   }
+
+  @Test("meeting.activity telemetry upserts by source and applies without a rev")
+  func meetingActivityUpserts() {
+    var state = MenuState()
+    state.connection = .connected
+    state.lastRev = 1
+    let began = MeetingActivityStatus(
+      source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+      label: "Zoom", active: true, episode: "us.zoom.xos#1")
+    #expect(MenuStateReducer.apply(&state, EventFrame(event: .meetingActivity(began))) == .applied)
+    #expect(state.activeMeetings == [began])
+    var ended = began
+    ended.active = false
+    _ = MenuStateReducer.apply(&state, EventFrame(event: .meetingActivity(ended)))
+    #expect(state.activeMeetings.isEmpty)
+    #expect(state.meetingActivity == [ended])
+  }
+
+  @Test("reconnect clears stale activity until status catches up")
+  func reconnectClearsActivity() {
+    var state = MenuState()
+    state.meetingActivity = [
+      MeetingActivityStatus(
+        source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+        label: "Zoom", active: true, episode: "us.zoom.xos#1")
+    ]
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    #expect(state.meetingActivity.isEmpty)
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#2")
+      ])
+    #expect(state.activeMeetings.count == 1)
+  }
 }

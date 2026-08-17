@@ -81,9 +81,12 @@ import os
       case .ready(let daemon, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
         actionError = nil
-        // Re-anchored on every (re)connect, so a restarted daemon's uptime
-        // restarts with it instead of counting from the old process.
-        anchorUptime(connection)
+        // Re-fetched on every (re)connect, so a restarted daemon's uptime
+        // restarts with it instead of counting from the old process, and so
+        // `meetingActivity` — cleared by `connected()` because it isn't part
+        // of the snapshot — is refilled instead of sitting empty until the
+        // next edge.
+        catchUpStatus(connection)
       case .event(let frame):
         switch MenuStateReducer.apply(&state, frame) {
         case .gap:
@@ -242,7 +245,10 @@ import os
   }
 
   /// Re-anchors the Daemon submenu's uptime against the process now on the
-  /// other end of the socket.
+  /// other end of the socket, and replays `status`'s `meeting_activity` list
+  /// into `state` — the catch-up a freshly (re)connected client needs because
+  /// `connected()` cleared it and telemetry only carries the next edge, not
+  /// a snapshot.
   ///
   /// Clears the anchor when the `status` round-trip fails instead of leaving
   /// the previous one: it belongs to a *different* process, so keeping it made
@@ -250,11 +256,16 @@ import os
   /// that started thirty seconds ago, telling a user who just clicked Restart
   /// Daemon that nothing happened. No anchor renders the bare version line,
   /// which claims nothing.
-  private func anchorUptime(_ connection: DaemonConnection) {
+  private func catchUpStatus(_ connection: DaemonConnection) {
     Task { [weak self] in
-      let seconds = await connection.status()?.uptimeSeconds
+      let status = await connection.status()
       guard let self else { return }
-      self.uptime = seconds.map { DaemonUptime(reported: Double($0), anchor: Self.now()) }
+      self.uptime = status.map {
+        DaemonUptime(reported: Double($0.uptimeSeconds), anchor: Self.now())
+      }
+      if let status {
+        MenuStateReducer.catchUpMeetingActivity(&self.state, status.meetingActivity)
+      }
       self.rerender()
     }
   }
