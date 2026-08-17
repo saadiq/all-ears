@@ -22,12 +22,16 @@ public struct CoreAudioAppActivityProbe: AppAudioActivityProbing {
     var result: [String: Bool] = [:]
     for id in bundleIDs { result[id] = false }
     for object in processObjectList() {
-      guard let bundle = stringProperty(object, kAudioProcessPropertyBundleID),
+      // The input-running flag first: it is a bare `UInt32` read, where the
+      // bundle id allocates and hands back a CFString. This loop runs over
+      // *every* process the HAL knows, once a second, for the life of the
+      // daemon — and all but the handful actually recording answer `0` here,
+      // so testing it first skips the string for nearly all of them.
+      guard uint32Property(object, kAudioProcessPropertyIsRunningInput) == 1,
+        let bundle = stringProperty(object, kAudioProcessPropertyBundleID),
         bundleIDs.contains(bundle)
       else { continue }
-      if uint32Property(object, kAudioProcessPropertyIsRunningInput) == 1 {
-        result[bundle] = true
-      }
+      result[bundle] = true
     }
     return result
   }
