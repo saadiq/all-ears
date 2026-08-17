@@ -314,7 +314,14 @@ private final class FollowRun {
     self.sessionTitle = sessionTitle
     self.asrSampleRate = asrSampleRate
     self.streaming = streaming
-    self.speaker = TranscriptAssembly.speakerLabel(for: sourceID)
+    // The same descriptor-label fallback the batch pass resolves, so a live
+    // `segment` event and the transcript written at the end of the very same
+    // session never disagree about who is speaking — one would say `Zoom`
+    // and the other `app:us.zoom.xos`.
+    self.speaker = TranscriptAssembly.speakerLabel(
+      for: sourceID,
+      sourceLabels: TranscribePipeline.sourceLabels(
+        sourceIDs: [sourceID], sessionID: sessionID, dataRoot: dataRoot))
     self.paths = paths
 
     let followStart = dependencies.clock.now()
