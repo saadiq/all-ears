@@ -24,7 +24,7 @@ public enum RecentsRefreshPolicy {
       return session.state == .ended
     case .job(let job):
       return job.state == .done || job.state == .failed
-    case .source, .vad, .segment:
+    case .source, .vad, .segment, .meetingActivity:
       return false
     }
   }

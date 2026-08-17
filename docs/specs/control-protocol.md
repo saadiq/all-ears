@@ -201,7 +201,7 @@ Grouped by capability. All carried in the v2 envelope.
 | Capability | Method | Params → result |
 |---|---|---|
 | — | `hello` | see [Handshake](#handshake) |
-| `observe` | `status` | → `{uptime_s, sources, sessions}` — daemon + per-source state, active sessions |
+| `observe` | `status` | → `{uptime_s, sources, sessions, meeting_activity?}` — daemon + per-source state, active sessions, watched-app meeting activity (omitted when none) |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
 | `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing"; a chain naming a stage the daemon cannot run → `invalid_request`. A re-declare that names a chain replaces the stored one |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
@@ -238,6 +238,7 @@ plus one counter.
 {"event": "vad",     "params": {"source": "mic", "state": "speech", "t": "…"}}
 {"event": "segment", "params": {"session": "0d5e…", "speaker": "You", "start": 604.1, "end": 611.9, "text": "…"}}
 {"event": "job",     "params": {"job": "j3", "kind": "transcribe", "session": "0d5e…", "state": "running"}}
+{"event": "meeting.activity", "params": {"source": "app:us.zoom.xos", "bundle_id": "us.zoom.xos", "label": "Zoom", "active": true, "episode": "us.zoom.xos#1"}}
 ```
 
 Client rule: apply a state notification iff `rev == last_rev + 1`; on a gap, resubscribe (fresh
@@ -247,8 +248,10 @@ therefore be fully stateless: everything it needs to render or resume comes back
 - **Two event classes.** *State* events (`session`, `source`) mutate the synced state,
   carry `rev`, and are **always delivered** to every subscriber — they're low-frequency, and
   unconditional delivery is what keeps `rev` contiguous. *Telemetry* events (`vad`, `segment`,
-  `job`) are fire-and-forget, carry **no** `rev`, never participate in gap detection, and are the
-  kinds `params.events`/`params.sources` filter.
+  `job`, `meeting.activity`) are fire-and-forget, carry **no** `rev`, never participate in gap
+  detection, and are the kinds `params.events`/`params.sources` filter. `meeting.activity`
+  reports one watched `app:*` source's meeting-audio activity (`bundle_id`, `label`, `active`,
+  `episode`) and, like `vad`, is filterable by `params.sources`.
 - **Subscribing is not terminal.** With correlation IDs, a subscribed connection may keep
   issuing requests; one connection per frontend suffices.
 - Late subscribers get the snapshot, not history. Durable history lives on disk

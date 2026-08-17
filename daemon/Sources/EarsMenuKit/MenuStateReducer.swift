@@ -50,7 +50,7 @@ public enum MenuStateReducer {
     case .job(let params):
       upsertJob(&state, params)
       return .applied
-    case .vad, .segment:
+    case .vad, .segment, .meetingActivity:
       return .applied
     }
   }

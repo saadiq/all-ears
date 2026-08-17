@@ -7,6 +7,7 @@
 /// {"event":"vad","params":{"source":"mic","state":"speech","t":"…"}}
 /// {"event":"segment","params":{"session":"…","speaker":"You","start":604.1,"end":611.9,"text":"…"}}
 /// {"event":"job","params":{"job":"j3","kind":"transcribe","session":"0d5e…","state":"running"}}
+/// {"event":"meeting.activity","params":{"source":"app:us.zoom.xos","bundle_id":"us.zoom.xos","label":"Zoom","active":true,"episode":"us.zoom.xos#1"}}
 /// ```
 public enum EarsEvent: Sendable, Hashable {
   /// A VAD state change on `source` at wall-clock instant `t` (telemetry).
@@ -19,6 +20,8 @@ public enum EarsEvent: Sendable, Hashable {
   case source(id: SourceID, state: SourceRuntimeState)
   /// Pipeline job progress republished from `job.publish` (telemetry).
   case job(JobPublishParams)
+  /// A watched `app:*` source's meeting-audio activity changed (telemetry).
+  case meetingActivity(MeetingActivityStatus)
 
   /// The wire discriminator this event is delivered under.
   public var kind: EventKind {
@@ -28,15 +31,17 @@ public enum EarsEvent: Sendable, Hashable {
     case .session: .session
     case .source: .source
     case .job: .job
+    case .meetingActivity: .meetingActivity
     }
   }
 
   /// The ``SourceID`` this event pertains to, for subscription source
-  /// filtering. Only telemetry `vad` events are sourced; everything else
-  /// always passes a source filter.
+  /// filtering. Only telemetry `vad` and `meetingActivity` events are
+  /// sourced; everything else always passes a source filter.
   public var filterSource: SourceID? {
     switch self {
     case .vad(let source, _, _): source
+    case .meetingActivity(let status): status.source
     default: nil
     }
   }
@@ -89,6 +94,8 @@ extension EventFrame: Codable {
         state: try params.decode(SourceRuntimeState.self, forKey: .state))
     case .job:
       event = .job(try container.decode(JobPublishParams.self, forKey: .params))
+    case .meetingActivity:
+      event = .meetingActivity(try container.decode(MeetingActivityStatus.self, forKey: .params))
     }
   }
 
@@ -113,6 +120,8 @@ extension EventFrame: Codable {
       try params.encode(state, forKey: .state)
     case .job(let job):
       try container.encode(job, forKey: .params)
+    case .meetingActivity(let status):
+      try container.encode(status, forKey: .params)
     }
   }
 }

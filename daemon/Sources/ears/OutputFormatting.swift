@@ -122,6 +122,9 @@ enum OutputFormatting {
     case .job(let job):
       let target = job.session.map { " session=\($0)" } ?? ""
       return "[job] \(job.job) \(job.kind)\(target) \(job.state.rawValue)"
+    case .meetingActivity(let status):
+      return
+        "[meeting] \(status.source.rawValue) \(status.label) active=\(status.active) episode=\(status.episode)"
     }
   }
 }
