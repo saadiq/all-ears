@@ -265,6 +265,55 @@ export function findLocalDeviceId(doc: DocumentLike): string | undefined {
   return marked.size === 1 ? [...marked][0] : undefined;
 }
 
+/**
+ * Material-icon ligature names rendered only inside the LOCAL participant's
+ * grid tile — the self-only controls (Reframe → `frame_person`, Backgrounds
+ * and effects → `visual_effects`). Ligatures are icon-font identifiers, not
+ * UI copy: they read "frame_person" in every locale, which is exactly what
+ * the "(You)" marker is not (journal #158's non-English fail-open). Verified
+ * live on a two-device call whose participants shared one display name, with
+ * cameras off and no pointer interaction — the icons are persistent chrome of
+ * the mounted self tile, not hover-minted. The tile subtree itself mounts and
+ * unmounts with Meet's layout (at times NO grid tile carries a participant
+ * id); the engine's first-read latch absorbs that transience (journal #178).
+ */
+export const SELF_TILE_ICON_NAMES: ReadonlySet<string> = new Set(["frame_person", "visual_effects"]);
+
+/**
+ * Second self signal: the device id of the tile carrying a self-only control
+ * icon. Same fail-closed contract as ``findLocalDeviceId`` — exactly one
+ * device may match. Unlike the "(You)" marker this needs no People-panel
+ * mount (journal #176 finding 3: the panel listitems do not exist until the
+ * panel has been opened once) and no English UI.
+ */
+export function findLocalDeviceIdByTileIcons(doc: DocumentLike): string | undefined {
+  const marked = new Set<string>();
+  for (const tile of doc.querySelectorAll(TILE_SELECTOR)) {
+    const id = extractParticipantId(tile);
+    if (!id) continue;
+    for (const icon of tile.querySelectorAll?.("i") ?? []) {
+      if (SELF_TILE_ICON_NAMES.has((icon.textContent ?? "").trim())) {
+        marked.add(id);
+        break;
+      }
+    }
+  }
+  return marked.size === 1 ? [...marked][0] : undefined;
+}
+
+/**
+ * The local device id from every available signal, fail-closed: when the
+ * "(You)" marker and the self-tile icons disagree, neither is trusted —
+ * excluding the wrong device silences a real participant, the same doctrine
+ * as each signal's own exactly-one rule.
+ */
+export function resolveLocalDeviceId(doc: DocumentLike): string | undefined {
+  const marker = findLocalDeviceId(doc);
+  const icons = findLocalDeviceIdByTileIcons(doc);
+  if (marker !== undefined && icons !== undefined && marker !== icons) return undefined;
+  return marker ?? icons;
+}
+
 /** Climb from a media element to the nearest ancestor carrying a participant id. */
 export function findParticipantTile(el: ElementLike): ElementLike | null {
   for (let node: ElementLike | null = el; node; node = node.parentElement) {
@@ -521,9 +570,10 @@ export class MeetAdapter implements PlatformAdapter {
           // MUST-NOT #13: a build or locale that never renders the marker must
           // not look like working code.
           console.warn(
-            `[ears][identity] Meet roster has ${decision.namedCount} named participant(s) but no "(You)" marker on any tile — ` +
-              `the local participant cannot be identified, so identity correlation may attribute a remote track to the local user ` +
-              `(journal #158). Most likely a non-English Meet UI; see lib/identity/meet.ts SELF_MARKER.`,
+            `[ears][identity] Meet roster has ${decision.namedCount} named participant(s) but no self signal — ` +
+              `neither the "(You)" marker nor a self-tile control icon identifies the local participant, so identity ` +
+              `correlation may attribute a remote track to the local user (journal #158, #178). ` +
+              `See lib/identity/meet.ts SELF_MARKER and SELF_TILE_ICON_NAMES.`,
           );
           break;
       }
@@ -690,7 +740,7 @@ export class MeetAdapter implements PlatformAdapter {
       const name = extractDisplayName(tile);
       if (name) named.push({ deviceId: id, displayName: name });
     }
-    const local = this.engine.localDevice === undefined ? findLocalDeviceId(document) : undefined;
+    const local = this.engine.localDevice === undefined ? resolveLocalDeviceId(document) : undefined;
     this.dispatch(this.engine.rosterObserved(named, local, at));
   }
 
