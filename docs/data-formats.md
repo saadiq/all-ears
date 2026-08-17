@@ -180,7 +180,7 @@ confidence = "correlated"               # correlated | inferred
 reconciliation could not resolve or resolved by inference. It travels into the
 transcript's frontmatter and from there into the note itself.
 
-`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, `capture_failed` (a browser source's capture died mid-call — carries `source` and the client's stated `reason`, so a gap in the audio is attributable rather than reading as silence), and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the orphan grace timer), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
+`events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, `capture_failed` (a browser source's capture died mid-call — carries `source` and the client's stated `reason`, so a gap in the audio is attributable rather than reading as silence), and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the browser orphan grace timer), `"app-idle"` (the app-detected mirror of it — every configured `app:*` source went quiet past grace), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
 Tools reject a `schema` other than 3 rather than guessing — which is exactly how the legacy schema-1 and schema-2 descriptors (above) stay inert on disk.
 

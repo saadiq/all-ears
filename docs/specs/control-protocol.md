@@ -305,13 +305,26 @@ service worker gone for good. Policy, split by session kind:
   period is what distinguishes a worker respawn or network blip (streams re-open, nothing
   happens) from a real departure. The `ended` line in `events.jsonl` records
   `reason = "ingest-idle"` (vs `"client"` for an explicit `session.end`).
-- **Manual sessions** (no ingest streams to observe): **never auto-ended** — the daemon records,
-  it doesn't decide. `session.end` is required; `ears session list` surfaces stale ones.
+- **App-detected sessions** (`trigger = "app-detected"`, started from the menu bar's
+  detect-and-prompt flow): mirrors the browser policy off audio activity instead of ingest
+  streams. The daemon's meeting-activity monitor reports each configured `app:*` source's
+  activity to `SessionRegistry.appAudioActivity(source:active:)`; once **every** `app:*` source
+  the session names has been reported inactive continuously for `[earsd.detection] idle_grace_s`
+  (default 90 s), the daemon closes the open interval and ends the session with
+  `reason = "app-idle"`. Activity resuming on any of those sources within the grace window
+  cancels the pending expiry, exactly as a re-opened ingest stream does for a browser session. A
+  session that starts (or resumes at boot) with no `app:*` source currently reporting active
+  arms the grace immediately rather than waiting for an activity drop that will never come.
+- **Manual sessions** (no ingest streams or app-audio activity to observe): **never auto-ended**
+  — the daemon records, it doesn't decide. `session.end` is required; `ears session list`
+  surfaces stale ones.
 
 On daemon restart, `active`/`paused` sessions reload from `session.toml`; at most one is chosen
 to resume (the single-active-session invariant), and any others found live on disk are swept
 through the normal end pipeline with `reason = "orphaned"` so their audio isn't stranded. A
-resumed browser session whose streams don't return starts its grace clock from daemon boot.
+resumed browser session whose streams don't return starts its ingest-idle grace clock from
+daemon boot; a resumed app-detected session starts its app-idle grace clock the same way, and
+the activity monitor's next poll cancels it if the meeting is genuinely still live.
 
 ## Failure model
 
@@ -332,8 +345,11 @@ resumed browser session whose streams don't return starts its grace clock from d
 - `browser/dev/stub-server.ts` speaks v2 for extension tests.
 - Daemon tests: idempotent `session.start`; pause/resume interval bookkeeping (capture provably
   untouched); restart recovery of an active session; orphan grace timer (streams closed → grace
-  elapses → ended with `reason="ingest-idle"`; re-open within grace → still active); snapshot +
-  `rev` gap detection with telemetry kinds filtered; per-transport capability enforcement.
+  elapses → ended with `reason="ingest-idle"`; re-open within grace → still active); its
+  app-detected mirror (`app:*` activity goes quiet → grace elapses → ended with
+  `reason="app-idle"`; activity resumes within grace → still active; a boot survivor with no
+  live activity re-arms the same way); snapshot + `rev` gap detection with telemetry kinds
+  filtered; per-transport capability enforcement.
 - `transcribe` test: `--session` unions intervals (paused span provably absent from output) and
   publishes `job` events through the daemon.
 - Extension test: service-worker kill mid-call recovers via `hello` + `subscribe` with no

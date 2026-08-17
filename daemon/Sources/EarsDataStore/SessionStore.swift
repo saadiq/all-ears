@@ -80,8 +80,9 @@ public enum SessionEventLog {
     /// `capture_failed`: the source whose capture died mid-call.
     public var source: String?
     /// `ended`: `"client"` for an explicit `session.end`, `"ingest-idle"`
-    /// for the orphan grace timer. `capture_failed`: the capture client's
-    /// stated cause.
+    /// for the browser orphan grace timer, `"app-idle"` for its app-detected
+    /// mirror (app-audio activity went quiet past grace). `capture_failed`:
+    /// the capture client's stated cause.
     public var reason: String?
 
     public init(

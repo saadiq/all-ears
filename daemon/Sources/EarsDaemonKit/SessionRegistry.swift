@@ -146,9 +146,15 @@ public actor SessionRegistry {
   private var pendingIngestLinks: [SourceID: SessionIdentity] = [:]
   /// Grace-timer invalidation: a scheduled expiry only fires if the
   /// session's generation still matches (a re-opened stream bumps it). Shared
-  /// by the browser ingest-idle grace and the app-idle grace below — the two
-  /// policies never run concurrently for the same session (one trigger kind
-  /// each), so one generation counter per session is enough.
+  /// by the browser ingest-idle grace and the app-idle grace below. The two
+  /// don't legitimately contend for one session's counter: ingest-idle only
+  /// fires for a session carrying a live `browser:*` source, and an
+  /// app-detected session never acquires one — `initialSources`'s
+  /// `localBrowserSources` fold-in only runs for `trigger == .browserExtension`,
+  /// and `link(source:to:)`'s ingest-tag join only ever sees identities the
+  /// browser extension's own `ingest.open` tagged. `expireIfStillOrphaned`
+  /// also excludes `trigger == .appDetected` explicitly (below), so the
+  /// exclusion is structural rather than resting on that convention alone.
   private var graceGeneration: [String: Int] = [:]
   /// Configured `app:*` sources the activity monitor currently reports as
   /// live, fed by ``appAudioActivity(source:active:)``.
@@ -747,7 +753,13 @@ public actor SessionRegistry {
   /// `app-detected` sessions; every other trigger ignores it (the daemon
   /// records, it doesn't decide).
   public func appAudioActivity(source: SourceID, active: Bool) {
-    if active { activeAppAudio.insert(source) } else { activeAppAudio.remove(source) }
+    // Idempotent on repeated calls with the same state: the activity monitor
+    // is expected to poll and report its current reading on every tick, so a
+    // redundant `active: false` must not restart the grace clock — that would
+    // let a level-triggered caller keep an idle session alive forever.
+    let changed =
+      active ? activeAppAudio.insert(source).inserted : activeAppAudio.remove(source) != nil
+    guard changed else { return }
     for session in sessions.values
     where session.state != .ended && session.trigger == .appDetected {
       let appSources = session.sources.filter { $0.sourceClass == .app }
@@ -872,6 +884,7 @@ public actor SessionRegistry {
     guard graceGeneration[sessionID] == generation,
       let session = sessions[sessionID],
       session.state != .ended,
+      session.trigger != .appDetected,
       session.isBrowserSession,
       !hasLiveIngest(session)
     else {

@@ -905,6 +905,57 @@ struct SessionRegistryTests {
     #expect(try await registry.get(id: session.id).state == .active)
   }
 
+  @Test("boot resumes an app-detected survivor and arms its app-idle grace")
+  func bootArmsAppIdleGraceForSurvivor() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(base.advanced(by: 10_000))
+    let gate = SleepGate()
+
+    // An app-detected session left `active` on disk by a previous daemon
+    // instance, with no activity monitor yet running to confirm it's live.
+    let survivor = Session(
+      id: "zoom-1", identity: SessionIdentity(platform: "zoom-app", externalID: "us.zoom.xos#1"),
+      title: "Zoom call", state: .active, started: base,
+      intervals: [SessionInterval(start: base)], sources: ["mic", "app:us.zoom.xos"],
+      trigger: .appDetected)
+    try SessionStore.write(survivor, dataRoot: dataRoot)
+
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+    await registry.loadFromDisk()
+
+    await gate.releaseAll()
+    await waitUntil { try await registry.get(id: "zoom-1").state == .ended }
+    let timeline = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: "zoom-1")
+    #expect(timeline.last?.reason == "app-idle")
+  }
+
+  @Test("activity reported after boot cancels the survivor's app-idle grace")
+  func bootAppIdleGraceCancelledByActivity() async throws {
+    let dataRoot = try makeDataRoot()
+    let clock = ManualClock(base.advanced(by: 10_000))
+    let gate = SleepGate()
+
+    let survivor = Session(
+      id: "zoom-1", identity: SessionIdentity(platform: "zoom-app", externalID: "us.zoom.xos#1"),
+      title: "Zoom call", state: .active, started: base,
+      intervals: [SessionInterval(start: base)], sources: ["mic", "app:us.zoom.xos"],
+      trigger: .appDetected)
+    try SessionStore.write(survivor, dataRoot: dataRoot)
+
+    let registry = makeRegistry(
+      dataRoot: dataRoot, clock: clock, appIdleGraceSeconds: 90,
+      sleep: { seconds in await gate.wait(seconds) })
+    await registry.loadFromDisk()
+    // The activity monitor's first poll finds the meeting genuinely still live.
+    await registry.appAudioActivity(source: "app:us.zoom.xos", active: true)
+
+    await gate.releaseAll()
+    for _ in 0..<50 { await Task.yield() }
+    #expect(try await registry.get(id: "zoom-1").state == .active)
+  }
+
   // MARK: - daemon-side ingest linking (the `session` tag on ingest.open)
 
   @Test("a tagged stream joins the live session's sources, so the grace can end it")
