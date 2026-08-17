@@ -68,9 +68,18 @@ public enum MenuStateReducer {
 
   /// `status`'s `meeting_activity` list, applied wholesale — the catch-up a
   /// freshly connected client does instead of waiting for the next edge.
+  ///
+  /// `mark` is the caller's `state.meetingActivityEdits` from just before it
+  /// asked the daemon for `status`. If a live `.meetingActivity` edge landed
+  /// (and bumped the counter) while that request was in flight, `list` is a
+  /// stale snapshot of a state the edge has already moved past — replacing
+  /// wholesale would silently revert it, and edges are one-shot, so nothing
+  /// would ever correct the mistake. Discarding here is correct: the live
+  /// feed is newer than the catch-up.
   public static func catchUpMeetingActivity(
-    _ state: inout MenuState, _ list: [MeetingActivityStatus]
+    _ state: inout MenuState, _ list: [MeetingActivityStatus], ifEditsEqual mark: Int
   ) {
+    guard state.meetingActivityEdits == mark else { return }
     state.meetingActivity = list
   }
 

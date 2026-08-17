@@ -235,7 +235,42 @@ struct EventApplicationTests {
         MeetingActivityStatus(
           source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
           label: "Zoom", active: true, episode: "us.zoom.xos#2")
-      ])
+      ], ifEditsEqual: state.meetingActivityEdits)
+    #expect(state.activeMeetings.count == 1)
+  }
+
+  @Test("a live edge that lands while a status catch-up is in flight wins over it")
+  func liveEdgeDuringCatchUpWins() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd", snapshot: SnapshotData(rev: 0, sessions: [], sources: []))
+    // The mark a caller would capture right before asking the daemon for `status`.
+    let mark = state.meetingActivityEdits
+    let ended = MeetingActivityStatus(
+      source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+      label: "Zoom", active: false, episode: "us.zoom.xos#1")
+    _ = MenuStateReducer.apply(&state, EventFrame(event: .meetingActivity(ended)))
+
+    // The catch-up's answer arrives after the live edge — it's stale, so it
+    // must not clobber the edge it raced.
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#1")
+      ], ifEditsEqual: mark)
+    #expect(state.meetingActivity == [ended])
+
+    // A catch-up whose mark matches the current count applies normally.
+    let freshMark = state.meetingActivityEdits
+    MenuStateReducer.catchUpMeetingActivity(
+      &state,
+      [
+        MeetingActivityStatus(
+          source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos",
+          label: "Zoom", active: true, episode: "us.zoom.xos#2")
+      ], ifEditsEqual: freshMark)
     #expect(state.activeMeetings.count == 1)
   }
 }

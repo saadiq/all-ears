@@ -257,6 +257,10 @@ import os
   /// Daemon that nothing happened. No anchor renders the bare version line,
   /// which claims nothing.
   private func catchUpStatus(_ connection: DaemonConnection) {
+    // Captured before the `await` below: a live `.meetingActivity` edge that
+    // lands and bumps this while `status` is in flight makes the mark stale,
+    // so the reducer discards the catch-up instead of clobbering the edge.
+    let mark = state.meetingActivityEdits
     Task { [weak self] in
       let status = await connection.status()
       guard let self else { return }
@@ -264,7 +268,8 @@ import os
         DaemonUptime(reported: Double($0.uptimeSeconds), anchor: Self.now())
       }
       if let status {
-        MenuStateReducer.catchUpMeetingActivity(&self.state, status.meetingActivity)
+        MenuStateReducer.catchUpMeetingActivity(
+          &self.state, status.meetingActivity, ifEditsEqual: mark)
       }
       self.rerender()
     }

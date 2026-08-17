@@ -15,6 +15,13 @@ public struct MenuState: Sendable, Hashable {
   public var sources: [SourceStatus]
   public var jobs: [JobPublishParams]
   public var meetingActivity: [MeetingActivityStatus]
+  /// Bumped on every ``upsertMeetingActivity(_:)``. A status catch-up in
+  /// flight captures this before it asks the daemon; if a live edge lands
+  /// and bumps it before the catch-up's answer arrives, the catch-up is a
+  /// stale snapshot of a list the live edge has already moved past, and
+  /// ``MenuStateReducer/catchUpMeetingActivity(_:_:ifEditsEqual:)`` discards
+  /// it rather than clobbering the edge.
+  public var meetingActivityEdits: Int
   public var lastRev: Int?
 
   public init() {
@@ -24,6 +31,7 @@ public struct MenuState: Sendable, Hashable {
     sources = []
     jobs = []
     meetingActivity = []
+    meetingActivityEdits = 0
     lastRev = nil
   }
 
@@ -64,5 +72,6 @@ extension MenuState {
     } else {
       meetingActivity.append(status)
     }
+    meetingActivityEdits += 1
   }
 }
