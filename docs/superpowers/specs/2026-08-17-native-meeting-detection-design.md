@@ -142,8 +142,9 @@ daemon's episode id:
 Then `session.attendee` upserts for each calendar attendee:
 
 - `display_name` from the event; new **`origin: calendar`**.
-- The user (EventKit marks the current user's attendee): `self: true`,
-  `source: mic`.
+- The user (EventKit marks the current user's attendee): `self: true`, with
+  **no source binding** — binding `mic` would rename the transcript's "You"
+  turns to the user's own name via the reconciled speaker map.
 - All other attendees: **no source binding** — their voices share the mixed
   app stream. They enrich the roster and downstream summaries only.
 

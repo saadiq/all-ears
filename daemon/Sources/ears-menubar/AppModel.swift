@@ -25,6 +25,7 @@ import os
   private let connection: DaemonConnection?
   private let recentsProvider: RecentSessionsProvider
   private let announcements = SessionNotifications()
+  private let calendar = CalendarProvider()
   /// Episodes already prompted (or accepted, or dropped for a live session),
   /// persisted so a menu bar restart mid-meeting doesn't re-prompt.
   private let promptedEpisodes = PromptedEpisodeStore()
@@ -224,8 +225,11 @@ import os
     send(.sessionStart(params), connection)
   }
 
-  /// Starts recording a meeting the daemon already detected. Task 12 extends
-  /// this with calendar enrichment.
+  /// Starts recording a meeting the daemon already detected, enriched with a
+  /// matching calendar event when one exists: its title, and (after the
+  /// session starts) its attendees upserted onto the roster. Calendar access
+  /// is a garnish, never a gate — denied access or no match still starts the
+  /// session, just unenriched.
   func startDetectedSession(source: String, episode: String) {
     guard let connection else { return }
     // Against the config as it is *now* — see ``startRecording()``.
@@ -234,18 +238,39 @@ import os
     var declared = sources.filter { $0 == SourceID("mic") }
     declared.append(app)
     promptedEpisodes.mark(episode)
-    // No on_end_stages: the daemon's own policy runs the configured chain for
-    // app-detected sessions (OnEndChainPolicy), unlike manual starts.
-    let params = SessionStartParams(
-      platform: DetectedSessionIdentity.platform(forBundleID: app.detail ?? app.rawValue),
-      externalID: episode,
-      sources: declared,
-      trigger: .appDetected)
+    let platform = DetectedSessionIdentity.platform(forBundleID: app.detail ?? app.rawValue)
+    let marker = CalendarMatching.marker(forBundleID: app.detail ?? "")
     Task { [weak self] in
-      if case .failure(let error) = await connection.startSession(params) {
+      let events = await self?.calendar.eventsAroundNow()
+      let matched = events.flatMap {
+        CalendarMatching.best(events: $0, now: Self.now(), platformMarker: marker)
+      }
+      // No on_end_stages: the daemon's own policy runs the configured chain
+      // for app-detected sessions (OnEndChainPolicy), unlike manual starts.
+      let params = SessionStartParams(
+        platform: platform,
+        externalID: episode,
+        title: (matched?.title.isEmpty == false) ? matched?.title : nil,
+        sources: declared,
+        trigger: .appDetected)
+      switch await connection.startSession(params) {
+      case .failure(let error):
         self?.report(error.message)
-      } else {
+      case .success(let session):
         self?.actionError = nil
+        guard let matched else { return }
+        for (index, attendee) in matched.attendees.enumerated() {
+          let upsert = SessionAttendeeParams(
+            session: session.id,
+            id: "calendar-\(index)",
+            displayName: attendee.name,
+            origin: .calendar,
+            isLocal: attendee.isCurrentUser ? true : nil)
+          if let error = await connection.perform(.sessionAttendee(upsert)) {
+            self?.report(error.message)
+            break
+          }
+        }
       }
     }
   }
