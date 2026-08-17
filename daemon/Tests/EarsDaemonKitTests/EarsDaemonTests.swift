@@ -893,7 +893,14 @@ struct EarsDaemonTests {
       sources: [zoomDescriptor],
       dataRoot: dataRoot,
       socketPath: socketPath,
-      detection: DetectionSettings(enabled: true, debounceSeconds: 0, appIdleGraceSeconds: 90))
+      // A non-zero debounce, confirmed only once the clock is advanced past it
+      // below (after the subscriber barrier), so the edge cannot possibly be
+      // confirmed — and published — before the subscription is registered.
+      // ScriptedProbe repeats its single scripted entry forever, so with
+      // nothing gating confirmation, a wall-clock-driven debounce would race
+      // the socket handshake instead: the edge fires on whichever poll lands
+      // after ~1s of real time, independent of subscriber readiness.
+      detection: DetectionSettings(enabled: true, debounceSeconds: 5, appIdleGraceSeconds: 90))
 
     let daemon = try EarsDaemon(
       configuration: configuration,
@@ -907,6 +914,13 @@ struct EarsDaemonTests {
     let client = try await ControlSocketClient.connect(toPath: socketPath)
     _ = try await client.hello(client: "test/0")
     let (_, events) = try await client.subscribe(SubscribeParams(events: [.meetingActivity]))
+    while await daemon.subscriberCountForTesting() == 0 { await Task.yield() }
+
+    // Only now does advancing the clock let the tracker's still-pending
+    // sample (set by the monitor's first poll, at or before this point) clear
+    // its debounce on the next poll — the barrier above guarantees that poll's
+    // confirmed edge has a registered subscriber to reach.
+    clock.advance(by: 10)
 
     var received: [EarsEvent] = []
     for await frame in events {
