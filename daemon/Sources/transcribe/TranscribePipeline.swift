@@ -684,9 +684,11 @@ enum TranscribePipeline {
 
   /// Raw source id → the descriptor `label` from the source's `meta.toml`,
   /// consulted per-session first (`sessions/<id>/sources/<source>/`) then the
-  /// global ring — the same order the audio reads use. Empty labels and
-  /// missing descriptors are simply absent: `TranscriptAssembly.speakerLabel`
-  /// falls through to the raw id, exactly as before labels existed.
+  /// global ring — the same order the audio reads use. The first *non-empty*
+  /// label wins, so a session copy written before the source was labelled
+  /// doesn't mask the ring's name. A source labelled nowhere is simply absent:
+  /// `TranscriptAssembly.speakerLabel` falls through to the raw id, exactly as
+  /// before labels existed.
   static func sourceLabels(
     sourceIDs: [SourceID], sessionID: String?, dataRoot: URL
   ) -> [String: String] {
@@ -697,9 +699,10 @@ enum TranscribePipeline {
       } ?? [dataRoot]
     for sourceID in sourceIDs {
       for root in roots {
-        guard let descriptor = try? SourceMetaStore.read(sourceID: sourceID, dataRoot: root)
+        guard let descriptor = try? SourceMetaStore.read(sourceID: sourceID, dataRoot: root),
+          !descriptor.label.isEmpty
         else { continue }
-        if !descriptor.label.isEmpty { labels[sourceID.rawValue] = descriptor.label }
+        labels[sourceID.rawValue] = descriptor.label
         break
       }
     }
