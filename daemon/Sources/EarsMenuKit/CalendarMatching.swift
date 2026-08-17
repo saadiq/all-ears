@@ -60,20 +60,23 @@ public enum CalendarMatching {
   public static func best(
     events: [CalendarEventInfo], now: Instant, platformMarker: String?
   ) -> CalendarEventInfo? {
-    let candidates = events.filter { event in
-      !event.isAllDay && now >= event.start.advanced(by: -joinSlackSeconds) && now <= event.end
-    }
-    guard !candidates.isEmpty else { return nil }
-    func markerMatches(_ event: CalendarEventInfo) -> Bool {
-      guard let platformMarker else { return false }
-      return event.matchText.contains(platformMarker)
-    }
+    // Scored once per event, not re-derived inside the comparator: the marker
+    // test is a substring scan over the event's whole location+notes+URL
+    // haystack, and `min(by:)` would otherwise run it up to four times per
+    // comparison.
+    let candidates = events.lazy
+      .filter { !$0.isAllDay && now >= $0.start.advanced(by: -joinSlackSeconds) && now <= $0.end }
+      .map { event in
+        (
+          event: event,
+          marked: platformMarker.map { event.matchText.contains($0) } ?? false,
+          distance: abs(now.interval(since: event.start))
+        )
+      }
     return candidates.min { lhs, rhs in
-      if markerMatches(lhs) != markerMatches(rhs) { return markerMatches(lhs) }
-      let lhsDistance = abs(now.interval(since: lhs.start))
-      let rhsDistance = abs(now.interval(since: rhs.start))
-      if lhsDistance != rhsDistance { return lhsDistance < rhsDistance }
-      return lhs.title < rhs.title
-    }
+      if lhs.marked != rhs.marked { return lhs.marked }
+      if lhs.distance != rhs.distance { return lhs.distance < rhs.distance }
+      return lhs.event.title < rhs.event.title
+    }?.event
   }
 }
