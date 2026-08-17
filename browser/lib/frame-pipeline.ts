@@ -1,6 +1,6 @@
 import type { MainMessage, Platform } from "./protocol";
 import type { AttributionEvent } from "./attribution-log";
-import type { SeamId } from "./capture-seams";
+import { seamUsesReceiverTracks, type SeamId } from "./capture-seams";
 import { perfDetailEnabled, perfEnabled } from "./perf-main";
 import {
   audioLog,
@@ -382,6 +382,16 @@ export class TrackCapture {
       this.hooks.noteUnmute();
     };
     this.track.addEventListener("unmute", this.unmuteHandler);
+    // A receiver-seam track admitted already-unmuted never fires that event
+    // again — under defer-until-unmute admission (journal #173) the admitting
+    // unmute preceded this listener — so arm now: an unmuted receiver track is
+    // the platform making the same "audio is flowing" claim as the event
+    // (journal #176: an inert-but-unmuted receiver track left the arbiter
+    // unarmed and pinned the seam for a whole call). Non-receiver seams stay
+    // event-armed: their tracks report muted=false even when inert (journal
+    // #171), and arming those would fire spurious SILENT warnings for phantom
+    // clones.
+    if (seamUsesReceiverTracks(this.seam) && !this.track.muted) this.unmuteHandler();
   }
 
   stop(): void {

@@ -524,6 +524,44 @@ describe("CaptureOrchestrator escalation and adoption (fakes)", () => {
     expect(h.orchestrator.debugState().seam?.active).toBe("webaudio-track");
   });
 
+  it("a track admitted on its deferral unmute still escalates after a frameless grace (journal #176)", () => {
+    const h = makeHarness();
+    const receiver = new FakeSeamTrack("r1");
+    receiver.muted = true;
+    h.registerLive(receiver);
+    const web = new FakeSeamTrack("wa1");
+    h.webTracks.push(web);
+    h.init();
+    expect(h.ofType("deferred")).toHaveLength(1);
+
+    // The unmute that admits the track is the LAST unmute event it ever fires:
+    // the pipeline starts with the track already unmuted, so arming must not
+    // depend on a later event.
+    receiver.muted = false;
+    receiver.dispatchTo("unmute");
+    expect(h.frameSources.get("r1")?.started).toBe(true);
+
+    h.clock.now = SEAM_ESCALATION_GRACE_MS;
+    h.orchestrator.reconcile();
+
+    expect(h.ofType("escalated")).toMatchObject([{ from: "receiver-track", to: "webaudio-track" }]);
+    expect(h.ofType("adopted")).toMatchObject([{ trackId: "wa1" }]);
+  });
+
+  it("a receiver track already unmuted at dispatch escalates without ever firing an unmute event (journal #176)", () => {
+    const h = makeHarness();
+    const receiver = new FakeSeamTrack("r1");
+    h.registerLive(receiver);
+    const web = new FakeSeamTrack("wa1");
+    h.webTracks.push(web);
+    h.init();
+    expect(h.frameSources.get("r1")?.started).toBe(true);
+
+    h.clock.now = SEAM_ESCALATION_GRACE_MS;
+    h.orchestrator.reconcile();
+    expect(h.ofType("escalated")).toMatchObject([{ from: "receiver-track", to: "webaudio-track" }]);
+  });
+
   it("a decoded frame proves the seam: the same grace elapsing later never escalates", () => {
     const h = makeHarness();
     const receiver = new FakeSeamTrack("r1");
