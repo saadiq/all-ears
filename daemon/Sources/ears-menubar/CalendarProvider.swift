@@ -43,7 +43,11 @@ final class CalendarProvider {
         start: Instant(secondsSinceEpoch: event.startDate.timeIntervalSince1970),
         end: Instant(secondsSinceEpoch: event.endDate.timeIntervalSince1970),
         matchText: matchText,
-        attendees: attendees)
+        attendees: attendees,
+        // Carried through rather than filtered here: which rows can be the
+        // meeting is `CalendarMatching`'s call, and it is the tier-0 pure
+        // layer that gets to be tested without a calendar grant.
+        isAllDay: event.isAllDay)
     }
   }
 }

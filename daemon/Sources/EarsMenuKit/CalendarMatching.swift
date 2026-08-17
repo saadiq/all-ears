@@ -21,16 +21,20 @@ public struct CalendarEventInfo: Sendable, Hashable {
   public var end: Instant
   public var matchText: String
   public var attendees: [CalendarAttendee]
+  /// An all-day row ("PTO", "WFH", a birthday, a week-long conference).
+  /// Never a meeting someone just joined — see ``CalendarMatching/best(events:now:platformMarker:)``.
+  public var isAllDay: Bool
 
   public init(
     title: String, start: Instant, end: Instant, matchText: String,
-    attendees: [CalendarAttendee]
+    attendees: [CalendarAttendee], isAllDay: Bool = false
   ) {
     self.title = title
     self.start = start
     self.end = end
     self.matchText = matchText
     self.attendees = attendees
+    self.isAllDay = isAllDay
   }
 }
 
@@ -39,6 +43,12 @@ public struct CalendarEventInfo: Sendable, Hashable {
 /// link/location carries the detected platform's marker wins outright;
 /// otherwise the candidate whose start is nearest to now. Calendar data is a
 /// garnish, never a gate: `nil` simply means the session starts unenriched.
+///
+/// All-day rows are excluded outright rather than ranked: "PTO", "WFH", a
+/// birthday and a week-long conference all span *now*, so one would be a
+/// candidate for every meeting of the day — and on a day with no other
+/// event it wins by default, retitling the session and upserting a
+/// birthday's guest list onto the roster.
 public enum CalendarMatching {
   /// How early before an event's start a join still counts as that event.
   public static let joinSlackSeconds: Double = 600
@@ -51,7 +61,7 @@ public enum CalendarMatching {
     events: [CalendarEventInfo], now: Instant, platformMarker: String?
   ) -> CalendarEventInfo? {
     let candidates = events.filter { event in
-      now >= event.start.advanced(by: -joinSlackSeconds) && now <= event.end
+      !event.isAllDay && now >= event.start.advanced(by: -joinSlackSeconds) && now <= event.end
     }
     guard !candidates.isEmpty else { return nil }
     func markerMatches(_ event: CalendarEventInfo) -> Bool {

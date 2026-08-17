@@ -6,11 +6,26 @@ import Testing
 @Suite("Calendar event matching")
 struct CalendarMatchingTests {
   private func event(
-    _ title: String, start: Double, end: Double, matchText: String = ""
+    _ title: String, start: Double, end: Double, matchText: String = "", isAllDay: Bool = false
   ) -> CalendarEventInfo {
     CalendarEventInfo(
       title: title, start: Instant(secondsSinceEpoch: start),
-      end: Instant(secondsSinceEpoch: end), matchText: matchText, attendees: [])
+      end: Instant(secondsSinceEpoch: end), matchText: matchText, attendees: [],
+      isAllDay: isAllDay)
+  }
+
+  @Test("an all-day row is never the meeting, even as the only candidate")
+  func allDayRowsAreExcluded() {
+    // "PTO" spans the whole day, so it overlaps every meeting on it.
+    let pto = event("PTO", start: 0, end: 86_400, isAllDay: true)
+    #expect(
+      CalendarMatching.best(
+        events: [pto], now: Instant(secondsSinceEpoch: 40_000), platformMarker: nil) == nil)
+    // And it never outranks a real event, even one it fully contains.
+    let match = CalendarMatching.best(
+      events: [pto, event("standup", start: 39_900, end: 41_700)],
+      now: Instant(secondsSinceEpoch: 40_000), platformMarker: nil)
+    #expect(match?.title == "standup")
   }
 
   @Test("an event overlapping now wins over one already over")

@@ -128,7 +128,11 @@ daemon's episode id:
   pick an event overlapping now (with slack for early joins and late
   starts), preferring one whose location/notes/URL carries a platform marker
   (`zoom.us`, `teams.microsoft` — matched as a substring, so it also catches
-  `teams.microsoft.com`), else the nearest ongoing event, else none.
+  `teams.microsoft.com`), else the nearest ongoing event, else none. **All-day
+  rows are excluded outright**, never merely outranked: "PTO", "WFH", a
+  birthday and a week-long conference all span now, so one would be a
+  candidate for every meeting of the day, and on a day with no other event it
+  would win by default.
 - Calendar access is requested **lazily on first prompt accept**.
   `NSCalendarsFullAccessUsageDescription` is added to
   `packaging/ears-menubar.Info.plist`. Denied access or no matching event
