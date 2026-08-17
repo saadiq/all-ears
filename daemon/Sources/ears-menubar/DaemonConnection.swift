@@ -6,7 +6,7 @@ import EarsMenuKit
 /// dropped stream invalidates the generation so stale loops exit silently.
 actor DaemonConnection {
   enum Event: Sendable {
-    case ready(daemon: String, snapshot: SnapshotData)
+    case ready(daemon: String, bootID: String, snapshot: SnapshotData)
     case event(EventFrame)
     case down
   }
@@ -52,7 +52,7 @@ actor DaemonConnection {
         client = dialled
         pending = nil  // adopted: the teardown below owns it as `client`
         attempt = 0
-        continuation.yield(.ready(daemon: hello.daemon, snapshot: snapshot))
+        continuation.yield(.ready(daemon: hello.daemon, bootID: hello.bootID, snapshot: snapshot))
         for await frame in frames {
           guard generation == mine else { break }
           continuation.yield(.event(frame))

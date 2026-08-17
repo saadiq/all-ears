@@ -86,9 +86,14 @@ import os
   private func pump(_ connection: DaemonConnection) async {
     for await event in connection.events {
       switch event {
-      case .ready(let daemon, let snapshot):
+      case .ready(let daemon, let bootID, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
         actionError = nil
+        // Before any prompting can occur: episode ids are minted from a
+        // per-boot counter, so a prompt history left over from a previous
+        // daemon boot must be discarded before `catchUpStatus` below can
+        // offer anything against it — see ``PromptedEpisodeStore/activate(bootID:)``.
+        promptedEpisodes.activate(bootID: bootID)
         // Re-fetched on every (re)connect, so a restarted daemon's uptime
         // restarts with it instead of counting from the old process, and so
         // `meetingActivity` — cleared by `connected()` because it isn't part
