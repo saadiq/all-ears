@@ -1146,36 +1146,6 @@ struct SessionRegistryTests {
   }
 }
 
-/// A controllable stand-in for the registry's sleep seam: waiters block until
-/// released, so grace-timer tests drive expiry explicitly instead of racing
-/// real time.
-private actor SleepGate {
-  private var waiters: [CheckedContinuation<Void, Never>] = []
-  private var released = false
-
-  func wait(_ seconds: Double) async {
-    if released { return }
-    await withCheckedContinuation { waiters.append($0) }
-  }
-
-  func releaseAll() {
-    released = true
-    let pending = waiters
-    waiters = []
-    for waiter in pending { waiter.resume() }
-  }
-}
-
-/// Polls an async condition without real-time sleeps.
-private func waitUntil(
-  _ condition: @Sendable () async throws -> Bool
-) async {
-  for _ in 0..<1_000 {
-    if (try? await condition()) == true { return }
-    await Task.yield()
-  }
-}
-
 /// Reconciliation at `session.end`: the derivation that used to be an
 /// implicit, irreversible side effect of whichever live correlation won a
 /// race now runs once, over the final roster, and is persisted.

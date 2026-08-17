@@ -5,34 +5,6 @@ import Testing
 
 @testable import EarsDaemonKit
 
-// Sticky release (mirrors SessionRegistryTests.swift's SleepGate): start()
-// only enqueues the monitor's poll Task, with no guarantee it has reached
-// its first sleep() call before the test's releaseAll() runs. Without the
-// `released` flag a wait() arriving after releaseAll() would register a
-// continuation nothing ever resumes, hanging the poll loop forever.
-private actor SleepGate {
-  private var waiters: [CheckedContinuation<Void, Never>] = []
-  private var released = false
-  func wait(_ seconds: Double) async {
-    if released { return }
-    await withCheckedContinuation { waiters.append($0) }
-  }
-  func releaseAll() {
-    released = true
-    let current = waiters
-    waiters = []
-    for waiter in current { waiter.resume() }
-  }
-}
-
-private func waitUntil(_ condition: @Sendable () async -> Bool) async {
-  for _ in 0..<2_000 {
-    if await condition() { return }
-    await Task.yield()
-  }
-  Issue.record("condition never became true")
-}
-
 @Suite("Meeting activity monitor")
 struct MeetingActivityMonitorTests {
   private let zoom = WatchedAppSource(
