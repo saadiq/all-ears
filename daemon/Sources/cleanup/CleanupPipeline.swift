@@ -302,38 +302,16 @@ enum CleanupPipeline {
     markdownURL.deletingPathExtension().appendingPathExtension("json")
   }
 
-  /// The path-template context for this run, assembled from the input
-  /// document's frontmatter:
-  ///
-  /// - `{title}` is the session title the transcript recorded; absent (a
-  ///   plain range run, a `--file` run) it degrades to `{slug}`.
-  /// - `{slug}` is the document's path-safe source list — which, for a
-  ///   `--file` transcript, *is* the input file's basename, since
-  ///   `transcribe --file` names its source after the file.
-  /// - dates come from `started:` when the transcript carries it, so a
-  ///   narrowed rerun still files under the day the session began.
+  /// The path-template context for this run — ``CleanupPublishedPath``'s,
+  /// which `ears session show` shares so its disk-side reconstruction can
+  /// never disagree with the writer about where the artifact landed.
   private static func templateContext(_ inputs: Inputs, _ document: TranscriptDocument)
     -> PathTemplate.Context
   {
-    let frontmatter = document.frontmatter
-    return PathTemplate.Context(
+    CleanupPublishedPath.context(
       outputRoot: inputs.outputRoot,
-      start: frontmatter.started ?? frontmatter.range.start,
       weekNumbering: inputs.weekNumbering,
-      session: frontmatter.session,
-      slug: frontmatter.sources.map(\.pathSafe).joined(separator: "_"),
-      title: frontmatter.title,
-      fallbackName: documentStem(URL(fileURLWithPath: inputs.transcriptPath)))
-  }
-
-  /// The input's basename with any known transcript suffix stripped, the
-  /// last-resort stand-in when a document carries neither a title nor
-  /// sources: `standup.transcript.md` → `standup`.
-  private static func documentStem(_ url: URL) -> String {
-    let name = url.lastPathComponent
-    for suffix in [".transcript.md", ".clean.md", ".summary.md"] where name.hasSuffix(suffix) {
-      return String(name.dropLast(suffix.count))
-    }
-    return url.deletingPathExtension().lastPathComponent
+      frontmatter: document.frontmatter,
+      transcriptPath: inputs.transcriptPath)
   }
 }
