@@ -293,16 +293,25 @@ struct OnEndChainSmokeTests {
       Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
       "the data store must hold intermediates only, never a published clean transcript")
 
-    // The menu bar app resolves these same paths from config and the session
-    // record alone — it never sees a stage's envelope. That agreement is a
-    // real seam between two modules and it has broken silently once already,
-    // when the published layout changed and the menu went on looking in the
-    // old one; asserting the exact paths here is what makes the next such
-    // change fail the build instead of the Recent Sessions menu.
+    // The menu bar app resolves these same paths from config and the raw
+    // transcript's own frontmatter — it never sees a stage's envelope. That
+    // agreement is a real seam between two modules and it has broken silently
+    // once already, when the published layout changed and the menu went on
+    // looking in the old one; asserting the exact paths here is what makes the
+    // next such change fail the build instead of the Recent Sessions menu.
     let publishing = PublishingSettings(
       outputRoot: outputRoot, cleanupOutput: LLMStagesConfigSchema.defaultCleanupOutput,
       weekNumbering: .us, presets: [PublishingSettings.Preset(name: "brief")])
-    let located = SessionArtifactLocator.published(for: ended, settings: publishing)
+    let rawTranscript = SessionArtifactLocator.rawTranscript(
+      dataRoot: dataRoot, sessionID: ended.id)
+    let document = try TranscriptParser.parse(
+      markdown: String(contentsOf: rawTranscript, encoding: .utf8),
+      jsonSidecar: try? String(
+        contentsOf: rawTranscript.deletingPathExtension().appendingPathExtension("json"),
+        encoding: .utf8))
+    let located = SessionArtifactLocator.published(
+      frontmatter: document.frontmatter, transcriptPath: rawTranscript.path,
+      settings: publishing)
     #expect(
       FileManager.default.fileExists(atPath: located.clean.path),
       "the menu locates the published transcript at \(located.clean.path), which does not exist")

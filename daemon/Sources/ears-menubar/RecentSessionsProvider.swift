@@ -25,15 +25,41 @@ struct RecentSessionsProvider: Sendable {
 
   func load(limit: Int = 7) -> [RecentSessionItem] {
     let all = SessionStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
-    return RecentSessions.select(from: all, limit: limit).map { session in
-      let paths = SessionArtifactLocator.published(for: session, settings: publishing)
+    return RecentSessions.select(from: all, limit: limit).map(item(for:))
+  }
+
+  /// The published tier is resolved from the raw transcript's own frontmatter
+  /// — the context `cleanup` expanded — so no transcript on disk, or one that
+  /// will not parse, leaves the published verbs disabled rather than pointing
+  /// at a guessed path. That is the honest answer: `cleanup` consumes the
+  /// transcript, and retention never sweeps it (it deletes `sources/` only), so
+  /// a missing transcript means the chain never got that far.
+  private func item(for session: Session) -> RecentSessionItem {
+    let transcriptURL = SessionArtifactLocator.rawTranscript(
+      dataRoot: dataRoot, sessionID: session.id)
+    guard let document = parse(transcriptURL) else {
       return RecentSessionItem(
-        session: session,
-        transcript: existing(
-          SessionArtifactLocator.rawTranscript(dataRoot: dataRoot, sessionID: session.id)),
-        clean: existing(paths.clean),
-        summaries: summaries(paths))
+        session: session, transcript: existing(transcriptURL), clean: nil, summaries: [])
     }
+    let paths = SessionArtifactLocator.published(
+      frontmatter: document.frontmatter, transcriptPath: transcriptURL.path,
+      settings: publishing)
+    return RecentSessionItem(
+      session: session,
+      transcript: existing(transcriptURL),
+      clean: existing(paths.clean),
+      summaries: summaries(paths))
+  }
+
+  /// Best-effort: the sidecar carries structure the markdown alone does not,
+  /// but a document without one still parses. Mirrors
+  /// `ears`'s `SessionArtifactScanner.sidecarText`.
+  private func parse(_ markdownURL: URL) -> TranscriptDocument? {
+    guard let markdown = try? String(contentsOf: markdownURL, encoding: .utf8) else { return nil }
+    let sidecar = try? String(
+      contentsOf: markdownURL.deletingPathExtension().appendingPathExtension("json"),
+      encoding: .utf8)
+    return try? TranscriptParser.parse(markdown: markdown, jsonSidecar: sidecar)
   }
 
   /// A preset's own `out` is a path we can name outright; the rest are swept

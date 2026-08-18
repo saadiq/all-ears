@@ -13,7 +13,8 @@ import Foundation
 public struct PublishingSettings: Sendable, Hashable {
   /// One configured summary preset. `out` is its own path template when it
   /// names one; `nil` means it takes the default sibling naming off the
-  /// cleaned transcript (see ``SessionArtifactLocator/published(for:settings:)``).
+  /// cleaned transcript (see
+  /// ``SessionArtifactLocator/published(frontmatter:transcriptPath:settings:)``).
   public struct Preset: Sendable, Hashable {
     public var name: String
     public var out: String?
@@ -122,15 +123,25 @@ public enum SessionArtifactLocator {
       dataRoot: URL(fileURLWithPath: dataRoot), sessionID: sessionID)
   }
 
+  /// Where the on-end chain published this transcript, resolved the way
+  /// `cleanup` itself resolved it: through ``CleanupPublishedPath``'s context,
+  /// built from the document's own frontmatter rather than from the session
+  /// record. The stage expanded that context, so reading it back is the only
+  /// derivation that cannot disagree with the writer — a session renamed after
+  /// its chain ran still points at the file on disk.
   public static func published(
-    for session: Session, settings: PublishingSettings
+    frontmatter: TranscriptFrontmatter, transcriptPath: String, settings: PublishingSettings
   ) -> PublishedArtifactPaths {
-    let context = templateContext(session, settings)
+    let context = CleanupPublishedPath.context(
+      outputRoot: settings.outputRoot,
+      weekNumbering: settings.weekNumbering,
+      frontmatter: frontmatter,
+      transcriptPath: transcriptPath)
     let clean = URL(fileURLWithPath: PathTemplate(settings.cleanupOutput).expand(context))
     return PublishedArtifactPaths(
       clean: clean,
       summaryDirectory: clean.deletingLastPathComponent(),
-      summaryStem: summaryStem(for: clean),
+      summaryStem: CleanupPublishedPath.documentStem(clean),
       explicitSummaries: settings.presets.compactMap { preset in
         preset.out.map { URL(fileURLWithPath: PathTemplate($0).expand(context)) }
       })
@@ -155,39 +166,6 @@ public enum SessionArtifactLocator {
       return middle.isEmpty || (middle.hasPrefix(".") && !middle.dropFirst().contains("."))
     }
     .sorted()
-  }
-
-  /// Mirrors `cleanup`'s own template context for a session run, so the menu
-  /// resolves the path the stage actually wrote.
-  ///
-  /// - dates come from ``Session/started`` — what `transcribe` stamps as the
-  ///   transcript's `started:`, and so what `cleanup` expanded.
-  /// - `fallbackName` is `transcript`, `cleanup`'s `documentStem` of the
-  ///   session's `sessions/<id>/transcript.md` input, which is what `{title}`
-  ///   degrades to when a session has neither title nor sources.
-  private static func templateContext(
-    _ session: Session, _ settings: PublishingSettings
-  ) -> PathTemplate.Context {
-    PathTemplate.Context(
-      outputRoot: settings.outputRoot,
-      start: session.started,
-      weekNumbering: settings.weekNumbering,
-      session: session.id,
-      slug: session.sources.map(\.pathSafe).joined(separator: "_"),
-      title: session.title,
-      fallbackName: "transcript")
-  }
-
-  /// Mirrors `summarize`'s `outputBaseURL`: a published transcript's stem is
-  /// its basename with a known transcript suffix stripped, or its extension
-  /// dropped when it carries none — which the default `[cleanup] output`
-  /// template (`… - {title}.md`) does not.
-  private static func summaryStem(for clean: URL) -> String {
-    let name = clean.lastPathComponent
-    for suffix in [".transcript.md", ".clean.md"] where name.hasSuffix(suffix) {
-      return String(name.dropLast(suffix.count))
-    }
-    return clean.deletingPathExtension().lastPathComponent
   }
 }
 
