@@ -38,6 +38,6 @@ public struct DaemonUptime: Sendable, Hashable {
   public static func line(daemon: String?, uptime: DaemonUptime?, now: Instant) -> String {
     guard let daemon else { return "Not connected" }
     guard let uptime else { return daemon }
-    return "\(daemon) · up \(ElapsedFormatter.compactDuration(uptime.seconds(at: now)))"
+    return "\(daemon) · up \(HumanUnits.duration(seconds: uptime.seconds(at: now)))"
   }
 }

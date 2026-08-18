@@ -34,4 +34,20 @@ struct DaemonUptimeTests {
         == "earsd/0.1.0")
     #expect(DaemonUptime.line(daemon: nil, uptime: uptime, now: instant(1_060)) == "Not connected")
   }
+
+  /// The line speaks `ears status`'s vocabulary (``HumanUnits/duration``), so
+  /// the same daemon reads the same age in the menu and on the CLI: hours run
+  /// past a day rather than splitting into a `d` tier, and a whole hour is
+  /// bare.
+  @Test("uptime is rendered in the CLI's units")
+  func lineUsesCLIUnits() {
+    let long = DaemonUptime(reported: 0, anchor: instant(1_000))
+    #expect(
+      DaemonUptime.line(daemon: "earsd/0.1.0", uptime: long, now: instant(1_000 + 93_600))
+        == "earsd/0.1.0 · up 26h")
+    let whole = DaemonUptime(reported: 10_800, anchor: instant(1_000))
+    #expect(
+      DaemonUptime.line(daemon: "earsd/0.1.0", uptime: whole, now: instant(1_000))
+        == "earsd/0.1.0 · up 3h")
+  }
 }

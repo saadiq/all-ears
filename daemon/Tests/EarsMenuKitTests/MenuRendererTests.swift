@@ -190,12 +190,4 @@ struct ElapsedFormatterTests {
     #expect(ElapsedFormatter.clock(3_723) == "1:02:03")
     #expect(ElapsedFormatter.clock(-5) == "0:00")
   }
-
-  @Test("compactDuration picks a humane unit")
-  func compactFormats() {
-    #expect(ElapsedFormatter.compactDuration(42) == "42s")
-    #expect(ElapsedFormatter.compactDuration(180) == "3m")
-    #expect(ElapsedFormatter.compactDuration(11_520) == "3h 12m")
-    #expect(ElapsedFormatter.compactDuration(90_000) == "1d 1h")
-  }
 }
