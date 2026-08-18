@@ -86,17 +86,19 @@ final class Notifier: NSObject {
   /// window to raise, so activating it on a click would pull focus off the
   /// meeting being joined and show nothing for it. The system delivers the
   /// response to the running app either way.
-  private static var meetingPromptCategory: UNNotificationCategory {
-    UNNotificationCategory(
-      identifier: MeetingPromptCategory.identifier,
-      actions: [
-        UNNotificationAction(
-          identifier: MeetingPromptCategory.start, title: "Start Recording", options: []),
-        UNNotificationAction(
-          identifier: MeetingPromptCategory.dismiss, title: "Not Now", options: []),
-      ],
-      intentIdentifiers: [], options: [])
-  }
+  ///
+  /// A `let`, not a computed property: the buttons are fixed. `Notifier` is
+  /// `@MainActor`, which extends to its statics, so a non-`Sendable`
+  /// `UNNotificationCategory` is legal stored here.
+  private static let meetingPromptCategory = UNNotificationCategory(
+    identifier: MeetingPromptCategory.identifier,
+    actions: [
+      UNNotificationAction(
+        identifier: MeetingPromptCategory.start, title: "Start Recording", options: []),
+      UNNotificationAction(
+        identifier: MeetingPromptCategory.dismiss, title: "Not Now", options: []),
+    ],
+    intentIdentifiers: [], options: [])
 
   func post(_ request: NotificationRequest) {
     guard available else { return }
