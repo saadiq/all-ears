@@ -1,5 +1,3 @@
-import EarsCore
-
 /// Decides which on-end stages an ended session actually runs.
 ///
 /// The daemon supplies the *mechanism* (spawn these tools, in this order,
@@ -15,6 +13,10 @@ import EarsCore
 /// every other trigger runs nothing. So `ears session start`/`session end`
 /// remains inert unless asked — an operator's scripted capture never silently
 /// grows a Parakeet load and a per-preset LLM bill it did not have before.
+///
+/// Pure, and in EarsCore rather than the daemon, because the read side needs
+/// it too: `ears`'s pipeline view has to know which stages were ever asked
+/// for before it can call a missing artifact a gap.
 public enum OnEndChainPolicy {
   /// - Parameters:
   ///   - declared: the session's own `on_end_stages`, `nil` when undeclared.

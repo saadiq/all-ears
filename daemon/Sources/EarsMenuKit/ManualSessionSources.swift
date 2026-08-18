@@ -35,7 +35,7 @@ public enum ManualSessionSources {
 /// "Click Stop, get a summary" is this app's promise, so the app asks for the
 /// chain explicitly at `session.start` rather than relying on the daemon
 /// defaulting manual sessions into one — the daemon's default is deliberately
-/// inert for non-browser triggers (``OnEndChainPolicy`` in EarsDaemonKit), and
+/// inert for non-browser triggers (``EarsCore/OnEndChainPolicy``), and
 /// a CLI user's scripted capture should stay that way.
 ///
 /// What it asks for is the operator's own `[earsd.sessions] on_end_stages`,

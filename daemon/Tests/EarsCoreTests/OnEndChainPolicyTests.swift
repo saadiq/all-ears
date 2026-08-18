@@ -1,7 +1,6 @@
-import EarsCore
 import Testing
 
-@testable import EarsDaemonKit
+@testable import EarsCore
 
 @Suite("OnEndChainPolicy")
 struct OnEndChainPolicyTests {
