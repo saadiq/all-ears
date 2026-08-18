@@ -172,8 +172,12 @@ enum CleanupRuntime {
       let rawOutput = stringField(outcome.fields, "output")
     {
       let output = URL(fileURLWithPath: rawOutput).standardizedFileURL.path
-      let sidecar = URL(fileURLWithPath: output)
-        .deletingPathExtension().appendingPathExtension("json").path
+      // The cleaned sidecar lands beside the *input* transcript in the data
+      // store (CleanupPublishedPath.cleanSidecarURL), not beside the
+      // published Markdown.
+      let sidecar = CleanupPublishedPath.cleanSidecarURL(
+        forInput: URL(fileURLWithPath: transcriptPath)
+      ).standardizedFileURL.path
       let envelope = CleanupResultEnvelope.success(
         output: output,
         outputs: [output, sidecar],

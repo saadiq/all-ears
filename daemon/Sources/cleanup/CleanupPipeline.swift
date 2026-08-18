@@ -255,7 +255,11 @@ enum CleanupPipeline {
     let outputURL =
       inputs.out.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
       ?? URL(fileURLWithPath: inputs.outputTemplate.expand(templateContext(inputs, document)))
-    let outputSidecarURL = sidecarURL(for: outputURL)
+    // The cleaned JSON sidecar is machine-facing and stays in the data store
+    // beside the input transcript (`transcript.md` → `transcript.clean.json`),
+    // wherever the Markdown publishes — the published tier gets the human
+    // artifact only, never a `.json` beside a vault note.
+    let outputSidecarURL = CleanupPublishedPath.cleanSidecarURL(forInput: transcriptURL)
 
     do {
       let outputMarkdown = TranscriptRenderer.renderMarkdown(cleanedDocument)
@@ -296,8 +300,9 @@ enum CleanupPipeline {
   }
 
   /// `<...>.transcript.json` for `<...>.transcript.md` (same stem, `.md` →
-  /// `.json`) — the sidecar naming convention `OutputPathResolution` also
-  /// uses on the write side.
+  /// `.json`) — the raw intermediate's sidecar naming, used to *read* the
+  /// input's word timings. The cleaned sidecar this run writes uses
+  /// ``CleanupPublishedPath/cleanSidecarURL(forInput:)`` instead.
   private static func sidecarURL(for markdownURL: URL) -> URL {
     markdownURL.deletingPathExtension().appendingPathExtension("json")
   }

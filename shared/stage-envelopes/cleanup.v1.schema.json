@@ -19,7 +19,7 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string" },
-          "description": "Absolute paths of every written artifact, primary first (the .clean.md and its .clean.json sidecar)."
+          "description": "Absolute paths of every written artifact, primary first (the published cleaned Markdown, then the .clean.json sidecar kept beside the input transcript in the data store)."
         },
         "warnings": {
           "type": "array",

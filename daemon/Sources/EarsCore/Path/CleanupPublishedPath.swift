@@ -36,6 +36,20 @@ public enum CleanupPublishedPath {
       fallbackName: documentStem(URL(fileURLWithPath: transcriptPath)))
   }
 
+  /// Where a cleanup run's JSON sidecar lands: beside the **input**
+  /// transcript, `.md` swapped for `.clean.json` —
+  /// `sessions/<uuid>/transcript.md` → `sessions/<uuid>/transcript.clean.json`.
+  ///
+  /// The sidecar is machine-facing (word timings, confidence), so it stays in
+  /// the data store with the intermediate it was derived from. Only the
+  /// cleaned Markdown publishes to the user-facing output — a `.json` beside
+  /// a vault note is pollution, not a deliverable.
+  public static func cleanSidecarURL(forInput url: URL) -> URL {
+    url.deletingPathExtension()
+      .appendingPathExtension("clean")
+      .appendingPathExtension("json")
+  }
+
   /// The input's basename with any known transcript suffix stripped, the
   /// last-resort stand-in when a document carries neither a title nor
   /// sources: `standup.transcript.md` → `standup`.

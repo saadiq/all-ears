@@ -436,10 +436,14 @@ struct CleanupPipelineTests {
 
     #expect(exitCode == 0)
     #expect(FileManager.default.fileExists(atPath: customOut))
-    // Sidecar is derived from the output path itself (custom.clean.md ->
-    // custom.clean.json), not from the input transcript's name.
+    // The sidecar stays beside the *input* transcript regardless of --out:
+    // standup.transcript.md -> standup.transcript.clean.json. Nothing lands
+    // next to the custom output but the Markdown itself.
     #expect(
       FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("standup.transcript.clean.json").path))
+    #expect(
+      !FileManager.default.fileExists(
         atPath: directory.appendingPathComponent("custom.clean.json").path))
   }
 
@@ -532,11 +536,15 @@ struct CleanupPipelineTests {
     let published = directory.appendingPathComponent(
       "2026/08/05/32/2026-08-05 - Kevin Weekly.md")
     #expect(FileManager.default.fileExists(atPath: published.path))
-    // The sidecar follows the Markdown wherever it lands.
+    // The sidecar does NOT follow the Markdown into the published tree — it
+    // stays beside the input transcript in the data store.
     #expect(
-      FileManager.default.fileExists(
+      !FileManager.default.fileExists(
         atPath: directory.appendingPathComponent("2026/08/05/32/2026-08-05 - Kevin Weekly.json")
           .path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("standup.transcript.clean.json").path))
   }
 
   @Test("week_numbering = iso changes {week} where the conventions disagree")
