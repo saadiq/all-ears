@@ -6,8 +6,9 @@ import Foundation
 ///
 /// - Success (exit 0): stdout is exactly this one JSON document, emitted
 ///   through `EarsCLISupport.ResultChannel`. `output` is the primary artifact
-///   (the `.clean.md`); `outputs` lists every written artifact (the markdown
-///   plus its `.clean.json` sidecar).
+///   (the published cleaned Markdown); `outputs` lists every written artifact
+///   (the markdown plus the `.clean.json` sidecar kept beside the input
+///   transcript in the data store).
 /// - Failure (non-zero exit): stdout stays byte-empty; the **last line of
 ///   stderr** is the error variant (`ok: false`, `exit_class` carrying the
 ///   issue-#61 taxonomy label, `message`). "Empty stdout ⇒ no result" holds

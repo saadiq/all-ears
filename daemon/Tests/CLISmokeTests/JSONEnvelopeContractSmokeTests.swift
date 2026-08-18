@@ -355,8 +355,12 @@ struct JSONEnvelopeContractSmokeTests {
     let outputs = try #require(envelope.outputs)
     #expect(outputs.first == output, "outputs must lead with the primary artifact")
     #expect(
-      outputs.contains { $0.hasSuffix("/out/1970/01/01/1970-01-01 - mic.json") },
-      "outputs must list the sidecar")
+      outputs.contains { $0.hasSuffix("/standup.transcript.clean.json") },
+      "outputs must list the sidecar kept beside the input transcript")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: temp.url.appendingPathComponent("out/1970/01/01/1970-01-01 - mic.json").path),
+      "no sidecar may land in the published tree")
     for path in outputs {
       #expect(FileManager.default.fileExists(atPath: path), "outputs entry must exist: \(path)")
     }

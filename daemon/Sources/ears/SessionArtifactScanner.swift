@@ -119,8 +119,13 @@ enum SessionArtifactScanner {
     let cleanupURL = URL(fileURLWithPath: cleanupPath)
     guard let cleanMarkdown = try? String(contentsOf: cleanupURL, encoding: .utf8) else { return }
     artifacts.cleanupExists = true
+    // The cleaned sidecar stays in the data store beside the input transcript
+    // (CleanupPublishedPath.cleanSidecarURL) — only the Markdown publishes.
+    let cleanSidecar = try? String(
+      contentsOf: CleanupPublishedPath.cleanSidecarURL(forInput: transcriptURL),
+      encoding: .utf8)
     if let clean = try? TranscriptParser.parse(
-      markdown: cleanMarkdown, jsonSidecar: sidecarText(for: cleanupURL))
+      markdown: cleanMarkdown, jsonSidecar: cleanSidecar)
     {
       artifacts.cleanupSegments = clean.segments.count
       artifacts.noteLink = clean.frontmatter.note

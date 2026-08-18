@@ -15,6 +15,8 @@ This document defines the on-disk contract. Because the storage layout *is* the 
                                      #   (browser-extension sessions only); kept forever
       transcript.md                  # RAW TRANSCRIPT (from `transcribe --session`) — an
       transcript.json                #   intermediate; kept forever, never swept
+      transcript.clean.json          # the cleaned transcript's JSON sidecar (from `cleanup`) —
+                                     #   machine-facing, so it stays here, not in the vault
       mic.follow.transcript.md       # a `transcribe --follow` run's live transcript,
                                      #   one per followed source
       sources/                       # AUDIO — deleted as one unit by retention
@@ -36,6 +38,7 @@ This document defines the on-disk contract. Because the storage layout *is* the 
   runs/                              # range runs (`--last`/`--from`/`--to`) have no session
     2026-07-17T10-30-00Z_mic.transcript.md    # …so their raw transcripts land here
     2026-07-17T10-30-00Z_mic.transcript.json
+    2026-07-17T10-30-00Z_mic.transcript.clean.json   # cleaned sidecar for a range run
   runtime/
     earsd.sock                       # control socket (path configurable)
     earsd.pid
@@ -43,11 +46,10 @@ This document defines the on-disk contract. Because the storage layout *is* the 
 <output-root>/                       # default: ~/Documents/Transcripts — PUBLISHED output,
   2026/08/05/                        #   laid out by `[cleanup] output`'s path template
     2026-08-05 - Kevin Weekly.md          # cleaned transcript (from `cleanup`)
-    2026-08-05 - Kevin Weekly.json        # its canonical sidecar (word timings, confidence)
     2026-08-05 - Kevin Weekly.summary.md  # summary (from `summarize`)
 ```
 
-**Two tiers.** Raw transcripts are **intermediates**: addressed by session (or range-run id) inside the data store, with no user-facing layout. The **published** artifacts — the cleaned transcript and the summaries — go wherever their path template resolves to, `output_root` by default. A preset can publish somewhere else entirely (an Obsidian daily note, say); see [configuration](./configuration.md#path-templates).
+**Two tiers.** Raw transcripts are **intermediates**: addressed by session (or range-run id) inside the data store, with no user-facing layout. The **published** artifacts — the cleaned transcript and the summaries — go wherever their path template resolves to, `output_root` by default. A preset can publish somewhere else entirely (an Obsidian daily note, say); see [configuration](./configuration.md#path-templates). Only Markdown publishes: the cleaned transcript's JSON sidecar is machine-facing and stays in the data store beside the input transcript (`transcript.clean.json`), so the published tree never collects stray `.json` files.
 
 `<source-id>` is the source's stable id with characters unsafe for paths replaced by `_` (e.g. `app:us.zoom.xos` → `app_us.zoom.xos`). The id itself, as used on the socket and in metadata, keeps its natural form. **Source ids are opaque handles**: a browser source is `browser:<platform>:<track-slug>` where the slug (`t3`) names one captured track and never a person — whose voice it carries lives in `[[speaker]]`, derived from the roster (see "Roster and speaker map"). Older stores hold labels whose suffix was a platform or synthetic participant id (`browser:meet:spaces-x-devices-y`, `browser:meet:speaker-1`); the change is additive-compatible for every reader that treats the id as opaque — which transcription's assembly does, resolving labels only through the speaker map — so old and new sessions read identically.
 
@@ -301,6 +303,8 @@ Rules:
 ```
 
 The Markdown is rendered from the same data the sidecar holds, so the two never disagree for a given run.
+
+Sidecars live in the data store, beside the transcript they describe: `transcript.json` for the raw intermediate, `transcript.clean.json` for the cleaned run over it (range runs follow the same pattern under `runs/`). The published cleaned Markdown gets no sidecar neighbour.
 
 ## Roster and speaker map
 

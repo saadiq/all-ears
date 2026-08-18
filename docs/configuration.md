@@ -210,9 +210,9 @@ With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAud
 
 The pipeline writes two kinds of file, and they live in different places.
 
-**Intermediates** — the raw `.transcript.md` and its JSON sidecar — live in the hidden data store under `data_root`, addressed by session (`sessions/<uuid>/transcript.md`) or by range-run id (`runs/<id>.transcript.md`). They have no user-facing layout, and nothing sweeps them: once the audio is evicted they are the only route to re-running cleanup or summarize with a different prompt or model.
+**Intermediates** — the raw `.transcript.md`, its JSON sidecar, and the cleaned run's `transcript.clean.json` sidecar — live in the hidden data store under `data_root`, addressed by session (`sessions/<uuid>/transcript.md`) or by range-run id (`runs/<id>.transcript.md`). They have no user-facing layout, and nothing sweeps them: once the audio is evicted they are the only route to re-running cleanup or summarize with a different prompt or model.
 
-**Published output** — the cleaned transcript and the summaries — lands wherever its path template resolves to, under `output_root` by default. This is the tier you open, sync, and file.
+**Published output** — the cleaned transcript and the summaries — lands wherever its path template resolves to, under `output_root` by default. This is the tier you open, sync, and file. It is Markdown only: the cleaned transcript's JSON sidecar stays in the data store, never beside a published note.
 
 ## Path templates
 

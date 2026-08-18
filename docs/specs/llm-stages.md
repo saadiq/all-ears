@@ -20,7 +20,7 @@ Turn a raw transcript into a clean, readable one, correcting mis-transcriptions 
 2. Batch turns into chunks of `[cleanup] chunk_seconds` **spoken** seconds (300 by default), one LLM call each.
 3. Build the prompt: the built-in cleanup prompt (or `[cleanup].prompt_file`), plus the merged vocabulary (global + session) as an explicit correction list, plus the chunk's turns rendered one per line behind a `[[n|Speaker]]` marker.
 4. Correct homophones/mis-hearings against the vocabulary and fix punctuation/casing, **without** altering meaning, timestamps, or speaker turns.
-5. Write the result atomically to wherever `[cleanup] output`'s path template resolves to — by default `{output_root}/{year}/{month}/{day}/{date} - {title}.md` — with frontmatter `kind: clean` and `derived_from` naming the source transcript. The JSON sidecar is an extension-swapped sibling of wherever the Markdown lands.
+5. Write the result atomically to wherever `[cleanup] output`'s path template resolves to — by default `{output_root}/{year}/{month}/{day}/{date} - {title}.md` — with frontmatter `kind: clean` and `derived_from` naming the source transcript. Only the Markdown publishes; the cleaned JSON sidecar stays in the data store beside the input transcript (`transcript.md` → `transcript.clean.json`), keeping the published tree free of machine-facing files.
 
 The template expands against the **input document's own frontmatter** (`title:`, `started:`, `session:`, `sources:`), not against flags, so a manual rerun files exactly where the daemon-spawned run did. See [configuration](../configuration.md#path-templates).
 
