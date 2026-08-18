@@ -420,7 +420,7 @@ struct CaptureResumeCommand: AsyncParsableCommand {
 struct SessionCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "session",
-    abstract: "Daemon-owned session lifecycle: start, end, pause/resume marks, rename, list.",
+    abstract: "Daemon-owned session lifecycle: show, start, end, pause/resume marks, rename, list.",
     subcommands: [
       SessionShowCommand.self, SessionStartCommand.self, SessionEndCommand.self,
       SessionPauseCommand.self,
