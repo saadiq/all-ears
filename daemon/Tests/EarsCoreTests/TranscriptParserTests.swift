@@ -167,7 +167,7 @@ struct TranscriptParserTests {
 
     #expect(
       markdown.contains(
-        "audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=session\", \"system=none\"]"))
+        "audio_stores:\n- \"mic=ring\"\n- \"browser:meet:speaker-1=session\"\n- \"system=none\""))
     let parsed = try TranscriptParser.parseFrontmatter(markdown)
     #expect(parsed.audioStores == frontmatter.audioStores)
   }

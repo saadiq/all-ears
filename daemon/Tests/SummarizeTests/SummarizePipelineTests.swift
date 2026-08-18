@@ -529,7 +529,7 @@ struct SummarizePipelineTests {
 
     let content = try String(
       contentsOf: directory.appendingPathComponent("mic.summary.md"), encoding: .utf8)
-    #expect(content.contains("sources: [mic, \"app:us.zoom.xos\"]"))
+    #expect(content.contains("sources:\n- mic\n- \"app:us.zoom.xos\""))
     // Quoted: the comma-joined value contains a "," (a YAML flow-significant
     // character), so FrontmatterRenderer's needsQuoting quotes it.
     #expect(content.contains("derived_from: \"mic.transcript.md, app.transcript.md\""))
