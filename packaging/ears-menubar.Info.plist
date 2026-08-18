@@ -22,6 +22,14 @@
     <string>15.0</string>
     <key>LSUIElement</key>
     <true/>
+    <!-- Alert style: notifications stay on screen until acted on or dismissed,
+         and render their action buttons inline instead of behind a hover
+         chevron. A meeting prompt that expires after a few seconds is a prompt
+         missed. macOS reads this only when it first registers the app, and the
+         user's own choice wins from then on — on a Mac where All Ears is
+         already registered, flip it once in System Settings > Notifications. -->
+    <key>NSUserNotificationAlertStyle</key>
+    <string>alert</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>All Ears reads your calendar to title detected meetings and record who was invited. Nothing is sent anywhere; it only annotates your local session records.</string>
 </dict>

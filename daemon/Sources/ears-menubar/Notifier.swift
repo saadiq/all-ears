@@ -180,6 +180,9 @@ extension Notifier: UNUserNotificationCenterDelegate {
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    completionHandler([.banner, .sound])
+    // `.list` too: this fires only while the app is frontmost, and without it
+    // a notification presented in that window is gone for good once it fades.
+    // Notification Center is where a missed meeting prompt is recovered.
+    completionHandler([.banner, .list, .sound])
   }
 }
