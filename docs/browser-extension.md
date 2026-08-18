@@ -12,7 +12,7 @@ It does nothing else: no meeting-joining bots, no tab capture, no caption scrapi
 | Zoom (web) | One stream per remote participant | Participant id parsed from the track itself — stable across mute/rejoin |
 | Teams | One mixed far-end stream | `Speaker N` attribution from the dominant-speaker signal — honest, but degraded |
 
-Each speaking participant shows up in `ears sources list` as `browser:<platform>:<participant>` and is recorded, indexed, and transcribed like any other source. The extension also declares the call to the daemon, which owns it as a [session](./specs/control-protocol.md#session) carrying the platform's own meeting id — capture, the attendee roster, and the end-of-call pipeline (transcribe, then cleanup and summarize) all hang off that session.
+Each captured track shows up in `ears sources list` as `browser:<platform>:<track>` (an opaque per-track handle — whose voice it carries lives in the session's speaker map) and is recorded, indexed, and transcribed like any other source; `ears status` groups the tracks under the live call and marks which are carrying speech. The extension also declares the call to the daemon, which owns it as a [session](./specs/control-protocol.md#session) carrying the platform's own meeting id — capture, the attendee roster, and the end-of-call pipeline (transcribe, then cleanup and summarize) all hang off that session.
 
 ## Setup
 

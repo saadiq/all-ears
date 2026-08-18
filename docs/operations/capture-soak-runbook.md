@@ -58,6 +58,7 @@ overnight system sleep. Several times a day, drive a real session cycle:
 ears session start --source mic     # prints the session id
 # ...talk for a few minutes...
 ears session end <id>
+ears session show <id>              # a while later: did it transcribe? (daemon-free, from disk)
 ```
 
 Longer is better; the point is to see whether any of the sub-criteria below
