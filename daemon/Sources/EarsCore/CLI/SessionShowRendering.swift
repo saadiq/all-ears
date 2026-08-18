@@ -59,20 +59,20 @@ public enum SessionShowRendering {
 /// stage rows, the artifact paths the disk scan resolved, and the warnings —
 /// a new surface, so its shape is pinned by tests from day one. Additive
 /// keys only from here.
-public struct SessionShowView: Codable, Equatable, Sendable {
+public struct SessionShowView: Codable, Hashable, Sendable {
   public var schema: Int
   public var session: Session
   public var stages: [Stage]
   public var artifacts: Artifacts
   public var warnings: [String]
 
-  public struct Stage: Codable, Equatable, Sendable {
+  public struct Stage: Codable, Hashable, Sendable {
     public var stage: String
     public var state: PipelineStageState
     public var detail: String
   }
 
-  public struct Artifacts: Codable, Equatable, Sendable {
+  public struct Artifacts: Codable, Hashable, Sendable {
     /// `sessions/<id>/transcript.md`, when present.
     public var transcript: String?
     /// The resolved `[cleanup] output` path, when it exists on disk.
