@@ -16,8 +16,9 @@ public struct MeetingPrompt: Sendable, Hashable {
 /// The notification category a detected-meeting prompt is posted under, and
 /// the buttons it carries. `Notifier` registers these with
 /// `UNUserNotificationCenter` at launch and reads them back off a click; the
-/// identifiers live here, beside the policy that stamps the category onto the
-/// request, so registration and post cannot drift apart.
+/// identifiers live here rather than in that shim so both sides of the seam
+/// name the same strings — see ``NotificationRequest/Action/notificationCategory``
+/// for which notifications claim this category.
 public enum MeetingPromptCategory {
   public static let identifier = "meeting-detected"
   /// Accepts the offer — the same effect as clicking the notification body.
@@ -47,8 +48,7 @@ public enum MeetingPromptPolicy {
             title: "\(label) meeting detected",
             body: "Start recording?",
             action: .startDetected(
-              source: activity.source.rawValue, episode: activity.episode, label: label),
-            category: MeetingPromptCategory.identifier))
+              source: activity.source.rawValue, episode: activity.episode, label: label)))
       }
   }
 }

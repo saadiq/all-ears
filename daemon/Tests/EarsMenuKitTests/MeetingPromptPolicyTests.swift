@@ -29,11 +29,15 @@ struct MeetingPromptPolicyTests {
         == .startDetected(source: "app:us.zoom.xos", episode: "us.zoom.xos#1", label: "Zoom"))
   }
 
-  @Test("the prompt names the category that carries its buttons")
-  func promptCarriesActionCategory() {
+  @Test("only an offer to start carries the prompt's buttons")
+  func onlyOffersCarryTheButtonCategory() {
     let prompts = MeetingPromptPolicy.prompts(
       state: connectedState([zoomActive()]), alreadyPrompted: [])
-    #expect(prompts[0].request.category == MeetingPromptCategory.identifier)
+    #expect(prompts[0].request.action.notificationCategory == MeetingPromptCategory.identifier)
+    // A notification that accepts nothing must not offer Start / Not Now.
+    #expect(NotificationRequest.Action.openSummary(session: "s1").notificationCategory == nil)
+    #expect(NotificationRequest.Action.revealSession(session: "s1").notificationCategory == nil)
+    #expect(NotificationRequest.Action.none.notificationCategory == nil)
   }
 
   @Test("an already-prompted episode stays quiet")

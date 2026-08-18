@@ -104,7 +104,9 @@ final class Notifier: NSObject {
     content.title = request.title
     content.body = request.body
     content.userInfo = Self.encode(request.action)
-    if let category = request.category { content.categoryIdentifier = category }
+    if let category = request.action.notificationCategory {
+      content.categoryIdentifier = category
+    }
     let log = self.log
     UNUserNotificationCenter.current().add(
       UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)

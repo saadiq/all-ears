@@ -6,19 +6,32 @@ public struct NotificationRequest: Sendable, Hashable {
     case revealSession(session: String)
     case startDetected(source: String, episode: String, label: String)
     case none
+
+    /// Names the `UNNotificationCategory` whose buttons this action's
+    /// notification carries, or `nil` for one with no buttons of its own. A
+    /// plain string, so deciding *what* to say stays free of
+    /// `UserNotifications`.
+    ///
+    /// Derived rather than stored beside the action: the buttons *are* the
+    /// offer, so the two cannot disagree. A second field would let a caller
+    /// build a `.startDetected` that posts without its Start button, or hang
+    /// the accept/decline pair off a notification that accepts nothing —
+    /// both of which compile. The switch is exhaustive so a new case has to
+    /// answer the question.
+    public var notificationCategory: String? {
+      switch self {
+      case .startDetected: return MeetingPromptCategory.identifier
+      case .openSummary, .revealSession, .none: return nil
+      }
+    }
   }
   public var title: String
   public var body: String
   public var action: Action
-  /// Names the `UNNotificationCategory` whose buttons this notification
-  /// carries, or `nil` for one with no buttons of its own. A plain string, so
-  /// deciding *what* to say stays free of `UserNotifications`.
-  public var category: String?
-  public init(title: String, body: String, action: Action, category: String? = nil) {
+  public init(title: String, body: String, action: Action) {
     self.title = title
     self.body = body
     self.action = action
-    self.category = category
   }
 }
 
