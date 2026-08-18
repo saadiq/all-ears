@@ -35,4 +35,19 @@ public enum OnEndChainPolicy {
     }
     return OnEndStage.resolveList(declared)
   }
+
+  /// The chain `[earsd.sessions] on_end_stages` configures, from the raw
+  /// config list — `nil` for an absent key, which is not the same answer as an
+  /// explicit `[]`: nothing configured inherits the full chain, while `[]` is
+  /// an operator disabling it. Collapsing the two would have a reader call a
+  /// stage missing on a machine that turned it off on purpose.
+  ///
+  /// Lenient like the daemon's own read (`DaemonConfigResolution`), and the
+  /// problems `resolveList` reports are dropped here: the daemon logs them,
+  /// and the read-only surfaces that call this only need the chain that would
+  /// actually run.
+  public static func configured(fromRaw raw: [String]?) -> [OnEndStage] {
+    guard let raw else { return OnEndStage.allCases }
+    return OnEndStage.resolveList(raw).stages
+  }
 }

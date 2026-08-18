@@ -52,4 +52,25 @@ struct OnEndChainPolicyTests {
     #expect(result.stages == OnEndStage.allCases)
     #expect(result.problems.isEmpty)
   }
+
+  /// An absent key and an explicit `[]` are different answers: nothing
+  /// configured means the daemon's full chain, while `[]` is an operator
+  /// saying "run none of it". A reader that collapsed the two would report a
+  /// stage as missing on a machine that deliberately disabled it.
+  @Test("an absent on_end_stages key means the full chain, an empty list means none")
+  func absentKeyDiffersFromEmptyList() {
+    #expect(OnEndChainPolicy.configured(fromRaw: nil) == OnEndStage.allCases)
+    #expect(OnEndChainPolicy.configured(fromRaw: []).isEmpty)
+  }
+
+  @Test("a configured list resolves leniently, dropping what the daemon would drop")
+  func configuredListResolvesLeniently() {
+    #expect(OnEndChainPolicy.configured(fromRaw: ["transcribe"]) == [.transcribe])
+    #expect(
+      OnEndChainPolicy.configured(fromRaw: ["summarize", "transcribe", "nonsense"])
+        == [.transcribe, .summarize])
+    // LLM stages with no transcribe to feed them are the daemon's to complain
+    // about; a read-only view just gets the chain that would actually run.
+    #expect(OnEndChainPolicy.configured(fromRaw: ["cleanup"]).isEmpty)
+  }
 }

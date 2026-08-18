@@ -47,16 +47,12 @@ enum SessionArtifactScanner {
     }
   }
 
-  /// The resolved `[earsd.sessions] on_end_stages`, read exactly as `earsd`
-  /// resolves it (`DaemonConfigResolution`): an absent key means the full
-  /// chain, an explicit list resolves leniently, and `[]` disables it. The
-  /// problems `resolveList` reports are the daemon's to log, not a read-only
-  /// view's.
+  /// The resolved `[earsd.sessions] on_end_stages` — see
+  /// ``OnEndChainPolicy/configured(fromRaw:)`` for how an absent key, an
+  /// explicit list, and `[]` differ.
   private static func onEndChain(_ config: ConfigValue) -> [OnEndStage] {
-    guard let raw = stringArray(config, ["earsd", "sessions", "on_end_stages"]) else {
-      return OnEndStage.allCases
-    }
-    return OnEndStage.resolveList(raw).stages
+    OnEndChainPolicy.configured(
+      fromRaw: stringArray(config, ["earsd", "sessions", "on_end_stages"]))
   }
 
   static func scan(session: Session, environment: ScanEnvironment) -> SessionArtifacts {
