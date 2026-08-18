@@ -36,17 +36,6 @@ enum OutputFormatting {
 
   // MARK: - Per-payload human renderers
 
-  static func humanStatus(_ data: StatusData) -> String {
-    var lines = ["uptime: \(data.uptimeSeconds)s"]
-    lines.append(contentsOf: data.sources.map { "source\t" + humanSourceLine($0) })
-    // Sessions carry an explicit row-kind prefix so a session id can't be
-    // read as a source id in the flat status list.
-    if !data.sessions.isEmpty {
-      lines.append(contentsOf: data.sessions.map(humanSessionLine))
-    }
-    return lines.joined(separator: "\n")
-  }
-
   static func humanSourcesList(_ data: SourcesListData) -> String {
     data.sources.isEmpty
       ? "(no sources)" : data.sources.map(humanSourceLine).joined(separator: "\n")
@@ -62,10 +51,6 @@ enum OutputFormatting {
 
   static func humanSession(_ session: Session) -> String {
     humanSessionLine(session)
-  }
-
-  static func humanSessionList(_ data: SessionListData) -> String {
-    humanSessions(data.sessions)
   }
 
   static func humanSessions(_ sessions: [Session]) -> String {

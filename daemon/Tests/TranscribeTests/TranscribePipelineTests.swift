@@ -199,7 +199,7 @@ struct TranscribePipelineTests {
     #expect(markdown.contains("hello world"))
     #expect(markdown.contains("You"))
     #expect(markdown.contains("kind: transcript"))
-    #expect(markdown.contains("sources: [mic]"))
+    #expect(markdown.contains("sources:\n- mic"))
 
     let json = try outputText(at: paths.sidecar)
     let sidecar = try #require(
@@ -754,7 +754,8 @@ struct TranscribePipelineTests {
     #expect(markdown.contains("mic-from-ring"))
     #expect(markdown.contains("browser-from-session"))
     // The chosen lookup order is recorded in frontmatter, per issue #20.
-    #expect(markdown.contains("audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=session\"]"))
+    #expect(
+      markdown.contains("audio_stores:\n- \"mic=ring\"\n- \"browser:meet:speaker-1=session\""))
 
     // Frontmatter round-trips the per-source store record.
     let parsed = try TranscriptParser.parseFrontmatter(markdown)
@@ -811,7 +812,7 @@ struct TranscribePipelineTests {
     // per-source store record (`none`, since nothing was found).
     let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
-    #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-2=none\"]"))
+    #expect(markdown.contains("audio_stores:\n- \"mic=none\"\n- \"browser:meet:speaker-2=none\""))
   }
 
   @Test(
@@ -882,7 +883,8 @@ struct TranscribePipelineTests {
     // per-source outcome: `mic` read from no store, the browser source from the
     // per-session copy.
     #expect(markdown.contains("speaker one speaking"))
-    #expect(markdown.contains("audio_stores: [\"mic=none\", \"browser:meet:speaker-1=session\"]"))
+    #expect(
+      markdown.contains("audio_stores:\n- \"mic=none\"\n- \"browser:meet:speaker-1=session\""))
   }
 
   @Test(
@@ -937,7 +939,7 @@ struct TranscribePipelineTests {
 
     let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
     let markdown = try outputText(at: paths.markdown)
-    #expect(markdown.contains("audio_stores: [\"mic=session\"]"))
+    #expect(markdown.contains("audio_stores:\n- \"mic=session\""))
   }
 
   @Test("segments from two sources are merged onto one shared timeline, ordered by time")

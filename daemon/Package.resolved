@@ -1,5 +1,5 @@
 {
-  "originHash" : "0b8246b579253d6bb9b51a7be76cd464b8a32583cc205dd790840b47fb374f3d",
+  "originHash" : "c6f8de5faf758b76680acd82bb87d6aedfd67f9422b871658cf05699f5ad22f1",
   "pins" : [
     {
       "identity" : "fluidaudio",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "ec6198d37d495efc6acd4dffbd262cdca7ff9b3f",
         "version" : "0.6.0"
+      }
+    },
+    {
+      "identity" : "yams",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jpsim/Yams.git",
+      "state" : {
+        "revision" : "a27b21e0c81c5bf42049b897a62aaf387e80f279",
+        "version" : "6.2.2"
       }
     }
   ],

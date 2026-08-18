@@ -167,7 +167,7 @@ struct TranscriptParserTests {
 
     #expect(
       markdown.contains(
-        "audio_stores: [\"mic=ring\", \"browser:meet:speaker-1=session\", \"system=none\"]"))
+        "audio_stores:\n- \"mic=ring\"\n- \"browser:meet:speaker-1=session\"\n- \"system=none\""))
     let parsed = try TranscriptParser.parseFrontmatter(markdown)
     #expect(parsed.audioStores == frontmatter.audioStores)
   }
@@ -213,6 +213,57 @@ struct TranscriptParserTests {
 
     let parsed = try TranscriptParser.parseFrontmatter(markdown)
     #expect(parsed.sources == ["mic"])
+  }
+
+  @Test("parses block-style frontmatter a vault linter rewrote (journal: real vault files)")
+  func blockStyleFrontmatterParses() throws {
+    // The shape observed on a real published transcript after Obsidian
+    // tooling normalised the flow-style YAML into block style. The old
+    // hand-rolled grammar refused this; a real YAML parse must not.
+    let markdown = """
+      ---
+      schema: 1
+      kind: clean
+      derived_from: transcript.md
+      session: bcc24971-ab04-46d1-815c-751caea6c96e
+      title: Michael Schwanzer
+      note: "[[daily-notes/2026/08/34/2026-08-17 - Michael Schwanzer]]"
+      attendees:
+        - Tom Elliot (me)
+        - Michael Schwanzer
+      started: 2026-08-17T14:15:33Z
+      sources:
+        - mic
+        - "browser:meet:t2"
+      range:
+        start: 2026-08-17T14:15:33Z
+        end: 2026-08-17T14:44:16Z
+      model:
+        name: parakeet-tdt-fluidaudio
+        backend: fluidaudio
+        version: "parakeet-tdt-0.6b-v3"
+      diarization:
+        enabled: false
+      generated: 2026-08-17T14:44:36Z
+      duration_seconds: 1723
+      speech_seconds: 1742.356
+      word_count: 5742
+      vocab: []
+      warnings:
+        - "speaker attribution: assigned 2 unidentified audio tracks"
+      obsidian_added_key: ignored
+      ---
+      body
+      """
+    let parsed = try TranscriptParser.parseFrontmatter(markdown)
+    #expect(parsed.note == "[[daily-notes/2026/08/34/2026-08-17 - Michael Schwanzer]]")
+    #expect(parsed.attendees == ["Tom Elliot (me)", "Michael Schwanzer"])
+    #expect(parsed.sources == ["mic", "browser:meet:t2"])
+    #expect(parsed.title == "Michael Schwanzer")
+    #expect(parsed.wordCount == 5742)
+    #expect(parsed.warnings == ["speaker attribution: assigned 2 unidentified audio tracks"])
+    #expect(parsed.diarization.enabled == false)
+    #expect(parsed.started == Instant(secondsSinceEpoch: 1_786_976_133))
   }
 
   @Test("throws missingFrontmatterFences for a document with no frontmatter")

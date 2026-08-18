@@ -5,13 +5,13 @@ import EarsDataStore
 import EarsIPC
 import Foundation
 
-/// Control client for `earsd`: source status, session lifecycle, and the
-/// live event feed, over the v2 control socket. See
-/// `docs/specs/control-protocol.md`.
+/// Control client for `earsd`: the session-first status/sessions surfaces,
+/// session lifecycle, and the live event feed, over the v2 control socket.
+/// See `docs/specs/control-protocol.md`.
 ///
-/// The root is a pure dispatcher — it declares no flags of its own, so no
-/// root option can collide with a subcommand's. Phase 0's day-one
-/// config-discovery contract lives on the `config` subcommand. Each real
+/// The root declares no flags of its own, so no root option can collide with
+/// a subcommand's; bare `ears` runs `status` (the dashboard). Phase 0's
+/// day-one config-discovery contract lives on the `config` subcommand. Each
 /// subcommand below is a thin `ClientOptions`-driven wrapper around
 /// ``ControlClientRuntime``/``OutputFormatting``, so none of them duplicate
 /// socket-connection or output-formatting logic.
@@ -21,10 +21,12 @@ struct Ears: AsyncParsableCommand {
     commandName: "ears",
     abstract: "Control client for the earsd capture daemon.",
     subcommands: [
-      ConfigCommand.self, StatusCommand.self, SourcesCommand.self, CaptureCommand.self,
+      ConfigCommand.self, StatusCommand.self, SessionsCommand.self, SourcesCommand.self,
+      CaptureCommand.self,
       SessionCommand.self, WatchCommand.self,
       FlushCommand.self,
-    ]
+    ],
+    defaultSubcommand: StatusCommand.self
   )
 }
 
@@ -156,15 +158,103 @@ struct ConfigPathCommand: AsyncParsableCommand {
 struct StatusCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "status",
-    abstract: "Daemon + per-source state, buffer occupancy, active sessions.")
+    abstract:
+      "The daemon dashboard: live sessions with their sources, and recent pipeline outcomes.")
 
   @OptionGroup var options: ClientOptions
 
   func run() async throws {
-    try await runSimpleCommand(
-      .status, expecting: StatusData.self, options: options,
-      humanSuccess: OutputFormatting.humanStatus)
+    let debug = options.debug
+    guard let client = await ControlClientRuntime.connect(configFlag: options.config, debug: debug)
+    else {
+      throw ExitCode(1)
+    }
+    let status = try await ControlClientRuntime.send(
+      .status, expecting: StatusData.self, via: client, debug: debug)
+    await client.close()
+    if options.json {
+      // The machine surface keeps its existing payload shape untouched
+      // (additive keys only — pinned by CLISmokeTests).
+      let code = OutputFormatting.emit(status, json: true, humanSuccess: { _ in "" })
+      if code != 0 { throw ExitCode(code) }
+      return
+    }
+    print(
+      StatusDashboardAssembly.dashboard(status: status, configFlag: options.config, debug: debug))
   }
+}
+
+// MARK: - sessions (top-level list with pipeline outcomes)
+
+struct SessionsCommand: AsyncParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "sessions",
+    abstract: "Recent sessions, one line each, with their pipeline outcome.")
+
+  @OptionGroup var options: ClientOptions
+
+  @Flag(
+    name: .customLong("all"),
+    help: "Read every sessions/*/session.toml from the data root, daemon-free.")
+  var all = false
+
+  func run() async throws {
+    try await runSessionsList(options: options, all: all)
+  }
+}
+
+/// The one implementation behind `ears sessions` and its compatibility alias
+/// `ears session list`: live + recent sessions from the daemon, or (`--all`)
+/// full history from disk. `--json` keeps the `session.list` payload shape
+/// exactly; the human view renders pipeline outcomes from a disk scan.
+private func runSessionsList(options: ClientOptions, all: Bool) async throws {
+  let sessions: [Session]
+  if all {
+    // Closed history is read from disk, not the socket — works with no
+    // daemon running at all.
+    let dataRoot: String
+    switch ControlClientRuntime.resolveDataRoot(configFlag: options.config) {
+    case .failure(let error):
+      ControlClientRuntime.writeStderr(error.description)
+      throw ExitCode(1)
+    case .success(let root):
+      dataRoot = root
+    }
+    sessions = SessionStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
+      .sorted { $0.started < $1.started }
+  } else {
+    let debug = options.debug
+    guard let client = await ControlClientRuntime.connect(configFlag: options.config, debug: debug)
+    else {
+      throw ExitCode(1)
+    }
+    let data = try await ControlClientRuntime.send(
+      .sessionList, expecting: SessionListData.self, via: client, debug: debug)
+    await client.close()
+    sessions = data.sessions
+  }
+
+  if options.json {
+    let code = OutputFormatting.emit(
+      SessionListData(sessions: sessions), json: true, humanSuccess: { _ in "" })
+    if code != 0 { throw ExitCode(code) }
+    return
+  }
+
+  // The outcome column comes from disk; an unresolvable scan environment
+  // degrades to record-only outcomes rather than failing the list.
+  let entries: [SessionListEntry]
+  switch SessionArtifactScanner.environment(configFlag: options.config) {
+  case .failure:
+    entries = sessions.map { SessionListEntry(session: $0, artifacts: SessionArtifacts()) }
+  case .success(let environment):
+    entries = sessions.map {
+      SessionListEntry(
+        session: $0, artifacts: SessionArtifactScanner.scan(session: $0, environment: environment))
+    }
+  }
+  let now = Instant(secondsSinceEpoch: Date().timeIntervalSince1970)
+  print(SessionsListRendering.render(entries: entries, now: now, timeZone: TimeZone.current))
 }
 
 // MARK: - sources list / enable / disable
@@ -330,9 +420,10 @@ struct CaptureResumeCommand: AsyncParsableCommand {
 struct SessionCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "session",
-    abstract: "Daemon-owned session lifecycle: start, end, pause/resume marks, rename, list.",
+    abstract: "Daemon-owned session lifecycle: show, start, end, pause/resume marks, rename, list.",
     subcommands: [
-      SessionStartCommand.self, SessionEndCommand.self, SessionPauseCommand.self,
+      SessionShowCommand.self, SessionStartCommand.self, SessionEndCommand.self,
+      SessionPauseCommand.self,
       SessionResumeCommand.self, SessionRenameCommand.self, SessionListCommand.self,
     ]
   )
@@ -430,7 +521,7 @@ struct SessionRenameCommand: AsyncParsableCommand {
 struct SessionListCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "list",
-    abstract: "Live + recent sessions from the daemon; --all reads full history from disk.")
+    abstract: "Alias of `ears sessions`: live + recent sessions; --all reads history from disk.")
 
   @OptionGroup var options: ClientOptions
 
@@ -440,28 +531,67 @@ struct SessionListCommand: AsyncParsableCommand {
   var all = false
 
   func run() async throws {
-    if all {
-      // Closed history is read from disk, not the socket — works with no
-      // daemon running at all.
-      let dataRoot: String
-      switch ControlClientRuntime.resolveDataRoot(configFlag: options.config) {
-      case .failure(let error):
-        ControlClientRuntime.writeStderr(error.description)
-        throw ExitCode(1)
-      case .success(let root):
-        dataRoot = root
-      }
-      let sessions = SessionStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
-        .sorted { $0.started < $1.started }
-      let code = OutputFormatting.emit(
-        SessionListData(sessions: sessions), json: options.json,
-        humanSuccess: OutputFormatting.humanSessionList)
-      if code != 0 { throw ExitCode(code) }
-      return
+    try await runSessionsList(options: options, all: all)
+  }
+}
+
+struct SessionShowCommand: AsyncParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "show",
+    abstract: "One session's pipeline state, stage by stage, reconstructed from disk.")
+
+  @OptionGroup var options: ClientOptions
+
+  @Argument(
+    help: "A unique session-id prefix, a title fragment, or a start time HH:MM (today).")
+  var ref: String
+
+  @Flag(name: .customLong("warnings"), help: "Print the session's warnings verbatim.")
+  var warnings = false
+
+  func run() async throws {
+    let environment: ScanEnvironment
+    switch SessionArtifactScanner.environment(configFlag: options.config) {
+    case .failure(let error):
+      ControlClientRuntime.writeStderr(error.description)
+      throw ExitCode(1)
+    case .success(let resolved):
+      environment = resolved
     }
-    try await runSimpleCommand(
-      .sessionList, expecting: SessionListData.self, options: options,
-      humanSuccess: OutputFormatting.humanSessionList)
+
+    let sessions = SessionStore.readAll(dataRoot: environment.dataRoot)
+    let now = Instant(secondsSinceEpoch: Date().timeIntervalSince1970)
+    let timeZone = TimeZone.current
+
+    switch SessionRef.resolve(ref, in: sessions, now: now, timeZone: timeZone) {
+    case .notFound:
+      ControlClientRuntime.writeStderr(
+        "error: no session matches '\(ref)' — try a unique id prefix, a title fragment, "
+          + "or a start time HH:MM (today); `ears sessions --all` lists them")
+      throw ExitCode(1)
+    case .ambiguous(let candidates):
+      var lines = ["error: '\(ref)' matches \(candidates.count) sessions:"]
+      for candidate in candidates {
+        let day = HumanUnits.localDate(candidate.started, timeZone: timeZone)
+        let clock = HumanUnits.clock(candidate.started, timeZone: timeZone)
+        lines.append("  \(candidate.id.prefix(8))  \(day) \(clock)  \(candidate.title)")
+      }
+      lines.append("narrow it: a longer id prefix, or a more specific title fragment")
+      ControlClientRuntime.writeStderr(lines.joined(separator: "\n"))
+      throw ExitCode(1)
+    case .match(let session):
+      let artifacts = SessionArtifactScanner.scan(session: session, environment: environment)
+      if options.json {
+        let view = SessionShowView.build(session: session, artifacts: artifacts, now: now)
+        let code = OutputFormatting.emit(view, json: true, humanSuccess: { _ in "" })
+        if code != 0 { throw ExitCode(code) }
+        return
+      }
+      print(
+        SessionShowRendering.render(
+          session: session, artifacts: artifacts, now: now, timeZone: timeZone,
+          showWarnings: warnings))
+    }
   }
 }
 

@@ -154,19 +154,24 @@ events (`session`, `source`) arrive revision-tagged and telemetry events (`vad`,
 Thin CLI over the Unix socket. One job: let a human or a script drive the daemon.
 
 ```
-ears status
-ears sources list
-ears sources enable app:us.zoom.xos
-ears capture pause [<source>]
+ears                                            # = ears status: the dashboard
+ears status                                     # live sessions + their sources, recent outcomes
+ears sessions [--all]                           # one line per session with its pipeline outcome;
+                                                #   --all reads sessions/*/session.toml from disk
+ears session show <ref> [--warnings] [--json]   # one session's pipeline, stage by stage, from disk;
+                                                #   <ref> = id prefix | title fragment | HH:MM today
 ears session start --title standup --source mic --source app:us.zoom.xos
 ears session pause <session-id>                 # closes the open mark; capture untouched
 ears session resume <session-id>                # opens a new mark
 ears session rename <session-id> --title "Weekly sync"
 ears session end <session-id>
-ears session list [--all]                       # --all reads sessions/*/session.toml from disk
+ears session list [--all]                       # alias of `ears sessions`
+ears sources list
+ears sources enable app:us.zoom.xos
+ears capture pause [<source>]
 ears watch --events vad,segment                 # subscribe: snapshot, then the live feed
 ears flush
 ears config show / ears config path
 ```
 
-Every subcommand has concise `--help`. Output is human-readable by default, `--json` for scripting. Exits non-zero with a clear message if the daemon is unreachable.
+Every subcommand has concise `--help`. Output is human-readable by default — `status` renders a dashboard that groups sources under the session they feed, labels them only with names the session's speaker map or roster provides, and ends with a short recent-sessions tail — with `--json` for scripting (`status` and `session list` keep their existing payload shapes; additions are additive-only). Exits non-zero with a clear message if the daemon is unreachable; `sessions --all` and `session show` read from disk and need no daemon at all.

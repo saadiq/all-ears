@@ -69,15 +69,26 @@ struct TranscriptRenderingTests {
       "schema: 1",
       "kind: transcript",
       "range_run: 2026-07-17T10-30-00Z_standup",
-      "sources: [mic, \"app:us.zoom.xos\"]",
-      "range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }",
-      "model: { name: parakeet, backend: fluidaudio, version: \"0.x\" }",
-      "diarization: { enabled: true, backend: pyannote }",
+      "sources:",
+      "- mic",
+      "- \"app:us.zoom.xos\"",
+      "range:",
+      "  start: 2026-07-17T10:30:00Z",
+      "  end: 2026-07-17T11:02:00Z",
+      "model:",
+      "  name: parakeet",
+      "  backend: fluidaudio",
+      "  version: \"0.x\"",
+      "diarization:",
+      "  enabled: true",
+      "  backend: pyannote",
       "generated: 2026-07-17T11:02:14Z",
       "duration_seconds: 1920",
       "speech_seconds: 1440",
       "word_count: 3120",
-      "vocab: [global, standup]",
+      "vocab:",
+      "- global",
+      "- standup",
       "---",
       "",
       "**[10:30:04] You**",
@@ -187,7 +198,7 @@ struct TranscriptRenderingTests {
     let document = TranscriptDocument(frontmatter: frontmatter, segments: [])
 
     #expect(
-      TranscriptRenderer.renderMarkdown(document).contains("diarization: { enabled: false }\n"))
+      TranscriptRenderer.renderMarkdown(document).contains("diarization:\n  enabled: false\n"))
   }
 
   @Test("single segment renders one heading block with no trailing blank turn")
@@ -235,6 +246,6 @@ struct TranscriptRenderingTests {
       vocab: []
     )
     let document = TranscriptDocument(frontmatter: frontmatter, segments: [])
-    #expect(TranscriptRenderer.renderMarkdown(document).contains("sources: [mic]\n"))
+    #expect(TranscriptRenderer.renderMarkdown(document).contains("sources:\n- mic\n"))
   }
 }
