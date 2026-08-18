@@ -172,10 +172,17 @@ extension Notifier: UNUserNotificationCenterDelegate {
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
-    // "Not Now" is a decline, and the only thing an accept-or-decline prompt
-    // can say that must *not* be acted on — the episode was marked prompted
-    // when the notification went out, so closing it is the whole effect.
-    guard response.actionIdentifier != MeetingPromptCategory.dismiss else {
+    // Acting is the exception, not the default. Naming the two identifiers
+    // that accept — a click on the body, and the Start button — means a
+    // response this app does not understand is ignored rather than treated as
+    // a yes: "Not Now", the system's own dismiss identifier if the category
+    // ever gains `.customDismissAction`, and any button added later all fall
+    // here. Declining needs no undo, since the episode was marked prompted
+    // when the notification went out.
+    switch response.actionIdentifier {
+    case UNNotificationDefaultActionIdentifier, MeetingPromptCategory.start:
+      break
+    default:
       completionHandler()
       return
     }
