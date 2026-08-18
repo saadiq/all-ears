@@ -170,10 +170,15 @@ public enum SessionArtifactLocator {
 }
 
 public enum RecentSessions {
+  /// The menu's Recent Sessions list: ended sessions, most recently *ended*
+  /// first — the order `ears status`'s recent tail uses, so the two surfaces
+  /// agree about what "recent" means. Ordering by start instead would bury a
+  /// long call under the short one it overran. A record with no end instant
+  /// sorts on its start, the only instant it carries.
   public static func select(from sessions: [Session], limit: Int = 7) -> [Session] {
     Array(
       sessions.filter { $0.state == .ended }
-        .sorted { $0.started > $1.started }
+        .sorted { ($0.ended ?? $0.started) > ($1.ended ?? $1.started) }
         .prefix(limit))
   }
 }

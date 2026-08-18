@@ -7,11 +7,13 @@ func instant(_ seconds: Double) -> Instant { Instant(secondsSinceEpoch: seconds)
 
 func makeSession(
   id: String = "s1", title: String = "Weekly sync", state: SessionState = .active,
-  started: Double = 1_000, warnings: [String] = []
+  started: Double = 1_000, ended: Double? = nil, warnings: [String] = []
 ) -> Session {
   Session(
     id: id, title: title, state: state, started: instant(started),
-    intervals: [SessionInterval(start: instant(started))], warnings: warnings,
+    ended: ended.map(instant),
+    intervals: [SessionInterval(start: instant(started), end: ended.map(instant))],
+    warnings: warnings,
     sources: [SourceID("mic")])
 }
 

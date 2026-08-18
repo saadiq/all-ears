@@ -214,4 +214,28 @@ struct RecentSessionsTests {
     ]
     #expect(RecentSessions.select(from: sessions, limit: 2).map(\.id) == ["new", "mid"])
   }
+
+  /// "Recent" is most recently *ended*, matching `ears status`'s tail: a long
+  /// call that began before a short one but ran past it is the fresher result,
+  /// and it is results this menu lists.
+  @Test("a session that started earlier but ended later sorts first")
+  func ordersByEndNotStart() {
+    let sessions = [
+      makeSession(id: "short", state: .ended, started: 3_000, ended: 3_600),
+      makeSession(id: "long", state: .ended, started: 1_000, ended: 7_200),
+    ]
+    #expect(RecentSessions.select(from: sessions).map(\.id) == ["long", "short"])
+  }
+
+  /// A record whose end was never written — a daemon killed mid-session,
+  /// reconciled to `ended` on the next boot — still sorts, on the one instant
+  /// it does carry.
+  @Test("an ended session with no end instant falls back to its start")
+  func fallsBackToStartWhenUnended() {
+    let sessions = [
+      makeSession(id: "unended", state: .ended, started: 5_000),
+      makeSession(id: "ended", state: .ended, started: 1_000, ended: 4_000),
+    ]
+    #expect(RecentSessions.select(from: sessions).map(\.id) == ["unended", "ended"])
+  }
 }
