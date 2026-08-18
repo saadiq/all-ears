@@ -20,12 +20,14 @@ import Foundation
   /// Asks for the grant and wires notification clicks to the artifacts they
   /// name.
   ///
+  /// - Parameter now: reads the clock when a click is resolved, not when this
+  ///   is called — the scan it dates may happen days later.
   /// - Parameter startDetected: called on a `.startDetected` click, with the
   ///   source and episode to start recording.
   /// - Parameter report: receives the resolved availability, here and on every
   ///   later ``refreshAvailability(report:)``.
   func bootstrap(
-    dataRoot: String, provider: RecentSessionsProvider,
+    dataRoot: String, provider: RecentSessionsProvider, now: @escaping @Sendable () -> Instant,
     startDetected: @escaping @MainActor @Sendable (String, String) -> Void,
     report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
   ) {
@@ -35,7 +37,8 @@ import Foundation
     notifier.bootstrap { action in
       switch action {
       case .openSummary(let session):
-        return provider.load(limit: 50).first { $0.session.id == session }?.summaries.first
+        return provider.load(limit: 50, now: now()).first { $0.session.id == session }?
+          .summaries.first
       case .revealSession(let session):
         return DataStoreLayout.sessionDirectory(
           dataRoot: URL(fileURLWithPath: dataRoot), sessionID: session)

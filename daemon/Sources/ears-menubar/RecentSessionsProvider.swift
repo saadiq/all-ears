@@ -14,7 +14,16 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
   /// The published, cleaned transcript: the file you actually read.
   var clean: URL?
   var summaries: [URL]
+  /// How far this session's pipeline got, in `ears sessions`' own vocabulary.
+  var outcome: PipelineOutcome
   var id: String { session.id }
+
+  /// Hashed on the session id alone: it already identifies a row, and
+  /// ``PipelineOutcome`` is `Equatable` but not `Hashable`, so the synthesized
+  /// conformance is unavailable. Equality still compares every field.
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(session.id)
+  }
 }
 
 /// Read-only bridge from the on-disk stores to menu items. Never writes —
@@ -22,10 +31,13 @@ struct RecentSessionItem: Identifiable, Hashable, Sendable {
 struct RecentSessionsProvider: Sendable {
   var dataRoot: String
   var publishing: PublishingSettings
+  /// The chain an inheriting session runs, resolved once for the whole scan —
+  /// it is a property of the config, not of any one session.
+  var onEndChain: [OnEndStage]
 
-  func load(limit: Int = 7) -> [RecentSessionItem] {
+  func load(limit: Int = 7, now: Instant) -> [RecentSessionItem] {
     let all = SessionStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
-    return RecentSessions.select(from: all, limit: limit).map(item(for:))
+    return RecentSessions.select(from: all, limit: limit).map { item(for: $0, now: now) }
   }
 
   /// The published tier is resolved from the raw transcript's own frontmatter
@@ -34,21 +46,44 @@ struct RecentSessionsProvider: Sendable {
   /// at a guessed path. That is the honest answer: `cleanup` consumes the
   /// transcript, and retention never sweeps it (it deletes `sources/` only), so
   /// a missing transcript means the chain never got that far.
-  private func item(for session: Session) -> RecentSessionItem {
+  private func item(for session: Session, now: Instant) -> RecentSessionItem {
     let transcriptURL = SessionArtifactLocator.rawTranscript(
       dataRoot: dataRoot, sessionID: session.id)
     guard let document = parse(transcriptURL) else {
       return RecentSessionItem(
-        session: session, transcript: existing(transcriptURL), clean: nil, summaries: [])
+        session: session, transcript: existing(transcriptURL), clean: nil, summaries: [],
+        outcome: outcome(session: session, artifacts: SessionArtifacts(), now: now))
     }
     let paths = SessionArtifactLocator.published(
       frontmatter: document.frontmatter, transcriptPath: transcriptURL.path,
       settings: publishing)
+    let clean = existing(paths.clean)
+    let summaries = summaries(paths)
+
+    // Only the fields `outcome` reads: the capture and attribution figures are
+    // `ears session show`'s detail, and sizing every session's `sources/`
+    // directory on every menu open would cost a full store walk for a line
+    // this menu never renders.
+    var artifacts = SessionArtifacts()
+    artifacts.transcriptExists = true
+    artifacts.cleanupPath = paths.clean.path
+    artifacts.cleanupExists = clean != nil
+    artifacts.summaryCount = summaries.count
+    artifacts.noteLink = clean.flatMap { parse($0)?.frontmatter.note }
+
     return RecentSessionItem(
       session: session,
       transcript: existing(transcriptURL),
-      clean: existing(paths.clean),
-      summaries: summaries(paths))
+      clean: clean,
+      summaries: summaries,
+      outcome: outcome(session: session, artifacts: artifacts, now: now))
+  }
+
+  private func outcome(
+    session: Session, artifacts: SessionArtifacts, now: Instant
+  ) -> PipelineOutcome {
+    SessionPipeline.outcome(
+      session: session, artifacts: artifacts, now: now, configuredChain: onEndChain)
   }
 
   /// Best-effort: the sidecar carries structure the markdown alone does not,

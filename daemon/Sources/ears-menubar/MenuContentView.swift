@@ -37,10 +37,15 @@ struct MenuContentView: View {
         Text("No ended sessions")
       }
       ForEach(model.recents) { item in
-        // The warning marker rides the row, not just the notification: a
-        // user who denied the notification grant would otherwise never learn
-        // that a name in the transcript may be the wrong person's.
-        Menu(item.session.warnings.isEmpty ? item.session.title : "⚠ \(item.session.title)") {
+        // The glyph rides the row, not just the notification: a user who
+        // denied the notification grant would otherwise never learn that a
+        // name in the transcript may be the wrong person's, or that a chain
+        // stopped short of publishing. It is `ears sessions`' own glyph, so
+        // the two surfaces say the same thing about the same session — and it
+        // subsumes the plain ⚠ marker this row used to carry, since a session
+        // with warnings resolves to ⚠ anyway.
+        Menu("\(item.outcome.glyph) \(item.session.title)") {
+          Text(item.outcome.text)
           ForEach(item.session.warnings, id: \.self) { warning in
             Text(warning)
           }

@@ -60,7 +60,7 @@ import os
     self.reloadConfig = reloadConfig
     connection = DaemonConnection(socketPath: config.socketPath)
     recentsProvider = RecentSessionsProvider(
-      dataRoot: config.dataRoot, publishing: config.publishing)
+      dataRoot: config.dataRoot, publishing: config.publishing, onEndChain: config.onEndChain)
   }
 
   init(configError message: String) {
@@ -71,14 +71,15 @@ import os
     reloadConfig = { nil }
     connection = nil
     recentsProvider = RecentSessionsProvider(
-      dataRoot: "", publishing: PublishingSettings.resolve(from: .table([:])))
+      dataRoot: "", publishing: PublishingSettings.resolve(from: .table([:])),
+      onEndChain: ConfiguredOnEndChain.resolve(from: .table([:])))
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }
 
   func start() {
     guard let connection else { return }
     announcements.bootstrap(
-      dataRoot: dataRoot, provider: recentsProvider,
+      dataRoot: dataRoot, provider: recentsProvider, now: { Self.now() },
       startDetected: { [weak self] source, episode in
         self?.startDetectedSession(source: source, episode: episode)
       },
@@ -283,14 +284,16 @@ import os
   }
 
   // Not `private`: used from both extension files as `Self.now()`.
-  static func now() -> Instant {
+  // `nonisolated`: a recents scan and a notification click are both dated off
+  // the main actor.
+  nonisolated static func now() -> Instant {
     Instant(secondsSinceEpoch: Date().timeIntervalSince1970)
   }
 
   private func refreshRecents() {
     let provider = recentsProvider
     Task.detached { [weak self] in
-      let items = provider.load()
+      let items = provider.load(now: AppModel.now())
       await MainActor.run { self?.recents = items }
     }
   }

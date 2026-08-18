@@ -35,6 +35,9 @@ struct ClientConfig: Sendable {
   /// The on-end chain a manually started session declares — see
   /// ``ManualSessionStages``.
   var onEndStages: [String]
+  /// The chain a session that *inherits* one runs, which is what a recent
+  /// session's outcome is read against — see ``ConfiguredOnEndChain``.
+  var onEndChain: [OnEndStage]
 
   static func resolve() -> Result<ClientConfig, ConfigResolutionError> {
     let inputs = ConfigLoadInputs(
@@ -58,7 +61,8 @@ struct ClientConfig: Sendable {
           socketPath: socketPath, dataRoot: dataRoot,
           publishing: PublishingSettings.resolve(from: loaded.value),
           sources: ManualSessionSources.resolve(from: loaded.value),
-          onEndStages: ManualSessionStages.resolve(from: loaded.value)))
+          onEndStages: ManualSessionStages.resolve(from: loaded.value),
+          onEndChain: ConfiguredOnEndChain.resolve(from: loaded.value)))
     }
   }
 
