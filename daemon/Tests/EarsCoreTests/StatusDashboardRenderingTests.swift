@@ -101,6 +101,60 @@ struct StatusDashboardRenderingTests {
     #expect(text.contains("remote audio (t2)"))
   }
 
+  @Test("an app source renders its meeting-activity label, not the raw source id")
+  func appSourceRendersMeetingLabel() {
+    let session = Session(
+      id: "z1", identity: SessionIdentity(platform: "zoom", externalID: "123"),
+      title: "Zoom Standup", state: .active, started: started,
+      sources: ["mic", "app:us.zoom.xos"].map { SourceID($0) })
+    let text = StatusDashboardRendering.render(
+      StatusDashboardInputs(
+        status: StatusData(
+          uptimeSeconds: 60,
+          sources: [
+            SourceStatus(
+              id: SourceID("mic"), state: .capturing, codec: "aac", bytesUsed: 1_000_000),
+            SourceStatus(
+              id: SourceID("app:us.zoom.xos"), state: .capturing, codec: "aac",
+              bytesUsed: 2_000_000),
+          ],
+          sessions: [session],
+          meetingActivity: [
+            MeetingActivityStatus(
+              source: SourceID("app:us.zoom.xos"), bundleID: "us.zoom.xos", label: "Zoom",
+              active: true, episode: "e1")
+          ]),
+        evidenceBySession: [:],
+        recent: [], configuredChain: OnEndStage.allCases),
+      now: now, timeZone: utc)
+    #expect(text.contains("Zoom"))
+    #expect(!text.contains("app:us.zoom.xos"))
+  }
+
+  @Test("an app source with no meeting-activity row falls back to its raw source id")
+  func appSourceFallsBackToRawID() {
+    let session = Session(
+      id: "z1", identity: SessionIdentity(platform: "zoom", externalID: "123"),
+      title: "Zoom Standup", state: .active, started: started,
+      sources: ["mic", "app:us.zoom.xos"].map { SourceID($0) })
+    let text = StatusDashboardRendering.render(
+      StatusDashboardInputs(
+        status: StatusData(
+          uptimeSeconds: 60,
+          sources: [
+            SourceStatus(
+              id: SourceID("mic"), state: .capturing, codec: "aac", bytesUsed: 1_000_000),
+            SourceStatus(
+              id: SourceID("app:us.zoom.xos"), state: .capturing, codec: "aac",
+              bytesUsed: 2_000_000),
+          ],
+          sessions: [session]),
+        evidenceBySession: [:],
+        recent: [], configuredChain: OnEndStage.allCases),
+      now: now, timeZone: utc)
+    #expect(text.contains("app:us.zoom.xos"))
+  }
+
   @Test("an idle daemon renders its sources under a sources block")
   func idleDaemon() {
     let text = StatusDashboardRendering.render(

@@ -34,7 +34,8 @@ public struct StatusDashboardInputs: Sendable {
 /// labeling"): a browser source renders under an attendee's display name
 /// only when the speaker map or the roster's `source` link provides one, and
 /// otherwise as "remote audio (tN)" — never as an identity parsed out of the
-/// id. `mic` is you.
+/// id. `mic` is you; an `app:*` source renders under its `meeting_activity`
+/// label when the daemon has one, and otherwise the raw id.
 public enum StatusDashboardRendering {
   public static func render(
     _ inputs: StatusDashboardInputs, now: Instant, timeZone: TimeZone
@@ -47,6 +48,7 @@ public enum StatusDashboardRendering {
         sessionBlock(
           session: session,
           sources: inputs.status.sources,
+          meetingActivity: inputs.status.meetingActivity,
           evidence: inputs.evidenceBySession[session.id],
           now: now, timeZone: timeZone))
     }
@@ -89,7 +91,8 @@ public enum StatusDashboardRendering {
   }
 
   private static func sessionBlock(
-    session: Session, sources: [SourceStatus], evidence: AttributionSpeechEvidence?,
+    session: Session, sources: [SourceStatus], meetingActivity: [MeetingActivityStatus],
+    evidence: AttributionSpeechEvidence?,
     now: Instant, timeZone: TimeZone
   ) -> String {
     let glyph = session.state == .paused ? "◐" : "●"
@@ -103,6 +106,8 @@ public enum StatusDashboardRendering {
 
     let statusByID = Dictionary(
       uniqueKeysWithValues: sources.map { ($0.id, $0) })
+    let meetingActivityByID = Dictionary(
+      meetingActivity.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
     var rows: [(label: String, bytes: Int, marker: String?)] = []
     var silentGroup: (handles: [String], bytes: Int) = ([], 0)
     for sourceID in session.sources {
@@ -110,6 +115,9 @@ public enum StatusDashboardRendering {
       switch sourceID.sourceClass {
       case .mic:
         rows.append(("you (mic)", source.bytesUsed, nil))
+      case .app:
+        let label = meetingActivityByID[sourceID]?.displayLabel ?? sourceID.rawValue
+        rows.append((label, source.bytesUsed, nil))
       case .browser:
         let handle = SessionPipeline.captureHandle(sourceID)
         let name = speakerName(for: sourceID, in: session)
@@ -143,9 +151,12 @@ public enum StatusDashboardRendering {
     return lines.joined(separator: "\n")
   }
 
-  /// The display name the session's own data provides for a source, or `nil`
-  /// — the speaker map first (authoritative once reconciled), then the
-  /// roster's live `source` link. Never derived from the source id.
+  /// The display name the session's own data provides for a *browser*
+  /// source, or `nil` — the speaker map first (authoritative once
+  /// reconciled), then the roster's live `source` link. Never derived from
+  /// the source id. An `app:*` source follows the same rule at its call site
+  /// above: the app's configured/reported `meeting_activity` label, or the
+  /// raw id as fallback — never a name invented from the id.
   private static func speakerName(for source: SourceID, in session: Session) -> String? {
     if let mapped = session.speakers.first(where: { $0.source == source }) {
       return mapped.name
