@@ -13,6 +13,20 @@ public struct MeetingPrompt: Sendable, Hashable {
   }
 }
 
+/// The notification category a detected-meeting prompt is posted under, and
+/// the buttons it carries. `Notifier` registers these with
+/// `UNUserNotificationCenter` at launch and reads them back off a click; the
+/// identifiers live here, beside the policy that stamps the category onto the
+/// request, so registration and post cannot drift apart.
+public enum MeetingPromptCategory {
+  public static let identifier = "meeting-detected"
+  /// Accepts the offer — the same effect as clicking the notification body.
+  public static let start = "start-recording"
+  /// Declines it. Nothing to undo: the episode is marked prompted when the
+  /// notification is *posted*, so declining only closes the notification.
+  public static let dismiss = "not-now"
+}
+
 /// Decides which detected meetings deserve a prompt right now. Policy, not
 /// state: the caller owns the already-prompted set (persisted across app
 /// restarts, keyed on the daemon's episode ids) and marks episodes as it
@@ -33,7 +47,8 @@ public enum MeetingPromptPolicy {
             title: "\(label) meeting detected",
             body: "Start recording?",
             action: .startDetected(
-              source: activity.source.rawValue, episode: activity.episode, label: label)))
+              source: activity.source.rawValue, episode: activity.episode, label: label),
+            category: MeetingPromptCategory.identifier))
       }
   }
 }

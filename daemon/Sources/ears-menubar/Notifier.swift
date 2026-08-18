@@ -35,6 +35,7 @@ final class Notifier: NSObject {
     self.startDetected = startDetected
     let center = UNUserNotificationCenter.current()
     center.delegate = self
+    center.setNotificationCategories([Self.meetingPromptCategory])
     let log = self.log
     center.requestAuthorization(options: [.alert, .sound]) { granted, error in
       // Arrives off the main actor, and `report` mutates the model.
@@ -79,12 +80,31 @@ final class Notifier: NSObject {
     }
   }
 
+  /// The buttons on a detected-meeting prompt.
+  ///
+  /// Neither carries `.foreground`: this is an `LSUIElement` app with no
+  /// window to raise, so activating it on a click would pull focus off the
+  /// meeting being joined and show nothing for it. The system delivers the
+  /// response to the running app either way.
+  private static var meetingPromptCategory: UNNotificationCategory {
+    UNNotificationCategory(
+      identifier: MeetingPromptCategory.identifier,
+      actions: [
+        UNNotificationAction(
+          identifier: MeetingPromptCategory.start, title: "Start Recording", options: []),
+        UNNotificationAction(
+          identifier: MeetingPromptCategory.dismiss, title: "Not Now", options: []),
+      ],
+      intentIdentifiers: [], options: [])
+  }
+
   func post(_ request: NotificationRequest) {
     guard available else { return }
     let content = UNMutableNotificationContent()
     content.title = request.title
     content.body = request.body
     content.userInfo = Self.encode(request.action)
+    if let category = request.category { content.categoryIdentifier = category }
     let log = self.log
     UNUserNotificationCenter.current().add(
       UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -132,6 +152,13 @@ extension Notifier: UNUserNotificationCenterDelegate {
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
+    // "Not Now" is a decline, and the only thing an accept-or-decline prompt
+    // can say that must *not* be acted on — the episode was marked prompted
+    // when the notification went out, so closing it is the whole effect.
+    guard response.actionIdentifier != MeetingPromptCategory.dismiss else {
+      completionHandler()
+      return
+    }
     let userInfo = response.notification.request.content.userInfo
     let action = Notifier.decode(userInfo)
     Task { @MainActor [weak self] in

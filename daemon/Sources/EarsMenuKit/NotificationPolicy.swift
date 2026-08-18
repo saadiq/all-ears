@@ -10,10 +10,15 @@ public struct NotificationRequest: Sendable, Hashable {
   public var title: String
   public var body: String
   public var action: Action
-  public init(title: String, body: String, action: Action) {
+  /// Names the `UNNotificationCategory` whose buttons this notification
+  /// carries, or `nil` for one with no buttons of its own. A plain string, so
+  /// deciding *what* to say stays free of `UserNotifications`.
+  public var category: String?
+  public init(title: String, body: String, action: Action, category: String? = nil) {
     self.title = title
     self.body = body
     self.action = action
+    self.category = category
   }
 }
 

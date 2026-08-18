@@ -29,6 +29,13 @@ struct MeetingPromptPolicyTests {
         == .startDetected(source: "app:us.zoom.xos", episode: "us.zoom.xos#1", label: "Zoom"))
   }
 
+  @Test("the prompt names the category that carries its buttons")
+  func promptCarriesActionCategory() {
+    let prompts = MeetingPromptPolicy.prompts(
+      state: connectedState([zoomActive()]), alreadyPrompted: [])
+    #expect(prompts[0].request.category == MeetingPromptCategory.identifier)
+  }
+
   @Test("an already-prompted episode stays quiet")
   func dedupsByEpisode() {
     let prompts = MeetingPromptPolicy.prompts(
