@@ -49,31 +49,34 @@ struct RecentSessionsProvider: Sendable {
   private func item(for session: Session, now: Instant) -> RecentSessionItem {
     let transcriptURL = SessionArtifactLocator.rawTranscript(
       dataRoot: dataRoot, sessionID: session.id)
-    guard let document = parse(transcriptURL) else {
-      return RecentSessionItem(
-        session: session, transcript: existing(transcriptURL), clean: nil, summaries: [],
-        outcome: outcome(session: session, artifacts: SessionArtifacts(), now: now))
-    }
-    let paths = SessionArtifactLocator.published(
-      frontmatter: document.frontmatter, transcriptPath: transcriptURL.path,
-      settings: publishing)
-    let clean = existing(paths.clean)
-    let summaries = summaries(paths)
+    let transcript = existing(transcriptURL)
 
     // Only the fields `outcome` reads: the capture and attribution figures are
     // `ears session show`'s detail, and sizing every session's `sources/`
     // directory on every menu open would cost a full store walk for a line
-    // this menu never renders.
+    // this menu never renders. Existence is a fact of the file, not of the
+    // parse — a transcript that will not parse still exists, and saying
+    // otherwise would render "no transcript" beside an enabled Open
+    // Transcript verb.
     var artifacts = SessionArtifacts()
-    artifacts.transcriptExists = true
-    artifacts.cleanupPath = paths.clean.path
+    artifacts.transcriptExists = transcript != nil
+
+    guard let frontmatter = parseFrontmatter(transcriptURL) else {
+      return RecentSessionItem(
+        session: session, transcript: transcript, clean: nil, summaries: [],
+        outcome: outcome(session: session, artifacts: artifacts, now: now))
+    }
+    let paths = SessionArtifactLocator.published(
+      frontmatter: frontmatter, transcriptPath: transcriptURL.path,
+      settings: publishing)
+    let clean = existing(paths.clean)
+    let summaries = summaries(paths)
     artifacts.cleanupExists = clean != nil
-    artifacts.summaryCount = summaries.count
-    artifacts.noteLink = clean.flatMap { parse($0)?.frontmatter.note }
+    artifacts.noteLink = clean.flatMap { parseFrontmatter($0)?.note }
 
     return RecentSessionItem(
       session: session,
-      transcript: existing(transcriptURL),
+      transcript: transcript,
       clean: clean,
       summaries: summaries,
       outcome: outcome(session: session, artifacts: artifacts, now: now))
@@ -86,15 +89,13 @@ struct RecentSessionsProvider: Sendable {
       session: session, artifacts: artifacts, now: now, configuredChain: onEndChain)
   }
 
-  /// Best-effort: the sidecar carries structure the markdown alone does not,
-  /// but a document without one still parses. Mirrors
-  /// `ears`'s `SessionArtifactScanner.sidecarText`.
-  private func parse(_ markdownURL: URL) -> TranscriptDocument? {
+  /// Frontmatter only: the published-path context and `outcome` never read
+  /// the body or the JSON sidecar, and the full parse would refuse a document
+  /// whose body a vault tool reflowed even though the frontmatter this needs
+  /// is intact.
+  private func parseFrontmatter(_ markdownURL: URL) -> TranscriptFrontmatter? {
     guard let markdown = try? String(contentsOf: markdownURL, encoding: .utf8) else { return nil }
-    let sidecar = try? String(
-      contentsOf: markdownURL.deletingPathExtension().appendingPathExtension("json"),
-      encoding: .utf8)
-    return try? TranscriptParser.parse(markdown: markdown, jsonSidecar: sidecar)
+    return try? TranscriptParser.parseFrontmatter(markdown)
   }
 
   /// A preset's own `out` is a path we can name outright; the rest are swept
