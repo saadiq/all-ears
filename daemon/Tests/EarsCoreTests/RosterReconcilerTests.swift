@@ -334,6 +334,24 @@ struct RosterReconcilerTests {
     #expect(title?.contains("Priya") == true)
   }
 
+  @Test("a session with no per-participant capture never warns about an unheard attendee")
+  func appSessionsDoNotWarnAboutUnheardAttendees() {
+    // Native Zoom/Teams/Slack capture is one mixed stream on `app:*`: every
+    // remote voice shares it, so an invitee can never be matched to audio.
+    // The warning would stand on every such session and nothing could ever
+    // satisfy it.
+    let outcome = RosterReconciler.reconcile(
+      attendees: [
+        SessionAttendee(id: "calendar-0", displayName: "Saadiq", origin: .calendar, isLocal: true),
+        SessionAttendee(id: "calendar-1", displayName: "Priya", origin: .calendar),
+        SessionAttendee(id: "calendar-2", displayName: "Wei Zhang", origin: .calendar),
+      ],
+      sources: [SourceID("mic"), SourceID("app:us.zoom.xos")],
+      sessionStart: Self.start)
+
+    #expect(outcome.warnings.isEmpty)
+  }
+
   @Test("excluding synthetic rows from counting is a new derivation — the version says so")
   func countingChangeBumpedTheVersion() {
     // The same roster can now produce a different map (the two tests above),

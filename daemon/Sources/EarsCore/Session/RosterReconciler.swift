@@ -148,8 +148,10 @@ public enum RosterReconciler {
   ///   - attendees: the roster as observed, bindings and all.
   ///   - sources: every source the session involves. Only `browser:*` entries
   ///     participate — `mic` is the local participant by construction and
-  ///     keeps its own label, and an `app:`/`device:` source is whole-room
-  ///     audio that no single attendee owns.
+  ///     keeps its own label, and an `app:`/`system:`/`device:` source is
+  ///     whole-room audio that no single attendee owns. A session whose
+  ///     remote audio is whole-room only draws no named-but-unheard warnings
+  ///     either: there is nothing there any name could have been matched to.
   ///   - sessionStart: when the session began, for the local-participant
   ///     inference.
   ///   - hints: bindings recovered from the session's attribution log
@@ -327,12 +329,25 @@ public enum RosterReconciler {
     }
 
     // ── Named, but never heard ───────────────────────────────────────────
-    // The warning exists for exactly one situation: "we lost their audio".
+    // The warning exists for exactly one situation: "we lost their audio",
+    // which presumes audio existed that could have been matched to a name.
+    // It could not where the session's remote voices arrived as one mixed
+    // stream — `app:`/`system:`/`device:` — and no per-participant
+    // `browser:*` source: nothing there is ever attributable to one
+    // attendee, so a native Zoom/Teams/Slack session would carry a permanent
+    // warning per calendar invitee that no capture could ever satisfy. A
+    // session that captured no remote audio at all still warns: recording
+    // nobody is the fault this sentence exists to report.
     // With speech evidence, "they said nothing" is distinguishable and stays
     // quiet: warn only when unmatched speech-carrying audio exists that could
     // have been theirs, or when the platform's own speaking ring showed them
     // demonstrably talking (≥ ``domBurstSpeechFloor`` bursts) yet nothing
     // matched. Without evidence, warn as before.
+    let attributableAudio =
+      sources.contains { $0.sourceClass == .browser }
+      || !sources.contains {
+        $0.sourceClass == .app || $0.sourceClass == .system || $0.sourceClass == .device
+      }
     let heard = Set(speakers.map(\.name))
     func demonstrablySpoke(_ name: String) -> Bool {
       guard let speech else { return true }
@@ -343,9 +358,11 @@ public enum RosterReconciler {
         .reduce(0) { $0 + (speech.burstCounts[$1.id] ?? 0) }
       return bursts >= domBurstSpeechFloor
     }
-    for name in remoteNames where !heard.contains(name) && demonstrablySpoke(name) {
-      warnings.append(
-        "speaker attribution: \(name) was on the roster but no audio was matched to them")
+    if attributableAudio {
+      for name in remoteNames where !heard.contains(name) && demonstrablySpoke(name) {
+        warnings.append(
+          "speaker attribution: \(name) was on the roster but no audio was matched to them")
+      }
     }
 
     return Outcome(
