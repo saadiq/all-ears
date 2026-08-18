@@ -12,11 +12,12 @@ struct SessionsListRenderingTests {
 
   private func session(
     id: String, title: String, started: Instant, state: SessionState = .ended,
-    warnings: [String] = []
+    warnings: [String] = [], trigger: TriggerKind = .browserExtension
   ) -> Session {
     Session(
       id: id, title: title, state: state, started: started,
-      ended: state == .ended ? started.advanced(by: 1_800) : nil, warnings: warnings)
+      ended: state == .ended ? started.advanced(by: 1_800) : nil, warnings: warnings,
+      trigger: trigger)
   }
 
   private func published() -> SessionArtifacts {
@@ -45,7 +46,7 @@ struct SessionsListRenderingTests {
         artifacts: SessionArtifacts()),
     ]
     let text = SessionsListRendering.render(
-      entries: entries, now: now, timeZone: utc)
+      entries: entries, now: now, timeZone: utc, configuredChain: OnEndStage.allCases)
     #expect(
       text == """
         TODAY
@@ -61,6 +62,20 @@ struct SessionsListRenderingTests {
   @Test("an empty list says so")
   func emptyList() {
     #expect(
-      SessionsListRendering.render(entries: [], now: now, timeZone: utc) == "(no sessions)")
+      SessionsListRendering.render(
+        entries: [], now: now, timeZone: utc, configuredChain: OnEndStage.allCases)
+        == "(no sessions)")
+  }
+
+  @Test("an inert manual session reads as recorded, not as a pipeline that never ran")
+  func manualSessionReadsAsRecorded() {
+    let entries = [
+      SessionListEntry(
+        session: session(id: "e", title: "Scratch capture", started: matt, trigger: .manual),
+        artifacts: SessionArtifacts())
+    ]
+    let text = SessionsListRendering.render(
+      entries: entries, now: now, timeZone: utc, configuredChain: OnEndStage.allCases)
+    #expect(text.hasSuffix("15:01  Scratch capture  ✓ recorded"))
   }
 }

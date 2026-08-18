@@ -244,17 +244,22 @@ private func runSessionsList(options: ClientOptions, all: Bool) async throws {
   // The outcome column comes from disk; an unresolvable scan environment
   // degrades to record-only outcomes rather than failing the list.
   let entries: [SessionListEntry]
+  let onEndChain: [OnEndStage]
   switch SessionArtifactScanner.environment(configFlag: options.config) {
   case .failure:
     entries = sessions.map { SessionListEntry(session: $0, artifacts: SessionArtifacts()) }
+    onEndChain = OnEndStage.allCases
   case .success(let environment):
     entries = sessions.map {
       SessionListEntry(
         session: $0, artifacts: SessionArtifactScanner.scan(session: $0, environment: environment))
     }
+    onEndChain = environment.onEndChain
   }
   let now = Instant(secondsSinceEpoch: Date().timeIntervalSince1970)
-  print(SessionsListRendering.render(entries: entries, now: now, timeZone: TimeZone.current))
+  print(
+    SessionsListRendering.render(
+      entries: entries, now: now, timeZone: TimeZone.current, configuredChain: onEndChain))
 }
 
 // MARK: - sources list / enable / disable
@@ -596,7 +601,9 @@ struct SessionShowCommand: AsyncParsableCommand {
     case .match(let session):
       let artifacts = SessionArtifactScanner.scan(session: session, environment: environment)
       if options.json {
-        let view = SessionShowView.build(session: session, artifacts: artifacts, now: now)
+        let view = SessionShowView.build(
+          session: session, artifacts: artifacts, now: now,
+          configuredChain: environment.onEndChain)
         let code = OutputFormatting.emit(view, json: true, humanSuccess: { _ in "" })
         if code != 0 { throw ExitCode(code) }
         return
@@ -604,7 +611,7 @@ struct SessionShowCommand: AsyncParsableCommand {
       print(
         SessionShowRendering.render(
           session: session, artifacts: artifacts, now: now, timeZone: timeZone,
-          showWarnings: warnings))
+          showWarnings: warnings, configuredChain: environment.onEndChain))
     }
   }
 }

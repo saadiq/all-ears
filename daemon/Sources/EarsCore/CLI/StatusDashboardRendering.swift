@@ -2,21 +2,27 @@ import Foundation
 
 /// Everything the status dashboard needs, assembled by the `ears` executable:
 /// the daemon's `status` payload, per-session speech evidence read from each
-/// session's `attribution.jsonl` (absent key = no log, so no claim), and the
-/// recent-sessions tail read from disk.
+/// session's `attribution.jsonl` (absent key = no log, so no claim), the
+/// recent-sessions tail read from disk, and the configured on-end chain the
+/// tail's outcomes are read against.
 public struct StatusDashboardInputs: Sendable {
   public var status: StatusData
   public var evidenceBySession: [String: AttributionSpeechEvidence]
   public var recent: [SessionListEntry]
+  /// The resolved `[earsd.sessions] on_end_stages` — see
+  /// ``SessionPipeline/outcome(session:artifacts:now:configuredChain:)``.
+  public var configuredChain: [OnEndStage]
 
   public init(
     status: StatusData,
     evidenceBySession: [String: AttributionSpeechEvidence],
-    recent: [SessionListEntry]
+    recent: [SessionListEntry],
+    configuredChain: [OnEndStage]
   ) {
     self.status = status
     self.evidenceBySession = evidenceBySession
     self.recent = recent
+    self.configuredChain = configuredChain
   }
 }
 
@@ -66,7 +72,8 @@ public enum StatusDashboardRendering {
         let clock = HumanUnits.clock(entry.session.started, timeZone: timeZone)
         let title = entry.session.title.padding(toLength: width, withPad: " ", startingAt: 0)
         let outcome = SessionPipeline.outcome(
-          session: entry.session, artifacts: entry.artifacts, now: now)
+          session: entry.session, artifacts: entry.artifacts, now: now,
+          configuredChain: inputs.configuredChain)
         lines.append("  \(clock)  \(title)  \(outcome.glyph) \(outcome.text)")
       }
       blocks.append(lines.joined(separator: "\n"))

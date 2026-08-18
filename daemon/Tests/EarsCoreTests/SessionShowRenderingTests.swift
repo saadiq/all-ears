@@ -11,7 +11,10 @@ struct SessionShowRenderingTests {
   private var ended: Instant { started.advanced(by: 31 * 60) }
   private var now: Instant { ended.advanced(by: 3_600) }
 
-  private func session(state: SessionState = .ended, warnings: [String] = []) -> Session {
+  private func session(
+    state: SessionState = .ended, warnings: [String] = [],
+    trigger: TriggerKind = .browserExtension
+  ) -> Session {
     Session(
       id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff",
       title: "Matt Silva",
@@ -21,7 +24,8 @@ struct SessionShowRenderingTests {
       warnings: warnings,
       sources: ["mic", "browser:meet:t1", "browser:meet:t2", "browser:meet:t3"].map {
         SourceID($0)
-      })
+      },
+      trigger: trigger)
   }
 
   private func artifacts() -> SessionArtifacts {
@@ -50,7 +54,7 @@ struct SessionShowRenderingTests {
   func endedSessionRenders() {
     let text = SessionShowRendering.render(
       session: session(warnings: ["w1", "w2"]), artifacts: artifacts(), now: now,
-      timeZone: utc, showWarnings: false)
+      timeZone: utc, showWarnings: false, configuredChain: OnEndStage.allCases)
     #expect(
       text == """
         Matt Silva — ended 15:32, 31m
@@ -68,7 +72,7 @@ struct SessionShowRenderingTests {
   func warningsPrintVerbatim() {
     let text = SessionShowRendering.render(
       session: session(warnings: ["first warning", "second warning"]), artifacts: artifacts(),
-      now: now, timeZone: utc, showWarnings: true)
+      now: now, timeZone: utc, showWarnings: true, configuredChain: OnEndStage.allCases)
     #expect(text.hasSuffix("  ⚠ first warning\n  ⚠ second warning"))
     #expect(!text.contains("--warnings"))
   }
@@ -79,7 +83,8 @@ struct SessionShowRenderingTests {
     live.captureBytesBySource = [SourceID("mic"): 9_904_279]
     let text = SessionShowRendering.render(
       session: session(state: .active), artifacts: live,
-      now: started.advanced(by: 26 * 60), timeZone: utc, showWarnings: false)
+      now: started.advanced(by: 26 * 60), timeZone: utc, showWarnings: false,
+      configuredChain: OnEndStage.allCases)
     #expect(text.hasPrefix("Matt Silva — recording, started 15:01 (26m ago)"))
     #expect(text.contains("  capture     · 9.9 MB mic"))
     #expect(text.contains("  transcribe  · waits for session end"))
@@ -88,7 +93,8 @@ struct SessionShowRenderingTests {
   @Test("the JSON view mirrors the rendered structure")
   func jsonViewMirrorsStructure() {
     let view = SessionShowView.build(
-      session: session(warnings: ["w1"]), artifacts: artifacts(), now: now)
+      session: session(warnings: ["w1"]), artifacts: artifacts(), now: now,
+      configuredChain: OnEndStage.allCases)
     #expect(view.schema == 1)
     #expect(view.stages.map(\.stage) == ["capture", "transcribe", "cleanup", "summarize", "note"])
     #expect(view.stages.allSatisfy { $0.state == .done })
@@ -98,5 +104,22 @@ struct SessionShowRenderingTests {
     #expect(view.artifacts.note == "[[calls/2026-08-17 - Matt Silva]]")
     #expect(view.warnings == ["w1"])
     #expect(view.session.id == "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff")
+  }
+
+  @Test("stages the session never asked for render as an empty slot, not a gap")
+  func unrequestedStagesRenderNeutrally() {
+    var captured = SessionArtifacts()
+    captured.captureBytesBySource = [SourceID("mic"): 9_904_279]
+    let text = SessionShowRendering.render(
+      session: session(trigger: .manual), artifacts: captured, now: now, timeZone: utc,
+      showWarnings: false, configuredChain: OnEndStage.allCases)
+    #expect(text.contains("  transcribe  ○ not requested"))
+    #expect(text.contains("  note        ○ not requested"))
+    #expect(!text.contains("–"))
+
+    let view = SessionShowView.build(
+      session: session(trigger: .manual), artifacts: captured, now: now,
+      configuredChain: OnEndStage.allCases)
+    #expect(view.stages.dropFirst().allSatisfy { $0.state == .notRequested })
   }
 }

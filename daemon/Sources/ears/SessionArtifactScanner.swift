@@ -3,14 +3,16 @@ import EarsCore
 import EarsDataStore
 import Foundation
 
-/// The config-derived facts a disk scan needs: where the data root is, and
-/// how `cleanup` resolves its published path. One `loadConfig` pass, shared
-/// by every session the command scans.
+/// The config-derived facts a disk scan needs: where the data root is, how
+/// `cleanup` resolves its published path, and the on-end chain an undeclared
+/// session inherits. One `loadConfig` pass, shared by every session the
+/// command scans.
 struct ScanEnvironment {
   var dataRoot: URL
   var cleanupTemplate: PathTemplate
   var outputRoot: String
   var weekNumbering: WeekNumbering
+  var onEndChain: [OnEndStage]
 }
 
 /// Assembles a ``SessionArtifacts`` for one session by reading what is on
@@ -40,8 +42,21 @@ enum SessionArtifactScanner {
           cleanupTemplate: PathTemplate(
             template.isEmpty ? LLMStagesConfigSchema.defaultCleanupOutput : template),
           outputRoot: stringValue(loaded.value, ["output_root"]),
-          weekNumbering: WeekNumbering(configValue: stringValue(loaded.value, ["week_numbering"]))))
+          weekNumbering: WeekNumbering(configValue: stringValue(loaded.value, ["week_numbering"])),
+          onEndChain: onEndChain(loaded.value)))
     }
+  }
+
+  /// The resolved `[earsd.sessions] on_end_stages`, read exactly as `earsd`
+  /// resolves it (`DaemonConfigResolution`): an absent key means the full
+  /// chain, an explicit list resolves leniently, and `[]` disables it. The
+  /// problems `resolveList` reports are the daemon's to log, not a read-only
+  /// view's.
+  private static func onEndChain(_ config: ConfigValue) -> [OnEndStage] {
+    guard let raw = stringArray(config, ["earsd", "sessions", "on_end_stages"]) else {
+      return OnEndStage.allCases
+    }
+    return OnEndStage.resolveList(raw).stages
   }
 
   static func scan(session: Session, environment: ScanEnvironment) -> SessionArtifacts {
@@ -165,5 +180,20 @@ enum SessionArtifactScanner {
     }
     guard case .string(let value) = current else { return "" }
     return value
+  }
+
+  /// `nil` when the key is absent — a distinction the caller needs, since an
+  /// explicit `[]` means something different from no key at all.
+  private static func stringArray(_ config: ConfigValue, _ path: [String]) -> [String]? {
+    var current = config
+    for key in path {
+      guard case .table(let table) = current, let next = table[key] else { return nil }
+      current = next
+    }
+    guard case .array(let entries) = current else { return nil }
+    return entries.compactMap { entry in
+      guard case .string(let value) = entry else { return nil }
+      return value
+    }
   }
 }

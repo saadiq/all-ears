@@ -823,7 +823,7 @@ struct CLISmokeTests {
   private static func writeSessionFixture(
     dataRoot: URL, id: String, title: String,
     started: String = "2026-08-17T15:01:00Z", ended: String = "2026-08-17T15:32:00Z",
-    warnings: [String] = []
+    warnings: [String] = [], trigger: String = "manual"
   ) throws {
     let directory = dataRoot.appendingPathComponent("sessions").appendingPathComponent(id)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -835,7 +835,7 @@ struct CLISmokeTests {
       state = "ended"
       started = "\(started)"
       ended = "\(ended)"
-      trigger = "manual"
+      trigger = "\(trigger)"
       sources = ["mic"]
       interval = []
       attendee = []
@@ -852,12 +852,17 @@ struct CLISmokeTests {
     let configPath = temp.write("data_root = \"\(dataRoot.path)\"", named: "config.toml")
     try Self.writeSessionFixture(
       dataRoot: dataRoot, id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff", title: "Matt Silva")
+    try Self.writeSessionFixture(
+      dataRoot: dataRoot, id: "9c00aaaa-bbbb-cccc-dddd-eeeeffff0000", title: "Weekly Sync",
+      trigger: "browser-extension")
 
     let human = try Self.runEars(["sessions", "--all", "--config", configPath])
     #expect(human.exitCode == 0)
-    #expect(human.stdout.contains("Matt Silva"))
-    // An old session with no transcript reads as a neutral gap, not a crash.
-    #expect(human.stdout.contains("– no transcript"))
+    // An undeclared manual session runs no on-end chain, so its missing
+    // transcript is not a gap; an undeclared browser one inherits the
+    // configured chain, so its missing transcript is.
+    #expect(human.stdout.contains("Matt Silva   ✓ recorded"))
+    #expect(human.stdout.contains("Weekly Sync  – no transcript"))
 
     // The machine surface keeps `session list`'s payload shape.
     let json = try Self.runEars(["sessions", "--all", "--json", "--config", configPath])
