@@ -488,7 +488,9 @@ struct WatchCommand: AsyncParsableCommand {
   @OptionGroup var options: ClientOptions
   @Option(
     name: .customLong("events"),
-    help: "Telemetry kinds to receive (vad,segment,job); state events are always delivered.")
+    help: ArgumentHelp(
+      "Telemetry kinds to receive (vad,segment,job,meeting.activity); "
+        + "state events are always delivered."))
   var events: String = ""
   @Option(name: .customLong("source"), help: "Source id filter; repeatable. Omit for all sources.")
   var sources: [String] = []
