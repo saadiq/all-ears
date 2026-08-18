@@ -1,4 +1,5 @@
 import Foundation
+import Yams
 
 /// Errors surfaced while parsing a rendered transcript document back into a
 /// ``TranscriptDocument``.
@@ -34,10 +35,12 @@ public enum TranscriptParsingError: Error, Sendable, Hashable, CustomStringConve
 /// write-direction-only (`TranscriptRenderer`/`SidecarJSONRenderer`); this is
 /// the read direction `cleanup`/`summarize` need.
 ///
-/// This is deliberately a narrow, hand-written parser matched exactly to
-/// ``FrontmatterRenderer``'s and ``SidecarJSONRenderer``'s fixed output shape
-/// — not a general YAML/JSON reader — mirroring those renderers' own "not a
-/// general encoder" scoping.
+/// The frontmatter block goes through a real YAML parse (Yams): the schema's
+/// *fields* are fixed, but the *style* is whatever valid YAML the file
+/// carries — this suite's block-style output, its older flow-style output,
+/// or a vault linter's reformatting of either. The Markdown body and the
+/// JSON sidecar remain narrow, hand-matched parsers of this suite's own
+/// renderers.
 ///
 /// **Known lossy fields:**
 /// - Neither the Markdown body nor the JSON sidecar writes
@@ -112,95 +115,133 @@ public enum TranscriptParser {
     guard let closeFenceRange = afterOpenFence.range(of: "\n---\n") else {
       throw TranscriptParsingError.missingFrontmatterFences
     }
-    let block = afterOpenFence[afterOpenFence.startIndex..<closeFenceRange.lowerBound]
+    let block = String(afterOpenFence[afterOpenFence.startIndex..<closeFenceRange.lowerBound])
 
-    var fields: [String: String] = [:]
-    for rawLine in block.split(separator: "\n", omittingEmptySubsequences: true) {
-      guard let (key, value) = splitKeyValue(rawLine) else {
-        throw TranscriptParsingError.malformedField(field: "?", value: String(rawLine))
+    // A real YAML parse (Yams), not a grammar matched to our own emitter:
+    // published artifacts live in the user's vault, where other tooling
+    // rewrites frontmatter freely between block and flow style. Any valid
+    // YAML mapping is accepted; the emitter's block style and the older flow
+    // files are both just YAML. Scalars are read as their raw text (`Node`
+    // composition does no type resolution), so timestamps and ids reach the
+    // same string codecs they always did.
+    let mapping: Node.Mapping
+    do {
+      guard let root = try Yams.compose(yaml: block), let composed = root.mapping else {
+        throw TranscriptParsingError.malformedField(
+          field: "frontmatter", value: "not a YAML mapping")
       }
-      fields[key] = value
+      mapping = composed
+    } catch let error as YamlError {
+      throw TranscriptParsingError.malformedField(field: "frontmatter", value: "\(error)")
     }
 
-    func field(_ name: String) throws -> String {
-      guard let value = fields[name] else { throw TranscriptParsingError.missingField(name) }
+    func node(_ name: String) throws -> Node {
+      guard let value = mapping[name] else { throw TranscriptParsingError.missingField(name) }
       return value
     }
-    func int(_ name: String, _ raw: String) throws -> Int {
-      guard let value = Int(raw) else {
-        throw TranscriptParsingError.malformedField(field: name, value: raw)
+    func scalar(_ name: String, _ node: Node) throws -> String {
+      guard let value = node.scalar?.string else {
+        throw TranscriptParsingError.malformedField(field: name, value: "\(node)")
       }
       return value
     }
-    func double(_ name: String, _ raw: String) throws -> Double {
-      guard let value = Double(raw) else {
-        throw TranscriptParsingError.malformedField(field: name, value: raw)
+    func optionalScalar(_ name: String) -> String? {
+      mapping[name]?.scalar?.string
+    }
+    func strings(_ name: String, _ node: Node) throws -> [String] {
+      guard let sequence = node.sequence else {
+        throw TranscriptParsingError.malformedField(field: name, value: "\(node)")
+      }
+      return try sequence.map { try scalar(name, $0) }
+    }
+    func int(_ name: String, _ node: Node) throws -> Int {
+      guard let value = Int(try scalar(name, node)) else {
+        throw TranscriptParsingError.malformedField(field: name, value: "\(node)")
       }
       return value
     }
-    func instant(_ name: String, _ raw: String) throws -> Instant {
+    func double(_ name: String, _ node: Node) throws -> Double {
+      guard let value = Double(try scalar(name, node)) else {
+        throw TranscriptParsingError.malformedField(field: name, value: "\(node)")
+      }
+      return value
+    }
+    func instant(_ name: String, _ node: Node) throws -> Instant {
+      let raw = try scalar(name, node)
       guard let value = ISO8601InstantCodec.parse(raw) else {
         throw TranscriptParsingError.malformedField(field: name, value: raw)
       }
       return value
     }
-
-    let schema = try int("schema", field("schema"))
-    guard let kind = TranscriptKind(rawValue: try field("kind")) else {
-      throw TranscriptParsingError.malformedField(field: "kind", value: try field("kind"))
+    func submapping(_ name: String) throws -> Node.Mapping {
+      guard let value = try node(name).mapping else {
+        throw TranscriptParsingError.malformedField(field: name, value: "\(try node(name))")
+      }
+      return value
     }
-    let derivedFrom = fields["derived_from"].map(unquote)
-    let preset = fields["preset"].map(unquote)
+    func require(_ mapping: Node.Mapping, _ key: String, _ context: String) throws -> Node {
+      guard let value = mapping[key] else {
+        throw TranscriptParsingError.missingField("\(context).\(key)")
+      }
+      return value
+    }
+
+    let schema = try int("schema", node("schema"))
+    let kindRaw = try scalar("kind", node("kind"))
+    guard let kind = TranscriptKind(rawValue: kindRaw) else {
+      throw TranscriptParsingError.malformedField(field: "kind", value: kindRaw)
+    }
+    let derivedFrom = optionalScalar("derived_from")
+    let preset = optionalScalar("preset")
     // `range_run:` (a synthesized range-run identifier) and `session:` (the
     // session UUID) are each optional: a session transcript carries only
     // `session:`, a plain range transcript only `range_run:`.
-    let rangeRun = fields["range_run"].map(unquote)
-    let session = fields["session"].map(unquote)
+    let rangeRun = optionalScalar("range_run")
+    let session = optionalScalar("session")
     // The path-template context (see `TranscriptFrontmatter.title`/`started`):
     // both optional, both absent on a document with no session context.
-    let title = fields["title"].map(unquote)
+    let title = optionalScalar("title")
     // Round-tripped rather than dropped: a `cleanup` rerun over a transcript
     // `summarize` has already linked must not silently unlink it.
-    let note = fields["note"].map(unquote)
+    let note = optionalScalar("note")
     // Both post-date the original schema, so both are optional: a transcript
     // written before they existed parses unchanged.
-    let attendees = try fields["attendees"].map(splitFlowArray)?.map(unquote) ?? []
-    let warnings = try fields["warnings"].map(splitFlowArray)?.map(unquote) ?? []
-    let started = try fields["started"].map { try instant("started", $0) }
-    let sources = try splitFlowArray(field("sources")).map { SourceID(unquote($0)) }
+    let attendees = try mapping["attendees"].map { try strings("attendees", $0) } ?? []
+    let warnings = try mapping["warnings"].map { try strings("warnings", $0) } ?? []
+    let started = try mapping["started"].map { try instant("started", $0) }
+    let sources = try strings("sources", node("sources")).map { SourceID($0) }
 
-    let rangeMapping = try flowMappingFields(field("range"))
+    let rangeMapping = try submapping("range")
     let range = TimeRange(
-      start: try instant("range.start", try requireMapping(rangeMapping, "start", "range")),
-      end: try instant("range.end", try requireMapping(rangeMapping, "end", "range")))
+      start: try instant("range.start", require(rangeMapping, "start", "range")),
+      end: try instant("range.end", require(rangeMapping, "end", "range")))
 
-    let modelMapping = try flowMappingFields(field("model"))
+    let modelMapping = try submapping("model")
     let model = TranscriptModelInfo(
-      name: unquote(try requireMapping(modelMapping, "name", "model")),
-      backend: unquote(try requireMapping(modelMapping, "backend", "model")),
-      version: unquote(try requireMapping(modelMapping, "version", "model")))
+      name: try scalar("model.name", require(modelMapping, "name", "model")),
+      backend: try scalar("model.backend", require(modelMapping, "backend", "model")),
+      version: try scalar("model.version", require(modelMapping, "version", "model")))
 
-    let diarizationMapping = try flowMappingFields(field("diarization"))
+    let diarizationMapping = try submapping("diarization")
     let diarization = TranscriptDiarizationInfo(
-      enabled: try requireMapping(diarizationMapping, "enabled", "diarization") == "true",
-      backend: diarizationMapping["backend"].map(unquote))
+      enabled: try require(diarizationMapping, "enabled", "diarization").bool ?? false,
+      backend: diarizationMapping["backend"]?.scalar?.string)
 
-    let generated = try instant("generated", field("generated"))
-    let durationSeconds = try double("duration_seconds", field("duration_seconds"))
-    let speechSeconds = try double("speech_seconds", field("speech_seconds"))
-    let wordCount = try int("word_count", field("word_count"))
-    let vocab = try splitFlowArray(field("vocab")).map(unquote)
-    let audioStoreTokens = try fields["audio_stores"].map(splitFlowArray) ?? []
+    let generated = try instant("generated", node("generated"))
+    let durationSeconds = try double("duration_seconds", node("duration_seconds"))
+    let speechSeconds = try double("speech_seconds", node("speech_seconds"))
+    let wordCount = try int("word_count", node("word_count"))
+    let vocab = try strings("vocab", node("vocab"))
+    let audioStoreTokens = try mapping["audio_stores"].map { try strings("audio_stores", $0) } ?? []
     let audioStores = try audioStoreTokens.map { token -> TranscriptAudioStore in
-      let unquoted = unquote(token)
       // `<source>=<store>`; the store token never contains `=` and a source id
       // never does, so splitting on the first `=` recovers both.
-      guard let separator = unquoted.firstIndex(of: "=") else {
+      guard let separator = token.firstIndex(of: "=") else {
         throw TranscriptParsingError.malformedField(field: "audio_stores", value: token)
       }
       return TranscriptAudioStore(
-        source: SourceID(String(unquoted[unquoted.startIndex..<separator])),
-        store: String(unquoted[unquoted.index(after: separator)...]))
+        source: SourceID(String(token[token.startIndex..<separator])),
+        store: String(token[token.index(after: separator)...]))
     }
 
     return TranscriptFrontmatter(
@@ -402,102 +443,4 @@ public enum TranscriptParser {
     return (dayStart + secondOfDay) - rangeStart.secondsSinceEpoch
   }
 
-  // MARK: - Shared scalar/flow-value helpers, matched to FrontmatterRenderer's grammar
-
-  private static func splitKeyValue(_ line: Substring) -> (key: String, value: String)? {
-    guard let colonIndex = line.firstIndex(of: ":") else { return nil }
-    let key = line[line.startIndex..<colonIndex].trimmingCharacters(in: .whitespaces)
-    let value = line[line.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
-    return (key, value)
-  }
-
-  /// Splits a `[a, "b:c"]`-shaped flow array's inner elements, treating a
-  /// comma inside a double-quoted element as content rather than a separator.
-  ///
-  /// Still not a general YAML list parser — it knows only this schema's
-  /// grammar of plain and double-quoted scalars. Quote-awareness became load
-  /// bearing with `warnings:`, whose elements are prose written for a human
-  /// and routinely contain commas; the earlier naive split was correct only
-  /// while every array held ids and single words.
-  private static func splitFlowArray(_ raw: String) throws -> [String] {
-    guard raw.hasPrefix("["), raw.hasSuffix("]") else {
-      throw TranscriptParsingError.malformedField(field: "flow array", value: raw)
-    }
-    let inner = raw.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
-    guard !inner.isEmpty else { return [] }
-
-    var elements: [String] = []
-    var current = ""
-    var inQuotes = false
-    var escaped = false
-    for character in inner {
-      if escaped {
-        current.append(character)
-        escaped = false
-        continue
-      }
-      switch character {
-      case "\\" where inQuotes:
-        current.append(character)
-        escaped = true
-      case "\"":
-        inQuotes.toggle()
-        current.append(character)
-      case "," where !inQuotes:
-        elements.append(current.trimmingCharacters(in: .whitespaces))
-        current = ""
-      default:
-        current.append(character)
-      }
-    }
-    elements.append(current.trimmingCharacters(in: .whitespaces))
-    return elements
-  }
-
-  /// Splits a `{ k: v, k2: v2 }`-shaped flow mapping into its key/value pairs.
-  /// Safe here for the same reason as ``splitFlowArray(_:)`` — no value in
-  /// this schema's mappings (timestamps, names, bools) contains a comma.
-  private static func flowMappingFields(_ raw: String) throws -> [String: String] {
-    guard raw.hasPrefix("{"), raw.hasSuffix("}") else {
-      throw TranscriptParsingError.malformedField(field: "flow mapping", value: raw)
-    }
-    let inner = raw.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
-    guard !inner.isEmpty else { return [:] }
-    var result: [String: String] = [:]
-    for pair in inner.split(separator: ",") {
-      guard let (key, value) = splitKeyValue(pair) else {
-        throw TranscriptParsingError.malformedField(field: "flow mapping", value: raw)
-      }
-      result[key] = value
-    }
-    return result
-  }
-
-  private static func requireMapping(_ mapping: [String: String], _ key: String, _ context: String)
-    throws -> String
-  {
-    guard let value = mapping[key] else {
-      throw TranscriptParsingError.missingField("\(context).\(key)")
-    }
-    return value
-  }
-
-  /// Strips one layer of double-quoting and unescapes `\\`/`\"`, matching
-  /// ``YAML/quote(_:)``'s minimal escaping exactly. A bare (unquoted) scalar
-  /// is returned verbatim.
-  private static func unquote(_ value: String) -> String {
-    guard value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 else { return value }
-    let inner = value.dropFirst().dropLast()
-    var result = ""
-    result.reserveCapacity(inner.count)
-    var iterator = inner.makeIterator()
-    while let character = iterator.next() {
-      if character == "\\", let next = iterator.next() {
-        result.append(next)
-      } else {
-        result.append(character)
-      }
-    }
-    return result
-  }
 }

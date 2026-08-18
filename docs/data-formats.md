@@ -220,10 +220,9 @@ note: "[[daily-notes/2026/07/29/2026-07-17 - Weekly standup.md]]"
                             # Stamped in after the summary lands, since that is
                             # the only point both paths are known; absent until
                             # a preset has summarized this transcript
-attendees: [Tom Elliot (me), Jane Doe]
-                            # everyone the roster named, `(me)` marking the
-                            # local participant. Independent of whether any
-                            # audio was matched to them — see "Roster and
+attendees:                  # everyone the roster named, `(me)` marking the
+- Tom Elliot (me)           # local participant. Independent of whether any
+- Jane Doe                  # audio was matched to them — see "Roster and
                             # speaker map"; absent with no session context
 started: 2026-07-17T10:30:00Z
                             # when the session began, as distinct from `range`
@@ -231,23 +230,33 @@ started: 2026-07-17T10:30:00Z
                             # not the session). The date tokens key on this, so
                             # a call that ran past midnight always files under
                             # the day it started
-sources: [mic, "app:us.zoom.xos"]
-range: { start: 2026-07-17T10:30:00Z, end: 2026-07-17T11:02:00Z }
-model: { name: parakeet, backend: fluidaudio, version: "0.x" }
-diarization: { enabled: false }
+sources:
+- mic
+- "app:us.zoom.xos"
+range:
+  start: 2026-07-17T10:30:00Z
+  end: 2026-07-17T11:02:00Z
+model:
+  name: parakeet
+  backend: fluidaudio
+  version: "0.x"
+diarization:
+  enabled: false
 generated: 2026-07-17T11:02:14Z
 duration_seconds: 1920
 speech_seconds: 1440
 word_count: 3120
-vocab: [global, standup]
-# audio_stores: ["mic=ring", "app:us.zoom.xos=session"]
-#                           # present on `transcribe --session` output only —
-                            # which store each source was read from (`session` =
-                            # per-session copy, `ring` = legacy global buffer),
+vocab:
+- global
+- standup
+# audio_stores:             # present on `transcribe --session` output only —
+# - "mic=ring"              # which store each source was read from (`session` =
+# - "app:us.zoom.xos=session"
+#                           # per-session copy, `ring` = legacy global buffer),
                             # so a wrong-store read is visible
-# warnings: ["speaker attribution: …"]
-#                           # what was degraded or inferred about this
-                            # transcript; omitted when there is nothing to say.
+# warnings:                 # what was degraded or inferred about this
+# - "speaker attribution: …"
+#                           # transcript; omitted when there is nothing to say.
                             # `summarize` renders these into the note as a
                             # callout, because a warning only in a log is a
                             # warning nobody reads
@@ -263,6 +272,7 @@ Nothing from me, the deploy went out last night.
 
 Rules:
 
+- **Frontmatter is YAML, written in block style.** The suite emits and parses it with a real YAML implementation (Yams): what it writes is the block-style shape above, and what it reads back is any valid YAML mapping with these fields — including older flow-style files this suite wrote (`sources: [mic]`), and frontmatter a vault linter has reformatted. Free-form scalars that could be misread as another type (leading digit, reserved word, `:` and friends) are double-quoted.
 - Segments are grouped by speaker turn, each labelled with a timestamp and a speaker name. The label is **bold text, not a heading**: a speaker name is metadata, not document structure, and an `##` per turn rendered a one-word "Yeah." at display size while buying an outline of a thousand entries named after two people. Readers of transcripts written before this change are unaffected — the parser still accepts the old `## [HH:MM:SS] speaker` form.
 - **A turn is never split.** Turns are emitted whole in start order, even when two people overlap. Splitting a turn wherever another speaker intrudes is faithful to the audio and unreadable as a document — it shreds both sentences into alternating single words. Nor are a speaker's consecutive segments merged: an ASR pause is a paragraph break a reader wants.
 - **Backchannels are demoted.** A turn of at most four words falling entirely inside another speaker's turn — "Yeah.", "Right." — renders as a `> [HH:MM:SS] speaker: text` blockquote line attached beneath the turn it interrupted, instead of breaking that turn in two. It stays a full segment in the JSON sidecar, so nothing is lost; only the Markdown demotes it.

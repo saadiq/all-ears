@@ -19,6 +19,10 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/LebJe/TOMLKit", exact: "0.6.0"),
+    // Transcript frontmatter YAML (emit + parse) — a real, maintained YAML
+    // implementation instead of a hand-rolled grammar, so vault tooling that
+    // rewrites frontmatter into any valid YAML style still round-trips.
+    .package(url: "https://github.com/jpsim/Yams.git", exact: "6.2.2"),
     .package(url: "https://github.com/apple/swift-argument-parser", exact: "1.8.2"),
     // Native Parakeet/ASR backend (`docs/specs/model-interface.md`'s
     // "Backend 1 -- native"): Core ML/ANE inference via FluidAudio.
@@ -28,7 +32,8 @@ let package = Package(
     // MARK: - Libraries
 
     .target(
-      name: "EarsCore"
+      name: "EarsCore",
+      dependencies: [.product(name: "Yams", package: "Yams")]
     ),
     .target(
       name: "EarsConfig",

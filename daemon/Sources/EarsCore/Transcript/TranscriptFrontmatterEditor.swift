@@ -22,7 +22,7 @@ public enum TranscriptFrontmatterEditor {
   /// moment it is written, and a foreign transcript with no YAML header is the
   /// case that most needs it — nothing else records where its summary went.
   public static func settingNote(_ target: String, in markdown: String) -> String {
-    let line = YAML.line("note", FrontmatterRenderer.scalar(target))
+    let line = FrontmatterRenderer.line("note", target)
     return replacingOrInserting(
       line, key: "note", after: ["title", "session", "kind"], in: markdown)
   }

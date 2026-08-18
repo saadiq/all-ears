@@ -116,7 +116,28 @@ default — and to wherever you point them, since the path is a template. See
 A summary preset is a prompt file you write, named in your config — see
 [Your model, your prompts](#your-model-your-prompts).
 
-**Meeting notes, hands-free.** The [browser extension](browser/) isolates each remote participant's audio in Google Meet, Zoom, and Teams tabs and streams it to the daemon as its own source — each participant shows up as `browser:<platform>:<participant>` alongside your other sources. It declares the call to the daemon as a session, and when the call ends the daemon transcribes the session automatically; `ears session list` shows it, `cleanup`/`summarize` run on the result.
+**What's in the pipeline?** Bare `ears` (or `ears status`) is a dashboard:
+live sessions with their sources grouped beneath them, and the last few ended
+sessions with how far each got. `ears sessions` lists recent sessions one
+line each with a pipeline outcome (`--all` for full history), and
+`ears session show <ref>` walks one session stage by stage — capture,
+transcribe, cleanup, summarize, note — resolving `<ref>` from a session-id
+prefix, a title fragment, or today's start time (`15:01`):
+
+```
+Matt Silva — ended 17:32, 31m
+
+  capture     ✓ 33 MB mic, 21 MB remote (1 of 3 tracks carried speech)
+  transcribe  ✓ 177 segments, 5,745 words
+  cleanup     ✓ 177 segments cleaned
+  summarize   ✓ note published
+  note        ✓ calls/2026-08-17 - Matt Silva
+```
+
+A session that published with attribution warnings is flagged (`⚠`);
+`--warnings` prints them verbatim.
+
+**Meeting notes, hands-free.** The [browser extension](browser/) isolates each remote participant's audio in Google Meet, Zoom, and Teams tabs and streams it to the daemon as its own source — each captured track shows up as `browser:<platform>:<track>` alongside your other sources (the id is an opaque handle; who's speaking on it comes from the roster). It declares the call to the daemon as a session, and when the call ends the daemon transcribes the session automatically; `ears sessions` shows it with its pipeline outcome, `cleanup`/`summarize` run on the result.
 
 ## Your model, your prompts
 

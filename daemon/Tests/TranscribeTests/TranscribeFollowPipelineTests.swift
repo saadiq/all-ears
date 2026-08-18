@@ -254,7 +254,7 @@ struct TranscribeFollowPipelineTests {
     #expect(markdown.hasPrefix("---\n"))
     #expect(markdown.contains("kind: transcript"))
     #expect(markdown.contains("session: \(fixture.sessionID)"))
-    #expect(markdown.contains("sources: [mic]"))
+    #expect(markdown.contains("sources:\n- mic"))
     #expect(markdown.contains("hello world"))
     #expect(markdown.contains("second segment"))
     let hello = try #require(markdown.range(of: "hello world"))

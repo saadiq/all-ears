@@ -564,17 +564,45 @@ struct CLISmokeTests {
     #expect(result.stdout.contains("Speaker-diarization backend"))
   }
 
-  @Test("ears with no subcommand is a pure dispatcher: it prints help, not a stub run")
-  func earsRootIsAPureDispatcher() throws {
-    let result = try Self.runEars([])
-    // ArgumentParser's default run() for a command that declares
-    // subcommands but no behavior of its own is a help request, so the
-    // subcommand list must be shown and no former root flag may survive.
-    let output = result.stdout + result.stderr
-    #expect(output.contains("SUBCOMMANDS"))
-    #expect(output.contains("config"))
-    #expect(output.contains("status"))
-    #expect(!output.contains("--print-config"))
+  @Test("ears with no subcommand runs the status dashboard (here: failing to reach a daemon)")
+  func earsBareRunsStatus() throws {
+    let temp = TempDirectory()
+    let configPath = temp.write(
+      "data_root = \"\(temp.url.path)/data\"",
+      named: "config.toml"
+    )
+    // Bare `ears` defaults to `status`, so with no daemon it fails exactly
+    // the way `ears status` does — not with a help listing.
+    let result = try Self.runEars(
+      ["--config", configPath],
+      environment: ["EARS_SOCKET_PATH": Self.tempSocketPath()])
+    #expect(result.exitCode != 0)
+    #expect(result.stderr.contains("could not reach earsd"))
+    #expect(!result.stdout.contains("SUBCOMMANDS"))
+  }
+
+  @Test("ears with no subcommand renders the dashboard against a live earsd")
+  func earsBareRendersDashboardAgainstLiveDaemon() throws {
+    let temp = TempDirectory()
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+
+      [earsd]
+      source = []
+      """,
+      named: "config.toml"
+    )
+
+    let run = try Self.withRunningDaemon(configPath: configPath) { socketPath in
+      try Self.runEars(
+        ["--config", configPath],
+        environment: ["EARS_SOCKET_PATH": socketPath])
+    }
+    #expect(run.socketBecameReady)
+    #expect(run.result.exitCode == 0)
+    #expect(run.result.stdout.contains("earsd — up"))
+    #expect(run.result.stdout.contains("idle"))
   }
 
   // MARK: - ears: real subcommands against a live earsd (always source-free)
@@ -785,6 +813,152 @@ struct CLISmokeTests {
     #expect(run.socketBecameReady)
     #expect(run.result.exitCode != 0)
     #expect(run.result.stderr.contains("unknown source 'mic'"))
+  }
+
+  // MARK: - ears: sessions + session show (disk-backed pipeline views)
+
+  /// Writes a minimal, valid schema-3 `session.toml` under
+  /// `<dataRoot>/sessions/<id>/` — the fixture the daemon-free session
+  /// surfaces read.
+  private static func writeSessionFixture(
+    dataRoot: URL, id: String, title: String,
+    started: String = "2026-08-17T15:01:00Z", ended: String = "2026-08-17T15:32:00Z",
+    warnings: [String] = []
+  ) throws {
+    let directory = dataRoot.appendingPathComponent("sessions").appendingPathComponent(id)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let warningLines = warnings.map { "\"\($0)\"" }.joined(separator: ", ")
+    let toml = """
+      schema = 3
+      id = "\(id)"
+      title = "\(title)"
+      state = "ended"
+      started = "\(started)"
+      ended = "\(ended)"
+      trigger = "manual"
+      sources = ["mic"]
+      interval = []
+      attendee = []
+      warnings = [\(warningLines)]
+      """
+    try toml.write(
+      to: directory.appendingPathComponent("session.toml"), atomically: true, encoding: .utf8)
+  }
+
+  @Test("ears sessions --all lists disk sessions with a pipeline outcome, daemon-free")
+  func earsSessionsAllListsDiskSessions() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let configPath = temp.write("data_root = \"\(dataRoot.path)\"", named: "config.toml")
+    try Self.writeSessionFixture(
+      dataRoot: dataRoot, id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff", title: "Matt Silva")
+
+    let human = try Self.runEars(["sessions", "--all", "--config", configPath])
+    #expect(human.exitCode == 0)
+    #expect(human.stdout.contains("Matt Silva"))
+    // An old session with no transcript reads as a neutral gap, not a crash.
+    #expect(human.stdout.contains("– no transcript"))
+
+    // The machine surface keeps `session list`'s payload shape.
+    let json = try Self.runEars(["sessions", "--all", "--json", "--config", configPath])
+    #expect(json.exitCode == 0)
+    #expect(json.stdout.contains("\"sessions\":["))
+    #expect(json.stdout.contains("\"id\":\"3db61b03-aaaa-bbbb-cccc-ddddeeeeffff\""))
+  }
+
+  @Test("ears sessions --json against a live daemon keeps the pinned empty-list shape")
+  func earsSessionsAgainstLiveDaemon() throws {
+    let temp = TempDirectory()
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+
+      [earsd]
+      source = []
+      """,
+      named: "config.toml"
+    )
+
+    let run = try Self.withRunningDaemon(configPath: configPath) { socketPath in
+      try Self.runEars(
+        ["sessions", "--config", configPath, "--json"],
+        environment: ["EARS_SOCKET_PATH": socketPath])
+    }
+    #expect(run.socketBecameReady)
+    #expect(run.result.exitCode == 0)
+    #expect(run.result.stdout.contains("\"sessions\":[]"))
+  }
+
+  @Test("ears session show resolves an id prefix and renders the five-stage view from disk")
+  func earsSessionShowHappyPath() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let configPath = temp.write("data_root = \"\(dataRoot.path)\"", named: "config.toml")
+    try Self.writeSessionFixture(
+      dataRoot: dataRoot, id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff", title: "Matt Silva",
+      warnings: ["remote audio was lost for a stretch", "one track went unattributed"])
+
+    let result = try Self.runEars(["session", "show", "3db6", "--config", configPath])
+    #expect(result.exitCode == 0)
+    #expect(result.stdout.contains("Matt Silva — ended"))
+    #expect(result.stdout.contains(", 31m"))
+    for stage in ["capture", "transcribe", "cleanup", "summarize", "note"] {
+      #expect(result.stdout.contains(stage))
+    }
+    #expect(result.stdout.contains("⚠ 2 attribution warnings — show with --warnings"))
+
+    let verbose = try Self.runEars(
+      ["session", "show", "3db6", "--warnings", "--config", configPath])
+    #expect(verbose.exitCode == 0)
+    #expect(verbose.stdout.contains("⚠ remote audio was lost for a stretch"))
+    #expect(!verbose.stdout.contains("--warnings"))
+  }
+
+  @Test("ears session show --json emits the pinned pipeline document")
+  func earsSessionShowJSON() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let configPath = temp.write("data_root = \"\(dataRoot.path)\"", named: "config.toml")
+    try Self.writeSessionFixture(
+      dataRoot: dataRoot, id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff", title: "Matt Silva",
+      warnings: ["w1"])
+
+    let result = try Self.runEars(
+      ["session", "show", "matt", "--json", "--config", configPath])
+    #expect(result.exitCode == 0)
+    let data = try #require(result.stdout.data(using: .utf8))
+    let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let object = try #require(parsed)
+    #expect(object["schema"] as? Int == 1)
+    #expect((object["session"] as? [String: Any])?["id"] as? String != nil)
+    let stages = try #require(object["stages"] as? [[String: Any]])
+    #expect(
+      stages.map { $0["stage"] as? String }
+        == ["capture", "transcribe", "cleanup", "summarize", "note"])
+    #expect(object["warnings"] as? [String] == ["w1"])
+    #expect(object["artifacts"] is [String: Any])
+  }
+
+  @Test("ears session show reports ambiguous and unknown refs clearly, exiting non-zero")
+  func earsSessionShowBadRefs() throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data")
+    let configPath = temp.write("data_root = \"\(dataRoot.path)\"", named: "config.toml")
+    try Self.writeSessionFixture(
+      dataRoot: dataRoot, id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff", title: "Matt Silva")
+    try Self.writeSessionFixture(
+      dataRoot: dataRoot, id: "9c00aaaa-bbbb-cccc-dddd-eeeeffff0000", title: "Matt Chen",
+      started: "2026-08-16T10:00:00Z", ended: "2026-08-16T10:30:00Z")
+
+    let ambiguous = try Self.runEars(["session", "show", "matt", "--config", configPath])
+    #expect(ambiguous.exitCode != 0)
+    #expect(ambiguous.stderr.contains("'matt' matches 2 sessions"))
+    #expect(ambiguous.stderr.contains("Matt Silva"))
+    #expect(ambiguous.stderr.contains("Matt Chen"))
+
+    let unknown = try Self.runEars(["session", "show", "zzz", "--config", configPath])
+    #expect(unknown.exitCode != 0)
+    #expect(unknown.stderr.contains("no session matches 'zzz'"))
   }
 
   @Test("ears flush finalizes every source's in-progress chunk (a no-op against zero sources)")

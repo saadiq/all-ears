@@ -28,6 +28,8 @@ Two use cases drive everything:
 - **Meeting notes, hands-free.** The browser extension detects a call starting in a tab, declares a session, and streams each participant's audio in; when the call ends, the daemon transcribes the session automatically and files a dated Markdown note with no manual step.
 - **Deliberate recording.** `ears session start --source mic` before a conversation, `ears session end` after — the session is transcribed as a unit, with a title, pause marks, and a roster.
 
+The CLI is session-first: bare `ears` is a dashboard of the live session and the last few pipeline outcomes, `ears sessions` lists recent sessions one line each, and `ears session show <ref>` walks one session's pipeline — capture → transcribe → cleanup → summarize → note — reconstructed from disk, so "did my 2pm call make it into a note?" is one command.
+
 Sources are kept **separate end to end** — separate buffers, separate indices, separate transcripts merged only at output. Your mic and the call's audio never mix, which is what gives you-vs-them speaker attribution for free, and per-participant browser sources extend that to real names on Google Meet.
 
 A **session** is the one lifecycle entity: a daemon-owned record (UUID, title, state, pause/resume marks, attendee roster) whose lifetime bounds capture. Browser-detected calls carry the platform's own meeting id as the session's identity, which makes the extension's `session.start` idempotent — a flaky service worker re-declares instead of duplicating.
