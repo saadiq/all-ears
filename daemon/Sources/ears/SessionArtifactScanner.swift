@@ -116,11 +116,21 @@ enum SessionArtifactScanner {
     let cleanupURL = URL(fileURLWithPath: cleanupPath)
     guard let cleanMarkdown = try? String(contentsOf: cleanupURL, encoding: .utf8) else { return }
     artifacts.cleanupExists = true
-    if let clean = try? TranscriptParser.parse(
-      markdown: cleanMarkdown, jsonSidecar: sidecarText(for: cleanupURL))
-    {
+    let cleanSidecar = sidecarText(for: cleanupURL)
+    if let clean = try? TranscriptParser.parse(markdown: cleanMarkdown, jsonSidecar: cleanSidecar) {
       artifacts.cleanupSegments = clean.segments.count
       artifacts.noteLink = clean.frontmatter.note
+    } else {
+      // The published copy lives in the user's vault, where other tooling may
+      // have rewritten the frontmatter into block-style YAML the strict
+      // parser refuses. The facts still wanted from it survive that: the
+      // note link via a tolerant key probe, the turn count via the sidecar.
+      artifacts.noteLink = FrontmatterProbe.value(of: "note", in: cleanMarkdown)
+      if let sidecar = cleanSidecar,
+        let segments = try? TranscriptParser.parseJSONSidecar(sidecar)
+      {
+        artifacts.cleanupSegments = segments.count
+      }
     }
 
     // Summaries land as `<stem>.summary.md` / `<stem>.<preset>.summary.md`
