@@ -88,6 +88,8 @@ struct MeetingPromptPolicyTests {
     #expect(DetectedSessionIdentity.platform(forBundleID: "us.zoom.xos") == "zoom-app")
     #expect(DetectedSessionIdentity.platform(forBundleID: "com.microsoft.teams2") == "teams-app")
     #expect(
+      DetectedSessionIdentity.platform(forBundleID: "com.tinyspeck.slackmacgap") == "slack-app")
+    #expect(
       DetectedSessionIdentity.platform(forBundleID: "com.example.other") == "com.example.other")
   }
 }

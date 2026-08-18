@@ -9,12 +9,14 @@
 public enum KnownMeetingApp: Sendable, CaseIterable {
   case zoom
   case teams
+  case slack
 
   /// Every bundle id this app has shipped under.
   public var bundleIDs: [String] {
     switch self {
     case .zoom: ["us.zoom.xos"]
     case .teams: ["com.microsoft.teams2", "com.microsoft.teams"]
+    case .slack: ["com.tinyspeck.slackmacgap"]
     }
   }
 
@@ -23,15 +25,24 @@ public enum KnownMeetingApp: Sendable, CaseIterable {
     switch self {
     case .zoom: "zoom-app"
     case .teams: "teams-app"
+    case .slack: "slack-app"
     }
   }
 
   /// The substring this app's join links carry, matched against a calendar
   /// event's location, notes, and URL.
+  ///
+  /// Slack's is narrower than the other two by necessity: `zoom.us` and
+  /// `teams.microsoft` appear in join links and virtually nowhere else, but a
+  /// bare `slack.com` also matches every message permalink and workspace URL
+  /// pasted into an invite — it would mark events that are not huddles. Most
+  /// huddles are ad-hoc and never reach a calendar at all, so this marker
+  /// rarely decides anything; the nearest-ongoing-event fallback does.
   public var linkMarker: String {
     switch self {
     case .zoom: "zoom.us"
     case .teams: "teams.microsoft"
+    case .slack: "slack.com/huddle"
     }
   }
 

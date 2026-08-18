@@ -157,7 +157,9 @@ daemon's episode id:
   pick an event overlapping now (with slack for early joins and late
   starts), preferring one whose location/notes/URL carries a platform marker
   (`zoom.us`, `teams.microsoft` — matched as a substring, so it also catches
-  `teams.microsoft.com`), else the nearest ongoing event, else none. **All-day
+  `teams.microsoft.com`; Slack's is the narrower `slack.com/huddle`, because a
+  bare `slack.com` matches every permalink and workspace URL pasted into an
+  invite), else the nearest ongoing event, else none. **All-day
   rows are excluded outright**, never merely outranked: "PTO", "WFH", a
   birthday and a week-long conference all span now, so one would be a
   candidate for every meeting of the day, and on a day with no other event it

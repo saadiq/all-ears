@@ -75,6 +75,12 @@ struct CalendarMatchingTests {
   func markers() {
     #expect(CalendarMatching.marker(forBundleID: "us.zoom.xos") == "zoom.us")
     #expect(CalendarMatching.marker(forBundleID: "com.microsoft.teams2") == "teams.microsoft")
+    // Narrower than the other two on purpose: "zoom.us" and "teams.microsoft"
+    // appear in join links and almost nowhere else, but a bare "slack.com"
+    // matches every message permalink and workspace URL someone pastes into an
+    // invite, which would mark an event that is not a huddle at all.
+    #expect(
+      CalendarMatching.marker(forBundleID: "com.tinyspeck.slackmacgap") == "slack.com/huddle")
     #expect(CalendarMatching.marker(forBundleID: "com.example.other") == nil)
   }
 }
