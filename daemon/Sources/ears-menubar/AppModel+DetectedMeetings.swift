@@ -11,8 +11,19 @@ import Foundation
 /// specifically so this extension can reach them.
 extension AppModel {
   /// Prompts for any newly detected meeting the policy allows, and marks the
-  /// episodes it prompts (or drops) so neither is offered again.
+  /// episodes it prompts (or drops) so neither is offered again. Prompts
+  /// whose offer has stopped standing are withdrawn first.
   func offerDetectedMeetings() {
+    // An offer that is no longer true has to come *down*, not just stop being
+    // re-posted: the prompt is alert-style, so it sits on screen until it is
+    // answered (see `NSUserNotificationAlertStyle` in the app's Info.plist),
+    // and a Start Recording button for a call that ended an hour ago is worse
+    // than no prompt at all — accepting it records an empty session. A live
+    // session voids every offer, not just the ended ones.
+    announcements.withdrawMeetingPrompts(
+      state.activeSession == nil
+        ? state.meetingActivity.filter { !$0.active }.map(\.episode)
+        : state.meetingActivity.map(\.episode))
     if state.activeSession != nil {
       // Dropped, not deferred (the spec's prompt policy): an episode that
       // began while a session was live never prompts later — marking it
@@ -38,6 +49,21 @@ extension AppModel {
   /// running unenriched.
   func startDetectedSession(source: String, episode: String) {
     guard let connection else { return }
+    // Answered, whichever way this call ends: accepted from the notification
+    // macOS has already taken down, or from the menu row, where the prompt for
+    // the same episode may still be sitting in Notification Center offering
+    // what is about to start.
+    announcements.withdrawMeetingPrompts([episode])
+    // An accept can arrive long after the offer, now that the prompt is
+    // alert-style and recoverable from Notification Center: the menu only
+    // offers the verb while idle, but a notification clicked after a session
+    // started by other means lands here. The daemon records one session at a
+    // time, so a second `session.start` would surface only as an error the
+    // user did not cause.
+    guard state.activeSession == nil else {
+      promptedEpisodes.mark(episode)
+      return
+    }
     // Against the config as it is *now* — see ``startRecording()``.
     reloadDeclarations()
     let app = SourceID(source)

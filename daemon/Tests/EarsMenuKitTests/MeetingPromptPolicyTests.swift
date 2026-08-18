@@ -31,13 +31,32 @@ struct MeetingPromptPolicyTests {
 
   @Test("only an offer to start carries the prompt's buttons")
   func onlyOffersCarryTheButtonCategory() {
-    let prompts = MeetingPromptPolicy.prompts(
-      state: connectedState([zoomActive()]), alreadyPrompted: [])
-    #expect(prompts[0].request.action.notificationCategory == MeetingPromptCategory.identifier)
+    let offer = NotificationRequest.Action.startDetected(
+      source: "app:us.zoom.xos", episode: "us.zoom.xos#1", label: "Zoom")
+    #expect(offer.notificationCategory == MeetingPromptCategory.identifier)
     // A notification that accepts nothing must not offer Start / Not Now.
     #expect(NotificationRequest.Action.openSummary(session: "s1").notificationCategory == nil)
     #expect(NotificationRequest.Action.revealSession(session: "s1").notificationCategory == nil)
     #expect(NotificationRequest.Action.none.notificationCategory == nil)
+  }
+
+  @Test("only an offer to start is posted under a withdrawable id")
+  func onlyOffersCarryAStableNotificationID() {
+    let offer = NotificationRequest.Action.startDetected(
+      source: "app:us.zoom.xos", episode: "us.zoom.xos#1", label: "Zoom")
+    // Keyed on the episode, so the app can take the offer back once it stops
+    // standing — and so two posts for one episode replace rather than stack.
+    #expect(
+      offer.notificationIdentifier
+        == MeetingPromptCategory.notificationIdentifier(episode: "us.zoom.xos#1"))
+    #expect(
+      MeetingPromptCategory.notificationIdentifier(episode: "us.zoom.xos#1")
+        != MeetingPromptCategory.notificationIdentifier(episode: "us.zoom.xos#2"))
+    // History, not an offer: a fresh id per post, so a second summary never
+    // overwrites the first.
+    #expect(NotificationRequest.Action.openSummary(session: "s1").notificationIdentifier == nil)
+    #expect(NotificationRequest.Action.revealSession(session: "s1").notificationIdentifier == nil)
+    #expect(NotificationRequest.Action.none.notificationIdentifier == nil)
   }
 
   @Test("an already-prompted episode stays quiet")

@@ -106,16 +106,32 @@ final class Notifier: NSObject {
     content.title = request.title
     content.body = request.body
     content.userInfo = Self.encode(request.action)
-    if let category = request.action.notificationCategory {
-      content.categoryIdentifier = category
-    }
+    content.categoryIdentifier = request.action.notificationCategory ?? ""
     let log = self.log
     UNUserNotificationCenter.current().add(
-      UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+      UNNotificationRequest(
+        identifier: request.action.notificationIdentifier ?? UUID().uuidString,
+        content: content, trigger: nil)
     ) { error in
       guard let error else { return }
       log.error("notification post failed: \(error.localizedDescription, privacy: .public)")
     }
+  }
+
+  /// Takes back detected-meeting prompts whose offer no longer stands.
+  ///
+  /// An alert-style notification never fades, and this one *expires* — the
+  /// meeting ends, or a session starts by other means, and what is left on
+  /// screen is a Start Recording button for a call that is over. Withdrawing
+  /// it is the only way to keep the prompt honest; without this, the longer
+  /// life the alert style buys is a liability rather than the point.
+  ///
+  /// Delivered only: a prompt is posted with no trigger, so there is never a
+  /// pending request to cancel.
+  func withdrawMeetingPrompts(episodes: [String]) {
+    guard available, !episodes.isEmpty else { return }
+    UNUserNotificationCenter.current().removeDeliveredNotifications(
+      withIdentifiers: episodes.map(MeetingPromptCategory.notificationIdentifier(episode:)))
   }
 
   nonisolated static func encode(_ action: NotificationRequest.Action) -> [String: String] {

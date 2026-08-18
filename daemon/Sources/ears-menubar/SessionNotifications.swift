@@ -79,4 +79,10 @@ import Foundation
   func announceMeetingPrompts(_ prompts: [MeetingPrompt]) {
     for prompt in prompts { notifier.post(prompt.request) }
   }
+
+  /// Takes back prompts for episodes that are no longer worth offering — see
+  /// ``Notifier/withdrawMeetingPrompts(episodes:)``.
+  func withdrawMeetingPrompts(_ episodes: [String]) {
+    notifier.withdrawMeetingPrompts(episodes: episodes)
+  }
 }

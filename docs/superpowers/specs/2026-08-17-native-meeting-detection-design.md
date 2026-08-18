@@ -120,9 +120,25 @@ to raise, so activating it would take focus off the meeting being joined.
 
 The app declares `NSUserNotificationAlertStyle = alert`, so the prompt stays
 on screen until it is answered or dismissed rather than fading as a banner —
-an accept-or-decline offer that expires on its own is an offer missed. This
-is a *default*: macOS reads it only when it first registers the app, and the
-user's setting wins from then on.
+an accept-or-decline offer that expires on its own is an offer missed. The
+key is app-wide (macOS has no per-notification alert style), so the summary
+and at-risk notices wait to be dismissed too. This is a *default*: macOS reads
+it only when it first registers the app, and the user's setting wins from
+then on.
+
+Waiting is what makes the prompt the one notification that can stop being
+true while it is still on screen, so it is posted under a stable per-episode
+id (`meeting-detected:<episode>`) and **withdrawn** once the offer no longer
+stands: when the episode ends, when a session is live, and when the offer is
+accepted from the menu row instead. Otherwise a Start Recording button
+outlives the call it names and accepting it records an empty session. The
+other notifications are history the moment they post — a fresh id each, so a
+second summary never overwrites the first.
+
+The response handler names the two identifiers that *accept* — a click on the
+body, and Start Recording — and ignores everything else, so "Not Now", the
+system dismiss identifier, and any button added later cannot be mistaken for
+a yes.
 
 Prompt policy is pure logic in `EarsMenuKit` (tier-0 tested), keyed on the
 daemon's episode id:

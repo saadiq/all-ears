@@ -26,6 +26,18 @@ public enum MeetingPromptCategory {
   /// Declines it. Nothing to undo: the episode is marked prompted when the
   /// notification is *posted*, so declining only closes the notification.
   public static let dismiss = "not-now"
+
+  /// The notification id a prompt for `episode` is posted under.
+  ///
+  /// Keyed on the episode rather than freshly minted per post, because an
+  /// offer to record a meeting goes stale: the meeting ends, or a session
+  /// starts by other means, and the notification is left offering something
+  /// that no longer stands. An alert-style prompt does not fade on its own
+  /// (see `NSUserNotificationAlertStyle` in the app's Info.plist), so the app
+  /// has to withdraw it — which it can only do if it can name it.
+  public static func notificationIdentifier(episode: String) -> String {
+    "\(identifier):\(episode)"
+  }
 }
 
 /// Decides which detected meetings deserve a prompt right now. Policy, not

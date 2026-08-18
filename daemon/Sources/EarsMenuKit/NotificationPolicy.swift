@@ -24,6 +24,23 @@ public struct NotificationRequest: Sendable, Hashable {
       case .openSummary, .revealSession, .none: return nil
       }
     }
+
+    /// The id this action's notification is posted under, or `nil` to mint a
+    /// fresh one per post.
+    ///
+    /// Only an offer needs a stable id, and for the same reason it needs
+    /// buttons: it is the one notification that can stop being true while it
+    /// is still on screen, so the app must be able to replace or withdraw it
+    /// — see ``MeetingPromptCategory/notificationIdentifier(episode:)``. The
+    /// rest are history the moment they post; a stable id would only make a
+    /// second summary silently overwrite the first.
+    public var notificationIdentifier: String? {
+      switch self {
+      case .startDetected(_, let episode, _):
+        return MeetingPromptCategory.notificationIdentifier(episode: episode)
+      case .openSummary, .revealSession, .none: return nil
+      }
+    }
   }
   public var title: String
   public var body: String
