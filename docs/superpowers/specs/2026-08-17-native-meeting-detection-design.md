@@ -109,7 +109,20 @@ Third `TriggerKind` case (`EarsCore/Models/TriggerKind.swift`) alongside
 `ears-menubar` subscribes to `meeting.activity`. When an episode begins and
 no session is live, it posts a macOS notification via the existing
 `SessionNotifications` infrastructure — *"Zoom meeting detected — Start
-recording?"* with a Start action — and shows the same offer as a menu row.
+recording?"* — and shows the same offer as a menu row.
+
+The notification carries a `meeting-detected` category with two buttons,
+**Start Recording** and **Not Now**. Start does what a click on the body has
+always done; Not Now only closes the notification, since the episode is
+marked prompted when the notification is *posted*, not when it is answered.
+Neither action is `.foreground`: the app is `LSUIElement` and has no window
+to raise, so activating it would take focus off the meeting being joined.
+
+The app declares `NSUserNotificationAlertStyle = alert`, so the prompt stays
+on screen until it is answered or dismissed rather than fading as a banner —
+an accept-or-decline offer that expires on its own is an offer missed. This
+is a *default*: macOS reads it only when it first registers the app, and the
+user's setting wins from then on.
 
 Prompt policy is pure logic in `EarsMenuKit` (tier-0 tested), keyed on the
 daemon's episode id:
