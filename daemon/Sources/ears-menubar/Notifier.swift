@@ -107,6 +107,12 @@ final class Notifier: NSObject {
     content.body = request.body
     content.userInfo = Self.encode(request.action)
     content.categoryIdentifier = request.action.notificationCategory ?? ""
+    // `requestAuthorization` has always asked for `.sound` and `willPresent`
+    // has always returned it, but neither plays anything on its own — without
+    // a sound on the content the grant is inert. A silent alert defeats the
+    // point of one: the meeting prompt is worth interrupting for, and it is
+    // shown while the user's attention is on the call they just joined.
+    content.sound = .default
     let log = self.log
     UNUserNotificationCenter.current().add(
       UNNotificationRequest(
