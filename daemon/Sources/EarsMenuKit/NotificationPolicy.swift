@@ -31,13 +31,13 @@ public struct NotificationRequest: Sendable, Hashable {
     /// Only an offer needs a stable id, and for the same reason it needs
     /// buttons: it is the one notification that can stop being true while it
     /// is still on screen, so the app must be able to replace or withdraw it
-    /// — see ``MeetingPromptCategory/notificationIdentifier(episode:)``. The
+    /// — see ``MeetingPromptCategory/notificationIdentifier(source:)``. The
     /// rest are history the moment they post; a stable id would only make a
     /// second summary silently overwrite the first.
     public var notificationIdentifier: String? {
       switch self {
-      case .startDetected(_, let episode, _):
-        return MeetingPromptCategory.notificationIdentifier(episode: episode)
+      case .startDetected(let source, _, _):
+        return MeetingPromptCategory.notificationIdentifier(source: source)
       case .openSummary, .revealSession, .none: return nil
       }
     }

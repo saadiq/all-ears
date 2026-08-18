@@ -124,20 +124,19 @@ final class Notifier: NSObject {
     }
   }
 
-  /// Takes back detected-meeting prompts whose offer no longer stands.
+  /// Takes back the standing offer for each of `sources`, once answering it
+  /// would do nothing — it was accepted, or a session is already running.
   ///
-  /// An alert-style notification never fades, and this one *expires* — the
-  /// meeting ends, or a session starts by other means, and what is left on
-  /// screen is a Start Recording button for a call that is over. Withdrawing
-  /// it is the only way to keep the prompt honest; without this, the longer
-  /// life the alert style buys is a liability rather than the point.
+  /// An alert-style notification never fades, so an offer nobody can act on
+  /// would otherwise sit there indefinitely. Note what this deliberately does
+  /// *not* cover: a meeting merely ending. See ``AppModel/offerDetectedMeetings()``.
   ///
   /// Delivered only: a prompt is posted with no trigger, so there is never a
   /// pending request to cancel.
-  func withdrawMeetingPrompts(episodes: [String]) {
-    guard available, !episodes.isEmpty else { return }
+  func withdrawMeetingPrompts(sources: [String]) {
+    guard available, !sources.isEmpty else { return }
     UNUserNotificationCenter.current().removeDeliveredNotifications(
-      withIdentifiers: episodes.map(MeetingPromptCategory.notificationIdentifier(episode:)))
+      withIdentifiers: sources.map(MeetingPromptCategory.notificationIdentifier(source:)))
   }
 
   nonisolated static func encode(_ action: NotificationRequest.Action) -> [String: String] {

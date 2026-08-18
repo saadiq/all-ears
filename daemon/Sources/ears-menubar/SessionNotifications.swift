@@ -80,9 +80,9 @@ import Foundation
     for prompt in prompts { notifier.post(prompt.request) }
   }
 
-  /// Takes back prompts for episodes that are no longer worth offering — see
-  /// ``Notifier/withdrawMeetingPrompts(episodes:)``.
-  func withdrawMeetingPrompts(_ episodes: [String]) {
-    notifier.withdrawMeetingPrompts(episodes: episodes)
+  /// Takes back the standing offer for each source — see
+  /// ``Notifier/withdrawMeetingPrompts(sources:)``.
+  func withdrawMeetingPrompts(_ sources: [String]) {
+    notifier.withdrawMeetingPrompts(sources: sources)
   }
 }

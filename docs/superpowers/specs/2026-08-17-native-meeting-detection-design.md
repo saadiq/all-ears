@@ -126,14 +126,29 @@ and at-risk notices wait to be dismissed too. This is a *default*: macOS reads
 it only when it first registers the app, and the user's setting wins from
 then on.
 
-Waiting is what makes the prompt the one notification that can stop being
-true while it is still on screen, so it is posted under a stable per-episode
-id (`meeting-detected:<episode>`) and **withdrawn** once the offer no longer
-stands: when the episode ends, when a session is live, and when the offer is
-accepted from the menu row instead. Otherwise a Start Recording button
-outlives the call it names and accepting it records an empty session. The
-other notifications are history the moment they post — a fresh id each, so a
-second summary never overwrites the first.
+The prompt is posted under a stable **per-source** id
+(`meeting-detected:app:<bundle-id>`), so there is one standing offer per
+meeting app: a later episode for the same app replaces it rather than
+stacking beside it. This matters because meeting apps flap the input stream
+while a call is being joined — Zoom was observed taking the mic, releasing it
+17s later, and taking it again — and each edge is its own episode.
+
+It is **withdrawn** only when answering it would do nothing: the offer was
+accepted, or a session is already running. An episode merely *ending* does
+not withdraw it. That was tried and was wrong — it cancelled prompts within
+17s of posting them, on the flap above, before the user could answer, which
+defeats the point of a notification that waits. The daemon itself allows
+`idle_grace_s` (90s) of inactivity before concluding a meeting is over, so
+withdrawing on the bare inactive edge was strictly more aggressive than the
+end policy it was trying to mirror.
+
+The cost of that choice is an offer for a call that has already ended sitting
+on screen until the next one replaces it. Accepting a stale offer starts a
+session the daemon auto-ends after `idle_grace_s` — a bounded, self-correcting
+cost, unlike a prompt the user never got to see.
+
+The other notifications are history the moment they post — a fresh id each,
+so a second summary never overwrites the first.
 
 The response handler names the two identifiers that *accept* — a click on the
 body, and Start Recording — and ignores everything else, so "Not Now", the

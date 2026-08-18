@@ -27,16 +27,21 @@ public enum MeetingPromptCategory {
   /// notification is *posted*, so declining only closes the notification.
   public static let dismiss = "not-now"
 
-  /// The notification id a prompt for `episode` is posted under.
+  /// The notification id a prompt for `source` is posted under.
   ///
-  /// Keyed on the episode rather than freshly minted per post, because an
-  /// offer to record a meeting goes stale: the meeting ends, or a session
-  /// starts by other means, and the notification is left offering something
-  /// that no longer stands. An alert-style prompt does not fade on its own
-  /// (see `NSUserNotificationAlertStyle` in the app's Info.plist), so the app
-  /// has to withdraw it — which it can only do if it can name it.
-  public static func notificationIdentifier(episode: String) -> String {
-    "\(identifier):\(episode)"
+  /// Keyed on the **source**, not the episode: one standing offer per meeting
+  /// app, which a newer episode replaces rather than stacks beside. Meeting
+  /// apps flap their input stream while a call is being joined — observed with
+  /// Zoom taking the mic, dropping it 17s later, and taking it again — and
+  /// each of those edges is its own episode. Per-episode ids left two live
+  /// alerts on screen offering the same call.
+  ///
+  /// Stable rather than freshly minted per post for the second reason too: an
+  /// alert-style prompt does not fade on its own (see
+  /// `NSUserNotificationAlertStyle` in the app's Info.plist), so the app must
+  /// be able to name one to take it back once it is answered.
+  public static func notificationIdentifier(source: String) -> String {
+    "\(identifier):\(source)"
   }
 }
 
