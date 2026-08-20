@@ -137,4 +137,48 @@ struct SessionPipelineChainTests {
     #expect(stages[3].state == .notRequested)
     #expect(stages[4].state == .notRequested)
   }
+
+  /// The 2026-08-20 605-second session's measurements: one word over 0.556s
+  /// of speech, on a session whose audio is still on disk.
+  private func emptyTranscript() -> SessionArtifacts {
+    var artifacts = capturedOnly()
+    artifacts.transcriptExists = true
+    artifacts.transcriptSegments = 1
+    artifacts.transcriptWords = 1
+    artifacts.transcriptSpeechSeconds = 0.556
+    return artifacts
+  }
+
+  @Test("not requested outranks skipped: the gate never stopped what nobody asked for")
+  func notRequestedOutranksSkipped() {
+    let record = session(trigger: .browserExtension, onEndStages: ["transcribe"])
+    let stages = SessionPipeline.stages(
+      session: record, artifacts: emptyTranscript(), now: muchLater, configuredChain: fullChain)
+    #expect(stages[1].state == .done)
+    // The chain asked for transcribe alone, so the gate had nothing to stop —
+    // calling these skipped would credit the gate with a decision the session
+    // had already made for itself.
+    #expect(stages.dropFirst(2).allSatisfy { $0.state == .notRequested })
+    #expect(
+      SessionPipeline.outcome(
+        session: record, artifacts: emptyTranscript(), now: muchLater, configuredChain: fullChain)
+        == PipelineOutcome(glyph: "\u{2713}", text: "transcribed"))
+  }
+
+  @Test("a cleanup-only chain the gate stopped reads as empty, not as a stall")
+  func cleanupOnlyChainReportsEmpty() {
+    let record = session(trigger: .browserExtension, onEndStages: ["transcribe", "cleanup"])
+    let stages = SessionPipeline.stages(
+      session: record, artifacts: emptyTranscript(), now: justAfter, configuredChain: fullChain)
+    #expect(stages[2].state == .skipped)
+    #expect(stages[2].detail == "skipped (empty transcript)")
+    #expect(stages[3].state == .notRequested)
+    #expect(stages[4].state == .notRequested)
+    // Inside the grace window this would otherwise claim "cleaning" — a wait
+    // that never ends, since the daemon already decided not to.
+    #expect(
+      SessionPipeline.outcome(
+        session: record, artifacts: emptyTranscript(), now: justAfter, configuredChain: fullChain)
+        == PipelineOutcome(glyph: "\u{2013}", text: "empty, not cleaned"))
+  }
 }
