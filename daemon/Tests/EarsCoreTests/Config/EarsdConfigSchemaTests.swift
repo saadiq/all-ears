@@ -223,6 +223,39 @@ struct EarsdConfigSchemaTests {
     #expect(errors.isEmpty)
   }
 
+  @Test("the empty-transcript thresholds validate, as an integer or a float")
+  func emptinessThresholdsValidate() {
+    for speech in [ConfigValue.double(5.0), .double(0.5), .int(5), .int(0)] {
+      let value = mergeConfigLayers([
+        EarsdConfigSchema.effectiveDefaults,
+        .table([
+          "earsd": .table([
+            "sessions": .table(["min_words": .int(10), "min_speech_seconds": speech])
+          ])
+        ]),
+      ])
+      #expect(validateConfig(value, against: EarsdConfigSchema.effectiveSchema).isEmpty)
+    }
+  }
+
+  @Test("a mistyped threshold is a reported config error, not a silent fallback")
+  func mistypedThresholdIsRejected() {
+    let value = mergeConfigLayers([
+      EarsdConfigSchema.effectiveDefaults,
+      .table([
+        "earsd": .table([
+          "sessions": .table(["min_words": .string("ten"), "min_speech_seconds": .bool(true)])
+        ])
+      ]),
+    ])
+
+    let errors = validateConfig(value, against: EarsdConfigSchema.effectiveSchema)
+    #expect(
+      errors.map(\.keyPathString) == [
+        "earsd.sessions.min_speech_seconds", "earsd.sessions.min_words",
+      ])
+  }
+
   @Test("effectiveDefaults includes both the shared Phase0 keys and the earsd slice")
   func effectiveDefaultsIncludesBoth() {
     guard case .table(let root) = EarsdConfigSchema.effectiveDefaults else {

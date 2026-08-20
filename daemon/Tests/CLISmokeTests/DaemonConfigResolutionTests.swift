@@ -301,4 +301,44 @@ struct DaemonConfigResolutionTests {
     #expect(explicit.configuration.detection.debounceSeconds == 5)
     #expect(explicit.configuration.detection.appIdleGraceSeconds == 30)
   }
+
+  @Test("the empty-transcript thresholds default to 10 words / 5s")
+  func emptinessDefaults() {
+    let result = DaemonConfigResolution.resolve(config: config(), now: now)
+    #expect(result.configuration.onEndEmptinessPolicy == .defaults)
+    #expect(result.configuration.onEndEmptinessPolicy.minWords == 10)
+    #expect(result.configuration.onEndEmptinessPolicy.minSpeechSeconds == 5)
+  }
+
+  @Test("explicit thresholds are honoured, and both at 0 disables the gate")
+  func emptinessExplicit() {
+    let tightened = DaemonConfigResolution.resolve(
+      config: config(
+        earsdOverrides: [
+          "sessions": .table([
+            "min_words": .int(40), "min_speech_seconds": .double(12.5),
+          ])
+        ]),
+      now: now)
+    #expect(tightened.configuration.onEndEmptinessPolicy.minWords == 40)
+    #expect(tightened.configuration.onEndEmptinessPolicy.minSpeechSeconds == 12.5)
+
+    let off = DaemonConfigResolution.resolve(
+      config: config(
+        earsdOverrides: [
+          "sessions": .table(["min_words": .int(0), "min_speech_seconds": .int(0)])
+        ]),
+      now: now)
+    #expect(!off.configuration.onEndEmptinessPolicy.isEnabled)
+  }
+
+  @Test("min_speech_seconds accepts a TOML integer as well as a float")
+  func emptinessSpeechAcceptsInteger() {
+    let result = DaemonConfigResolution.resolve(
+      config: config(earsdOverrides: ["sessions": .table(["min_speech_seconds": .int(8)])]),
+      now: now)
+    #expect(result.configuration.onEndEmptinessPolicy.minSpeechSeconds == 8)
+    // The other half is untouched by setting one.
+    #expect(result.configuration.onEndEmptinessPolicy.minWords == 10)
+  }
 }

@@ -105,6 +105,19 @@ enum DaemonConfigResolution {
       warnings = resolved.problems
     }
 
+    // `[earsd.sessions].min_words` / `.min_speech_seconds`: the transcript
+    // measurements below which the on-end chain stops after transcribe rather
+    // than spending the LLM stages on a session that recorded nothing anyone
+    // said. Absent defaults to `TranscriptEmptinessPolicy.defaults`; `0`
+    // disables that half of the test (both `0` runs the chain unconditionally,
+    // as it did before the gate).
+    let onEndEmptinessPolicy = TranscriptEmptinessPolicy(
+      minWords: int(
+        sessionsTable, "min_words", default: TranscriptEmptinessPolicy.defaults.minWords),
+      minSpeechSeconds: double(
+        sessionsTable, "min_speech_seconds",
+        default: TranscriptEmptinessPolicy.defaults.minSpeechSeconds))
+
     let configuration = EarsDaemonConfiguration(
       sources: descriptors,
       dataRoot: URL(fileURLWithPath: dataRoot.isEmpty ? "." : dataRoot),
@@ -129,6 +142,7 @@ enum DaemonConfigResolution {
         debounceSeconds: Double(int(detectionTable, "debounce_s", default: 2)),
         appIdleGraceSeconds: Double(int(detectionTable, "idle_grace_s", default: 90))),
       onEndStages: onEndStages,
+      onEndEmptinessPolicy: onEndEmptinessPolicy,
       outputRoot: URL(fileURLWithPath: outputRootPath.isEmpty ? "." : outputRootPath)
     )
     return Result(configuration: configuration, skipped: skipped, warnings: warnings)
@@ -271,5 +285,18 @@ enum DaemonConfigResolution {
   {
     guard case .bool(let value)? = table[key] else { return fallback }
     return value
+  }
+
+  /// A floating-point reader that also accepts an integer, matching the
+  /// schema's int-satisfies-double widening (`ConfigValueKind.satisfies`):
+  /// `min_speech_seconds = 5` and `= 5.0` are the same setting.
+  private static func double(
+    _ table: [String: ConfigValue], _ key: String, default fallback: Double
+  ) -> Double {
+    switch table[key] {
+    case .double(let value): return value
+    case .int(let value): return Double(value)
+    default: return fallback
+    }
   }
 }

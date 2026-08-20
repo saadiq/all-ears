@@ -18,6 +18,9 @@ public struct SessionArtifacts: Sendable, Equatable {
   public var transcriptSegments: Int?
   /// `word_count` from the transcript's frontmatter, when it parsed.
   public var transcriptWords: Int?
+  /// `speech_seconds` from the transcript's frontmatter, when it parsed —
+  /// the other half of the emptiness test the daemon gated the chain on.
+  public var transcriptSpeechSeconds: Double?
   /// Where `[cleanup] output` resolves for this session's transcript —
   /// computed whether or not anything is there yet.
   public var cleanupPath: String?
@@ -52,12 +55,19 @@ public struct PipelineStage: Sendable, Equatable {
 /// distinguishable from "still in flight" but not from a stage that failed, so
 /// the view never claims failure outright. A stage the session's on-end chain
 /// never asked for is `notRequested` — an absence with a reason, not a gap.
+///
+/// `skipped` is the other absent-artifact case the view can explain: the
+/// session asked for the stage, but the daemon stopped the chain after
+/// transcribe because the transcript reads as empty
+/// (``TranscriptEmptinessPolicy``). Rendering that as `missing` reads as a
+/// fault the user should chase.
 public enum PipelineStageState: String, Sendable, Equatable, Codable {
   case done
   case running
   case waiting
   case missing
   case notRequested = "not-requested"
+  case skipped
 }
 
 /// A one-line pipeline outcome: a status glyph and its text.

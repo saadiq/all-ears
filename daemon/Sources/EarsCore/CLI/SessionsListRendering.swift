@@ -17,7 +17,8 @@ public struct SessionListEntry: Sendable, Equatable {
 /// dates), newest first.
 public enum SessionsListRendering {
   public static func render(
-    entries: [SessionListEntry], now: Instant, timeZone: TimeZone, configuredChain: [OnEndStage]
+    entries: [SessionListEntry], now: Instant, timeZone: TimeZone,
+    configuredChain: [OnEndStage], emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> String {
     guard !entries.isEmpty else { return "(no sessions)" }
     let sorted = entries.sorted { $0.session.started > $1.session.started }
@@ -43,7 +44,7 @@ public enum SessionsListRendering {
         toLength: titleWidth, withPad: " ", startingAt: 0)
       let outcome = SessionPipeline.outcome(
         session: entry.session, artifacts: entry.artifacts, now: now,
-        configuredChain: configuredChain)
+        configuredChain: configuredChain, emptiness: emptiness)
       lines.append("  \(clock)  \(title)  \(outcome.glyph) \(outcome.text)")
     }
     return lines.joined(separator: "\n")

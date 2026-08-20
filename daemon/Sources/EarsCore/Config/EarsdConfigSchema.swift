@@ -178,6 +178,16 @@ public enum EarsdConfigSchema {
                       + "transcribe|cleanup|summarize. Only browser-extension sessions fall back to "
                       + "it; a session that declares its own chain runs that instead. "
                       + "cleanup/summarize require transcribe; [] disables this default."),
+                  "min_words": ConfigSchema.Field(
+                    type: .int,
+                    description:
+                      "Word count below which a session's transcript is empty and the LLM stages are skipped; 0 disables."
+                  ),
+                  "min_speech_seconds": ConfigSchema.Field(
+                    type: .double,
+                    description:
+                      "Detected speech below which a session's transcript is empty and the LLM stages are skipped; 0 disables."
+                  ),
                 ]
               ),
               description: "Session lifecycle knobs."),

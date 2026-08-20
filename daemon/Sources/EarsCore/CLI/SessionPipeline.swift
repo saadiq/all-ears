@@ -17,8 +17,12 @@ public enum SessionPipeline {
   ///   session actually asked for is ``OnEndChainPolicy``'s call, and a stage
   ///   nobody asked for is reported as such rather than as a gap — an
   ///   `ears session start` capture is deliberately inert, not broken.
+  /// - Parameter emptiness: the daemon's own gate (`[earsd.sessions]
+  ///   min_words` / `min_speech_seconds`), so a chain the daemon stopped
+  ///   after transcribe renders as skipped rather than as absent artifacts.
   public static func stages(
-    session: Session, artifacts: SessionArtifacts, now: Instant, configuredChain: [OnEndStage]
+    session: Session, artifacts: SessionArtifacts, now: Instant, configuredChain: [OnEndStage],
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> [PipelineStage] {
     let live = session.state != .ended
     if live {
@@ -31,6 +35,10 @@ public enum SessionPipeline {
     let recent = isRecent(session: session, now: now)
     let expected = expectedStages(session: session, configuredChain: configuredChain)
     let transcribeDone = transcribeDone(session: session, artifacts: artifacts)
+    // The reason the later stages are absent, when the daemon's gate is what
+    // made them absent. Only a transcript that actually parsed can say so:
+    // no measurements, no claim.
+    let skipReason = skipReason(artifacts: artifacts, emptiness: emptiness)
 
     var stages = [captureStage(session: session, artifacts: artifacts, live: false)]
 
@@ -55,7 +63,8 @@ public enum SessionPipeline {
         expected: expected.contains(.cleanup),
         previousPending: !transcribeDone && expected.contains(.transcribe),
         missingDetail: "not published",
-        recent: recent))
+        recent: recent,
+        skipReason: skipReason))
 
     let summarizeDone = artifacts.summaryCount > 0 || artifacts.noteLink != nil
     stages.append(
@@ -68,7 +77,8 @@ public enum SessionPipeline {
         expected: expected.contains(.summarize),
         previousPending: !artifacts.cleanupExists && expected.contains(.cleanup),
         missingDetail: "no summaries",
-        recent: recent))
+        recent: recent,
+        skipReason: skipReason))
 
     // `summarize` publishes the note, so the note row rides on summarize's
     // expectation: no summarize was asked for, no note was ever coming.
@@ -80,7 +90,8 @@ public enum SessionPipeline {
         expected: expected.contains(.summarize),
         previousPending: !summarizeDone && expected.contains(.summarize),
         missingDetail: "not published",
-        recent: recent))
+        recent: recent,
+        skipReason: skipReason))
 
     return stages
   }
@@ -90,7 +101,8 @@ public enum SessionPipeline {
   /// asked for* completing, so a capture-only session reads as recorded and a
   /// transcribe-only one as transcribed — neither is waiting on a note.
   public static func outcome(
-    session: Session, artifacts: SessionArtifacts, now: Instant, configuredChain: [OnEndStage]
+    session: Session, artifacts: SessionArtifacts, now: Instant, configuredChain: [OnEndStage],
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> PipelineOutcome {
     switch session.state {
     case .active:
@@ -114,7 +126,8 @@ public enum SessionPipeline {
     let recent = isRecent(session: session, now: now)
     let expected = expectedStages(session: session, configuredChain: configuredChain)
     let base = endedOutcome(
-      session: session, artifacts: artifacts, expected: expected, recent: recent)
+      session: session, artifacts: artifacts, expected: expected, recent: recent,
+      skipped: skipReason(artifacts: artifacts, emptiness: emptiness) != nil)
     guard session.warnings.isEmpty else {
       return PipelineOutcome(glyph: "⚠", text: base.text + warningsSuffix)
     }
@@ -123,8 +136,14 @@ public enum SessionPipeline {
 
   /// The outcome of an ended, note-less session, read against the last stage
   /// it asked for.
+  ///
+  /// - Parameter skipped: whether the daemon's emptiness gate stopped the
+  ///   chain after transcribe. A gated session has its transcript and will
+  ///   never have a note, so saying "summarizing" of it would be a wait that
+  ///   never ends.
   private static func endedOutcome(
-    session: Session, artifacts: SessionArtifacts, expected: Set<OnEndStage>, recent: Bool
+    session: Session, artifacts: SessionArtifacts, expected: Set<OnEndStage>, recent: Bool,
+    skipped: Bool
   ) -> PipelineOutcome {
     guard expected.contains(.transcribe) else {
       return PipelineOutcome(glyph: "✓", text: "recorded")
@@ -135,6 +154,7 @@ public enum SessionPipeline {
         : PipelineOutcome(glyph: "–", text: "no transcript")
     }
     if expected.contains(.summarize) {
+      if skipped { return PipelineOutcome(glyph: "–", text: "empty, not summarized") }
       return recent
         ? PipelineOutcome(glyph: "·", text: "summarizing")
         : PipelineOutcome(glyph: "–", text: "transcribed, no note")
@@ -142,6 +162,7 @@ public enum SessionPipeline {
     guard expected.contains(.cleanup) else {
       return PipelineOutcome(glyph: "✓", text: "transcribed")
     }
+    if skipped { return PipelineOutcome(glyph: "–", text: "empty, not cleaned") }
     guard artifacts.cleanupExists else {
       return recent
         ? PipelineOutcome(glyph: "·", text: "cleaning")
@@ -262,10 +283,19 @@ public enum SessionPipeline {
     expected: Bool,
     previousPending: Bool,
     missingDetail: String,
-    recent: Bool
+    recent: Bool,
+    skipReason: String?
   ) -> PipelineStage {
     if done { return PipelineStage(name: name, state: .done, detail: doneDetail) }
+    // Nobody asked for it outranks the daemon skipping it: a stage outside
+    // this session's chain was never the emptiness gate's to stop.
     if !expected { return notRequestedStage(name: name) }
+    // A stage the daemon's emptiness gate stopped is never coming — not
+    // running, not queued, not a fault. The reason outranks the grace window
+    // for exactly that reason.
+    if let skipReason {
+      return PipelineStage(name: name, state: .skipped, detail: skipReason)
+    }
     if !previousPending {
       return recent
         ? PipelineStage(name: name, state: .running, detail: "running")
@@ -274,6 +304,21 @@ public enum SessionPipeline {
     return recent
       ? PipelineStage(name: name, state: .waiting, detail: "queued")
       : PipelineStage(name: name, state: .missing, detail: "not run")
+  }
+
+  /// `skipped (empty transcript)` when the transcript on disk falls under the
+  /// daemon's thresholds, `nil` otherwise — including when the transcript did
+  /// not parse, when either measurement is absent, and when the gate is
+  /// disabled.
+  private static func skipReason(
+    artifacts: SessionArtifacts, emptiness: TranscriptEmptinessPolicy
+  ) -> String? {
+    guard emptiness.isEnabled,
+      let words = artifacts.transcriptWords,
+      let speech = artifacts.transcriptSpeechSeconds,
+      emptiness.verdict(wordCount: words, speechSeconds: speech).isEmpty
+    else { return nil }
+    return "skipped (empty transcript)"
   }
 
   private static func transcribeDetail(_ artifacts: SessionArtifacts) -> String {

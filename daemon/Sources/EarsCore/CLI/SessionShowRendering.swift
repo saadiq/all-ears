@@ -9,12 +9,14 @@ public enum SessionShowRendering {
     now: Instant,
     timeZone: TimeZone,
     showWarnings: Bool,
-    configuredChain: [OnEndStage]
+    configuredChain: [OnEndStage],
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> String {
     var lines = [header(session: session, now: now, timeZone: timeZone), ""]
 
     let stages = SessionPipeline.stages(
-      session: session, artifacts: artifacts, now: now, configuredChain: configuredChain)
+      session: session, artifacts: artifacts, now: now, configuredChain: configuredChain,
+      emptiness: emptiness)
     let width = stages.map(\.name.count).max() ?? 0
     for stage in stages {
       let name = stage.name.padding(toLength: width, withPad: " ", startingAt: 0)
@@ -52,7 +54,7 @@ public enum SessionShowRendering {
     switch state {
     case .done: "✓"
     case .running, .waiting: "·"
-    case .missing: "–"
+    case .missing, .skipped: "–"
     // Hollow, so a stage nobody asked for reads as an empty slot rather than
     // as the gap `–` marks or the in-flight `·`.
     case .notRequested: "○"
@@ -90,13 +92,15 @@ public struct SessionShowView: Codable, Hashable, Sendable {
   }
 
   public static func build(
-    session: Session, artifacts: SessionArtifacts, now: Instant, configuredChain: [OnEndStage]
+    session: Session, artifacts: SessionArtifacts, now: Instant, configuredChain: [OnEndStage],
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> SessionShowView {
     SessionShowView(
       schema: 1,
       session: session,
       stages: SessionPipeline.stages(
-        session: session, artifacts: artifacts, now: now, configuredChain: configuredChain
+        session: session, artifacts: artifacts, now: now, configuredChain: configuredChain,
+        emptiness: emptiness
       )
       .map { Stage(stage: $0.name, state: $0.state, detail: $0.detail) },
       artifacts: Artifacts(
