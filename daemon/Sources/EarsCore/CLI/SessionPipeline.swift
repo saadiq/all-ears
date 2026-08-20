@@ -11,8 +11,13 @@ public enum SessionPipeline {
   public static let recentGraceSeconds: Double = 15 * 60
 
   /// The five stage rows of `ears session show`, in pipeline order.
+  ///
+  /// `emptiness` is the daemon's own gate (`[earsd.sessions] min_words` /
+  /// `min_speech_seconds`), so a chain the daemon stopped after transcribe
+  /// renders as skipped rather than as three absent artifacts.
   public static func stages(
-    session: Session, artifacts: SessionArtifacts, now: Instant
+    session: Session, artifacts: SessionArtifacts, now: Instant,
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> [PipelineStage] {
     let live = session.state != .ended
     if live {
@@ -24,6 +29,10 @@ public enum SessionPipeline {
 
     let recent = isRecent(session: session, now: now)
     let transcribeDone = transcribeDone(session: session, artifacts: artifacts)
+    // The reason the later stages are absent, when the daemon's gate is what
+    // made them absent. Only a transcript that actually parsed can say so:
+    // no measurements, no claim.
+    let skipReason = skipReason(artifacts: artifacts, emptiness: emptiness)
 
     var stages = [captureStage(session: session, artifacts: artifacts, live: false)]
 
@@ -45,7 +54,8 @@ public enum SessionPipeline {
           ?? "published",
         previousDone: transcribeDone,
         missingDetail: "not published",
-        recent: recent))
+        recent: recent,
+        skipReason: skipReason))
 
     let summarizeDone = artifacts.summaryCount > 0 || artifacts.noteLink != nil
     stages.append(
@@ -57,7 +67,8 @@ public enum SessionPipeline {
           : "note published",
         previousDone: artifacts.cleanupExists,
         missingDetail: "no summaries",
-        recent: recent))
+        recent: recent,
+        skipReason: skipReason))
 
     stages.append(
       laterStage(
@@ -66,7 +77,8 @@ public enum SessionPipeline {
         doneDetail: artifacts.noteLink.map(displayNoteLink) ?? "",
         previousDone: summarizeDone,
         missingDetail: "not published",
-        recent: recent))
+        recent: recent,
+        skipReason: skipReason))
 
     return stages
   }
@@ -74,7 +86,8 @@ public enum SessionPipeline {
   /// The one-line outcome `ears sessions` and the status dashboard's recent
   /// tail show per session.
   public static func outcome(
-    session: Session, artifacts: SessionArtifacts, now: Instant
+    session: Session, artifacts: SessionArtifacts, now: Instant,
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> PipelineOutcome {
     switch session.state {
     case .active:
@@ -98,10 +111,16 @@ public enum SessionPipeline {
     let recent = isRecent(session: session, now: now)
     let base: PipelineOutcome
     if transcribeDone(session: session, artifacts: artifacts) {
-      base =
-        recent
-        ? PipelineOutcome(glyph: "·", text: "summarizing")
-        : PipelineOutcome(glyph: "–", text: "transcribed, no note")
+      // A gated session has a transcript and will never have a note; saying
+      // "summarizing" of it would be a wait that never ends.
+      if skipReason(artifacts: artifacts, emptiness: emptiness) != nil {
+        base = PipelineOutcome(glyph: "–", text: "empty, not summarized")
+      } else {
+        base =
+          recent
+          ? PipelineOutcome(glyph: "·", text: "summarizing")
+          : PipelineOutcome(glyph: "–", text: "transcribed, no note")
+      }
     } else {
       base =
         recent
@@ -203,9 +222,16 @@ public enum SessionPipeline {
     doneDetail: String,
     previousDone: Bool,
     missingDetail: String,
-    recent: Bool
+    recent: Bool,
+    skipReason: String?
   ) -> PipelineStage {
     if done { return PipelineStage(name: name, state: .done, detail: doneDetail) }
+    // A stage the daemon's emptiness gate stopped is never coming — not
+    // running, not queued, not a fault. The reason outranks the grace window
+    // for exactly that reason.
+    if let skipReason {
+      return PipelineStage(name: name, state: .skipped, detail: skipReason)
+    }
     if previousDone {
       return recent
         ? PipelineStage(name: name, state: .running, detail: "running")
@@ -214,6 +240,21 @@ public enum SessionPipeline {
     return recent
       ? PipelineStage(name: name, state: .waiting, detail: "queued")
       : PipelineStage(name: name, state: .missing, detail: "not run")
+  }
+
+  /// `skipped (empty transcript)` when the transcript on disk falls under the
+  /// daemon's thresholds, `nil` otherwise — including when the transcript did
+  /// not parse, when either measurement is absent, and when the gate is
+  /// disabled.
+  private static func skipReason(
+    artifacts: SessionArtifacts, emptiness: TranscriptEmptinessPolicy
+  ) -> String? {
+    guard emptiness.isEnabled,
+      let words = artifacts.transcriptWords,
+      let speech = artifacts.transcriptSpeechSeconds,
+      emptiness.verdict(wordCount: words, speechSeconds: speech).isEmpty
+    else { return nil }
+    return "skipped (empty transcript)"
   }
 
   private static func transcribeDetail(_ artifacts: SessionArtifacts) -> String {
@@ -252,6 +293,9 @@ public struct SessionArtifacts: Sendable, Equatable {
   public var transcriptSegments: Int?
   /// `word_count` from the transcript's frontmatter, when it parsed.
   public var transcriptWords: Int?
+  /// `speech_seconds` from the transcript's frontmatter, when it parsed —
+  /// the other half of the emptiness test the daemon gated the chain on.
+  public var transcriptSpeechSeconds: Double?
   /// Where `[cleanup] output` resolves for this session's transcript —
   /// computed whether or not anything is there yet.
   public var cleanupPath: String?
@@ -285,11 +329,18 @@ public struct PipelineStage: Sendable, Equatable {
 /// from disk alone, "artifact absent long after the session ended" is
 /// distinguishable from "still in flight" but not from "stage disabled", so
 /// the view never claims failure outright.
+///
+/// `skipped` is the one absent-artifact case the view *can* explain: the
+/// daemon stops the on-end chain after transcribe when the transcript reads
+/// as empty (``TranscriptEmptinessPolicy``), and the stages behind that gate
+/// were never meant to run. Rendering them as `missing` reads as a fault the
+/// user should chase.
 public enum PipelineStageState: String, Sendable, Equatable, Codable {
   case done
   case running
   case waiting
   case missing
+  case skipped
 }
 
 /// A one-line pipeline outcome: a status glyph and its text.

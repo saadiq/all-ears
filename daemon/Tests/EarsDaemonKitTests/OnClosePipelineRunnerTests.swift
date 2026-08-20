@@ -1,4 +1,5 @@
 import EarsCore
+import EarsCoreTestSupport
 import Foundation
 import Synchronization
 import Testing
@@ -72,9 +73,25 @@ struct OnClosePipelineRunnerTests {
   /// Creates a real (empty) file at `name` inside `directory` and returns its
   /// path — stage outputs must exist on disk to survive the runner's
   /// existence check.
+  ///
+  /// Empty is fine for every artifact but the transcript: the emptiness gate
+  /// reads the transcript's frontmatter, and a file with none parses as
+  /// nothing at all, which it treats as "no measurement, run the chain". Use
+  /// ``makeTranscript(_:named:in:)`` where the gate's decision is the point.
   private static func makeFile(_ name: String, in directory: URL) throws -> String {
     let url = directory.appendingPathComponent(name)
     try Data().write(to: url)
+    return url.path
+  }
+
+  /// Writes a real rendered transcript (one of ``EmptySessionTranscripts``)
+  /// where transcribe's envelope will name it, so the gate judges the same
+  /// document shape production hands it.
+  private static func makeTranscript(
+    _ markdown: String, named name: String = "t.transcript.md", in directory: URL
+  ) throws -> String {
+    let url = directory.appendingPathComponent(name)
+    try Data(markdown.utf8).write(to: url)
     return url.path
   }
 
@@ -84,7 +101,10 @@ struct OnClosePipelineRunnerTests {
   func fullChainThreadsPaths() async throws {
     let directory = try Self.makeTempDirectory("full-chain")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let transcript = try Self.makeFile("10-00-00_abc.transcript.md", in: directory)
+    // A real transcript with real speech in it: the emptiness gate reads this
+    // document, and the chain only continues because it measures up.
+    let transcript = try Self.makeTranscript(
+      EmptySessionTranscripts.substantive, named: "10-00-00_abc.transcript.md", in: directory)
     let clean = try Self.makeFile("10-00-00_abc.clean.md", in: directory)
     let brief = try Self.makeFile("10-00-00_abc.brief.summary.md", in: directory)
     let actions = try Self.makeFile("10-00-00_abc.actions.summary.md", in: directory)
@@ -132,6 +152,133 @@ struct OnClosePipelineRunnerTests {
 
     #expect(transcribed)
     #expect(runner.calls.map(\.name) == ["transcribe"])
+  }
+
+  // MARK: - the empty-transcript gate
+
+  @Test("an empty transcript spawns transcribe and nothing else, and still succeeds")
+  func emptyTranscriptSkipsLLMStages() async throws {
+    let directory = try Self.makeTempDirectory("empty-transcript")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    // The 2026-08-20 605-second session: one word, 0.556s of speech.
+    let transcript = try Self.makeTranscript(EmptySessionTranscripts.oneWord, in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([Self.transcribeOutcome(transcript)])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "c08595c8", stages: OnEndStage.allCases, context: "session-end")
+
+    // A skipped chain is a successful chain: the caller stamps
+    // transcript-completion off this, and audio retention keys on that stamp.
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe"])
+    let skip = try #require(logs.snapshot().first { $0.contains("skipping") })
+    #expect(
+      skip == "session-end on_end: skipping cleanup, summarize for session 'c08595c8': "
+        + "transcript is empty (1 word, 0.6s speech; thresholds 10 words / 5.0s)")
+  }
+
+  @Test("the 4-second, wordless session is skipped too")
+  func silentSessionSkipsLLMStages() async throws {
+    let directory = try Self.makeTempDirectory("silent-session")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeTranscript(EmptySessionTranscripts.silent, in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([Self.transcribeOutcome(transcript)])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "eb57a96c", stages: OnEndStage.allCases, context: "session-end")
+
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe"])
+    #expect(
+      logs.snapshot().contains {
+        $0.contains("0 words, 0.0s speech; thresholds 10 words / 5.0s")
+      })
+  }
+
+  @Test("a transcript above the thresholds runs the whole chain")
+  func substantiveTranscriptRunsEverything() async throws {
+    let directory = try Self.makeTempDirectory("substantive")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeTranscript(EmptySessionTranscripts.substantive, in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript), Self.cleanupOutcome(clean), SpawnOutcome(exitCode: 0),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "4a1f9c22", stages: OnEndStage.allCases, context: "session-end")
+
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
+    #expect(!logs.snapshot().contains { $0.contains("skipping") })
+  }
+
+  @Test("thresholds of 0 restore the pre-gate behaviour on the very sessions that prompted it")
+  func disabledThresholdsRunEverything() async throws {
+    let directory = try Self.makeTempDirectory("gate-off")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeTranscript(EmptySessionTranscripts.oneWord, in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript), Self.cleanupOutcome(clean), SpawnOutcome(exitCode: 0),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "c08595c8", stages: OnEndStage.allCases,
+      emptiness: TranscriptEmptinessPolicy(minWords: 0, minSpeechSeconds: 0),
+      context: "session-end")
+
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
+  }
+
+  @Test("a transcribe-only chain never reaches the gate, so nothing is logged as skipped")
+  func transcribeOnlyChainLogsNoSkip() async throws {
+    let directory = try Self.makeTempDirectory("gate-transcribe-only")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeTranscript(EmptySessionTranscripts.oneWord, in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([Self.transcribeOutcome(transcript)])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "c08595c8", stages: [.transcribe], context: "session-end")
+
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe"])
+    // There was nothing downstream to skip; announcing a skip would be noise.
+    #expect(!logs.snapshot().contains { $0.contains("skipping") })
+  }
+
+  @Test("an unparseable transcript runs the chain rather than guessing it is empty")
+  func unparseableTranscriptRunsChain() async throws {
+    let directory = try Self.makeTempDirectory("unparseable")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    // No frontmatter fences: the gate has no measurement to decide on.
+    let transcript = try Self.makeTranscript("not a transcript at all\n", in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
+    let logs = LogCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript), Self.cleanupOutcome(clean), SpawnOutcome(exitCode: 0),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "b7acc61f", stages: OnEndStage.allCases, context: "session-end")
+
+    #expect(transcribed)
+    #expect(runner.calls.map(\.name) == ["transcribe", "cleanup", "summarize"])
+    #expect(
+      logs.snapshot().contains {
+        $0.contains("could not read the transcript's frontmatter for session 'b7acc61f'")
+      })
   }
 
   @Test("without cleanup in the stages, summarize consumes the raw transcript path")

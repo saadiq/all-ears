@@ -1,4 +1,5 @@
 import EarsCore
+import EarsDataStore
 import EarsIPC
 import Foundation
 import Testing
@@ -116,6 +117,12 @@ struct OnEndChainSmokeTests {
 
       [earsd.sessions]
       on_end_stages = ["transcribe", "cleanup", "summarize"]
+      # `NullTranscriber` renders a wordless transcript, which the
+      # empty-transcript gate would (correctly) stop the chain on. Both
+      # thresholds at 0 disable the gate — the pre-gate behaviour this test
+      # exercises the full chain under.
+      min_words = 0
+      min_speech_seconds = 0
 
       [llm]
       backend = "command"
@@ -226,5 +233,127 @@ struct OnEndChainSmokeTests {
     #expect(
       Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
       "the data store must hold intermediates only, never a published clean transcript")
+  }
+
+  @Test(
+    "an empty session stops after transcribe, still stamps transcript-completion, and publishes nothing",
+    .timeLimit(.minutes(2)))
+  func emptySessionSkipsTheLLMStages() async throws {
+    let temp = TempDirectory()
+    let dataRoot = temp.url.appendingPathComponent("data").path
+    let outputRoot = temp.url.appendingPathComponent("out").path
+    let daemonLogPath = temp.url.appendingPathComponent("earsd.jsonl").path
+    let stageLogPath = temp.url.appendingPathComponent("stages.jsonl").path
+    let socketPath = "/tmp/ears-onend-empty-\(UUID().uuidString.prefix(8)).sock"
+    defer { try? FileManager.default.removeItem(atPath: socketPath) }
+    let scriptPath = try Self.writeFakeLLMScript(in: temp)
+    // The gate's shipped defaults, stated rather than assumed — this is the
+    // configuration the two 2026-08-20 sessions ran under.
+    let configPath = temp.write(
+      """
+      data_root = "\(dataRoot)"
+      output_root = "\(outputRoot)"
+      socket_path = "\(socketPath)"
+
+      [log]
+      file = "\(stageLogPath)"
+
+      [earsd]
+      source = []
+
+      [earsd.sessions]
+      on_end_stages = ["transcribe", "cleanup", "summarize"]
+      min_words = 10
+      min_speech_seconds = 5
+
+      [llm]
+      backend = "command"
+      command = "\(scriptPath)"
+
+      [[summarize.preset]]
+      name = "brief"
+      """,
+      named: "config.toml")
+
+    let environment = [
+      "PATH": "\(try Self.productsDirectory().path):/usr/bin:/bin",
+      "EARS_CONFIG": configPath,
+      // NullTranscriber: a real transcript document with nothing said in it —
+      // exactly the shape a session of background audio produces.
+      "ALLEARS_TRANSCRIBE_BACKEND": "null",
+    ]
+    let daemon = Process()
+    daemon.executableURL = try Self.binaryURL("earsd")
+    daemon.arguments = ["--config", configPath, "--log-file", daemonLogPath]
+    daemon.environment = environment
+    daemon.standardOutput = Pipe()
+    daemon.standardError = Pipe()
+    try daemon.run()
+    defer {
+      daemon.terminate()
+      daemon.waitUntilExit()
+    }
+
+    var socketReady = false
+    for _ in 0..<250 {
+      if FileManager.default.fileExists(atPath: socketPath) {
+        socketReady = true
+        break
+      }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    try #require(socketReady, "earsd's control socket never appeared at \(socketPath)")
+
+    let client = try await ControlSocketClient.connect(toPath: socketPath)
+    try await client.hello(client: "on-end-empty-smoke")
+    let session = try await client.send(
+      .sessionStart(
+        SessionStartParams(
+          platform: "meet", externalID: "onend-empty", sources: ["mic"],
+          trigger: .browserExtension)),
+      expecting: Session.self)
+    try await Task.sleep(for: .milliseconds(1_500))
+    _ = try await client.send(.sessionEnd(session: session.id), expecting: Session.self)
+    await client.close()
+
+    var daemonLog = ""
+    for _ in 0..<600 {
+      daemonLog = (try? String(contentsOfFile: daemonLogPath, encoding: .utf8)) ?? ""
+      if daemonLog.contains("skipping cleanup, summarize") { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+
+    // One line, naming the reason and the numbers against the thresholds.
+    #expect(
+      daemonLog.contains(
+        "skipping cleanup, summarize for session '\(session.id)': transcript is empty"),
+      "expected the skip line; daemon log:\n\(daemonLog)")
+    #expect(daemonLog.contains("thresholds 10 words / 5.0s"))
+    // transcribe ran; the LLM stages were never spawned.
+    #expect(daemonLog.contains("transcribe succeeded for session '\(session.id)'"))
+    #expect(!daemonLog.contains("spawning cleanup"))
+    #expect(!daemonLog.contains("spawning summarize"))
+
+    // The raw transcript is still the durable artifact...
+    let transcripts = Self.files(
+      withSuffix: "sessions/\(session.id)/transcript.md", under: dataRoot)
+    #expect(!transcripts.isEmpty, "expected the session's raw transcript under \(dataRoot)")
+    // ...and the retention clock still started: a skipped chain is a
+    // successful one, so audio ages out exactly as it did before the gate.
+    var completed: Instant?
+    for _ in 0..<100 {
+      completed =
+        (try? SessionStore.read(
+          sessionID: session.id, dataRoot: URL(fileURLWithPath: dataRoot)))?.transcriptCompleted
+      if completed != nil { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    #expect(completed != nil, "expected transcript_completed to be stamped for a skipped chain")
+
+    // Nothing reached the vault: no published clean transcript, no summary,
+    // no note written over anything.
+    #expect(
+      Self.files(withSuffix: ".md", under: outputRoot).isEmpty,
+      "a skipped chain must publish nothing under \(outputRoot)")
   }
 }

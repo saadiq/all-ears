@@ -76,6 +76,13 @@ public struct EarsDaemonConfiguration: Sendable {
   /// entirely — tests inject `[]` so a session end never spawns a real
   /// subprocess. Resolved and validated by `OnEndStage.resolveList`.
   public var onEndStages: [OnEndStage]
+  /// `[earsd.sessions] min_words` / `min_speech_seconds`: the thresholds
+  /// below which an ended session's transcript reads as empty, and the on-end
+  /// chain stops after `transcribe` instead of spending `cleanup` and
+  /// `summarize` on a recording of background noise. A skipped chain is still
+  /// a successful one — the transcript-completion stamp, and so the retention
+  /// clock, is unaffected. Both `0` restores unconditional running.
+  public var onEndEmptinessPolicy: TranscriptEmptinessPolicy
   /// `docs/configuration.md`'s `output_root` — where `transcribe`/`cleanup`/
   /// `summarize` write. `earsd` itself never writes here; retained on the
   /// configuration so a future session-level `cleanup`/`summarize` chain can
@@ -98,6 +105,7 @@ public struct EarsDaemonConfiguration: Sendable {
     sessionIngestCloseGraceSeconds: Double = 120,
     browserSessionLocalSources: [SourceID] = ["mic"],
     onEndStages: [OnEndStage] = OnEndStage.allCases,
+    onEndEmptinessPolicy: TranscriptEmptinessPolicy = .defaults,
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
     self.sources = sources
@@ -116,6 +124,7 @@ public struct EarsDaemonConfiguration: Sendable {
     self.sessionIngestCloseGraceSeconds = sessionIngestCloseGraceSeconds
     self.browserSessionLocalSources = browserSessionLocalSources
     self.onEndStages = onEndStages
+    self.onEndEmptinessPolicy = onEndEmptinessPolicy
   }
 }
 
@@ -432,6 +441,7 @@ public actor EarsDaemon {
     if !configuration.onEndStages.isEmpty {
       let pipeline = OnClosePipelineRunner(log: log)
       let stages = configuration.onEndStages
+      let emptiness = configuration.onEndEmptinessPolicy
       onSessionEnded = { [weak self] session in
         guard session.trigger == .browserExtension else { return }
         // Spawned in its own task so `session.end` never blocks behind a full
@@ -441,7 +451,8 @@ public actor EarsDaemon {
         // this session's retention clock.
         Task { [weak self] in
           let transcribed = await pipeline.runOnEndChain(
-            sessionID: session.id, stages: stages, context: "session-end")
+            sessionID: session.id, stages: stages, emptiness: emptiness,
+            context: "session-end")
           if transcribed {
             await self?.markSessionTranscriptCompleted(session.id)
           }

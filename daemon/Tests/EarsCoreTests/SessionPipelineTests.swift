@@ -171,4 +171,75 @@ struct SessionPipelineTests {
         now: started.advanced(by: 600))
         == PipelineOutcome(glyph: "◐", text: "paused (10m)"))
   }
+
+  // MARK: - the empty-transcript gate
+
+  /// The 2026-08-20 605-second session as a disk scan finds it: a transcript
+  /// on disk, nothing downstream of it, and the measurements that explain why.
+  private func emptyTranscriptArtifacts() -> SessionArtifacts {
+    var artifacts = SessionArtifacts()
+    artifacts.captureBytesBySource = [SourceID("mic"): 4_100_000]
+    artifacts.transcriptExists = true
+    artifacts.transcriptSegments = 1
+    artifacts.transcriptWords = 1
+    artifacts.transcriptSpeechSeconds = 0.556
+    return artifacts
+  }
+
+  @Test("an empty transcript renders the later stages as skipped, not missing")
+  func emptyTranscriptRendersSkipped() {
+    let stages = SessionPipeline.stages(
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: muchLater)
+    #expect(stages[1].state == .done)
+    for stage in stages[2...] {
+      #expect(stage.state == .skipped)
+      #expect(stage.detail == "skipped (empty transcript)")
+    }
+  }
+
+  @Test("skipped outranks the grace window: a just-ended empty session is not 'running'")
+  func skippedOutranksRecency() {
+    let stages = SessionPipeline.stages(
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: justAfter)
+    #expect(stages.filter { $0.state == .skipped }.map(\.name) == ["cleanup", "summarize", "note"])
+  }
+
+  @Test("with the gate disabled the same session reads as it did before")
+  func disabledGateRendersMissing() {
+    let stages = SessionPipeline.stages(
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: muchLater,
+      emptiness: TranscriptEmptinessPolicy(minWords: 0, minSpeechSeconds: 0))
+    #expect(!stages.contains { $0.state == .skipped })
+    #expect(stages[2].state == .missing)
+  }
+
+  @Test("a transcript that did not parse claims nothing — no measurements, no skip")
+  func unparsedTranscriptIsNotSkipped() {
+    var artifacts = emptyTranscriptArtifacts()
+    artifacts.transcriptWords = nil
+    artifacts.transcriptSpeechSeconds = nil
+    let stages = SessionPipeline.stages(
+      session: session(), artifacts: artifacts, now: muchLater)
+    #expect(!stages.contains { $0.state == .skipped })
+  }
+
+  @Test("a published note outranks the gate — what ran, ran")
+  func publishedStagesStayDone() {
+    var artifacts = fullArtifacts()
+    artifacts.transcriptWords = 1
+    artifacts.transcriptSpeechSeconds = 0.556
+    let stages = SessionPipeline.stages(
+      session: session(), artifacts: artifacts, now: muchLater)
+    #expect(stages.allSatisfy { $0.state == .done })
+  }
+
+  @Test("the sessions list calls an empty session empty, not a stalled pipeline")
+  func emptySessionOutcome() {
+    let outcome = SessionPipeline.outcome(
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: justAfter)
+    // Inside the grace window it would otherwise claim "summarizing" — a wait
+    // that never ends, since nothing downstream was ever going to run.
+    #expect(outcome.text == "empty, not summarized")
+    #expect(outcome.glyph == "–")
+  }
 }

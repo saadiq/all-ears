@@ -8,6 +8,14 @@ public enum ConfigValueKind: String, Sendable, Hashable, CaseIterable {
   case array
   case table
 
+  /// Whether a value of this kind is acceptable where `expected` is
+  /// declared. Exact match, with one widening: an integer satisfies a
+  /// floating-point field, since TOML's `5` and `5.0` are different literals
+  /// and only one of them would otherwise parse.
+  public func satisfies(_ expected: ConfigValueKind) -> Bool {
+    self == expected || (expected == .double && self == .int)
+  }
+
   /// A human-readable name for error messages, e.g. `"expected string, got
   /// integer"` — matches the phrasing in `docs/configuration.md`'s validation
   /// convention.

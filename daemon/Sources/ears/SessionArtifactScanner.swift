@@ -11,6 +11,10 @@ struct ScanEnvironment {
   var cleanupTemplate: PathTemplate
   var outputRoot: String
   var weekNumbering: WeekNumbering
+  /// `[earsd.sessions] min_words` / `min_speech_seconds` as the daemon
+  /// resolved them, so the pipeline view names a stopped chain for what it is
+  /// (`skipped (empty transcript)`) instead of reporting absent artifacts.
+  var emptiness: TranscriptEmptinessPolicy = .defaults
 }
 
 /// Assembles a ``SessionArtifacts`` for one session by reading what is on
@@ -40,8 +44,28 @@ enum SessionArtifactScanner {
           cleanupTemplate: PathTemplate(
             template.isEmpty ? LLMStagesConfigSchema.defaultCleanupOutput : template),
           outputRoot: stringValue(loaded.value, ["output_root"]),
-          weekNumbering: WeekNumbering(configValue: stringValue(loaded.value, ["week_numbering"]))))
+          weekNumbering: WeekNumbering(configValue: stringValue(loaded.value, ["week_numbering"])),
+          emptiness: emptinessPolicy(loaded.value)))
     }
+  }
+
+  /// `[earsd.sessions]`'s two emptiness thresholds, each falling back to the
+  /// shipped default when unset — the same resolution
+  /// `DaemonConfigResolution` does for the daemon, so both ends agree on
+  /// which transcripts are empty.
+  private static func emptinessPolicy(_ value: ConfigValue) -> TranscriptEmptinessPolicy {
+    var policy = TranscriptEmptinessPolicy.defaults
+    if case .int(let words)? = nestedValue(value, ["earsd", "sessions", "min_words"]) {
+      policy.minWords = words
+    }
+    // `.int` as well as `.double`: TOML's `5` and `5.0` are different
+    // literals, and the schema accepts either (`ConfigValueKind.satisfies`).
+    switch nestedValue(value, ["earsd", "sessions", "min_speech_seconds"]) {
+    case .double(let seconds)?: policy.minSpeechSeconds = seconds
+    case .int(let seconds)?: policy.minSpeechSeconds = Double(seconds)
+    default: break
+    }
+    return policy
   }
 
   static func scan(session: Session, environment: ScanEnvironment) -> SessionArtifacts {
@@ -102,6 +126,7 @@ enum SessionArtifactScanner {
     else { return }
     artifacts.transcriptSegments = document.segments.count
     artifacts.transcriptWords = document.frontmatter.wordCount
+    artifacts.transcriptSpeechSeconds = document.frontmatter.speechSeconds
 
     // Where cleanup published (or will publish): the same template context
     // the stage itself expands, off this document's own frontmatter.
@@ -163,12 +188,18 @@ enum SessionArtifactScanner {
   }
 
   private static func stringValue(_ config: ConfigValue, _ path: [String]) -> String {
+    guard case .string(let value)? = nestedValue(config, path) else { return "" }
+    return value
+  }
+
+  /// The value at a dotted config path, or `nil` when any segment is absent
+  /// or isn't a table.
+  private static func nestedValue(_ config: ConfigValue, _ path: [String]) -> ConfigValue? {
     var current = config
     for key in path {
-      guard case .table(let table) = current, let next = table[key] else { return "" }
+      guard case .table(let table) = current, let next = table[key] else { return nil }
       current = next
     }
-    guard case .string(let value) = current else { return "" }
-    return value
+    return current
   }
 }

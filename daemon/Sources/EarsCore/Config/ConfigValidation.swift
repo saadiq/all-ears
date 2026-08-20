@@ -15,6 +15,11 @@
 /// An element that isn't itself a table is reported as a type mismatch at the
 /// indexed path.
 ///
+/// A `.double` field also accepts an integer: TOML distinguishes `5` from
+/// `5.0` and never widens one to the other, so requiring the decimal point
+/// would turn `min_speech_seconds = 5` into a boot-time config error for no
+/// reason anyone could act on. No other pair of kinds is interchangeable.
+///
 /// A field declaring `pathTemplateTokens` (a ``PathTemplate``-valued string,
 /// e.g. `[cleanup] output`) has every `{token}` it names checked against that
 /// set, so a mistyped token is a reported config error rather than a literal
@@ -44,7 +49,7 @@ private func validateTable(
       continue
     }
 
-    guard value.kind == field.type else {
+    guard value.kind.satisfies(field.type) else {
       errors.append(
         ConfigError(keyPath: path, reason: .typeMismatch(expected: field.type, got: value.kind))
       )

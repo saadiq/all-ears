@@ -171,6 +171,16 @@ public enum EarsdConfigSchema {
                     description:
                       "Pipeline stages auto-run when a session ends, from transcribe|cleanup|summarize. "
                       + "cleanup/summarize require transcribe; [] disables the chain."),
+                  "min_words": ConfigSchema.Field(
+                    type: .int,
+                    description:
+                      "Word count below which a session's transcript is empty and the LLM stages are skipped; 0 disables."
+                  ),
+                  "min_speech_seconds": ConfigSchema.Field(
+                    type: .double,
+                    description:
+                      "Detected speech below which a session's transcript is empty and the LLM stages are skipped; 0 disables."
+                  ),
                 ]
               ),
               description: "Session lifecycle knobs."),

@@ -124,14 +124,23 @@ public struct OnClosePipelineRunner: Sendable {
 
   /// Runs the configured stage chain against an ended session.
   ///
+  /// A session that recorded only background audio still transcribes — into
+  /// a document with nothing in it — and the LLM stages downstream of that
+  /// invent content from it and publish the invention. `emptiness` is the gate
+  /// that stops the chain after transcribe when the fresh transcript's own
+  /// frontmatter says there was nothing said; a skipped chain returns `true`
+  /// exactly like a completed one.
+  ///
   /// - Returns: `true` iff `transcribe --session` exited 0 — the signal the
   ///   caller uses to stamp the session's transcript-completion marker (which
   ///   in turn starts the retention clock). LLM-stage failures are logged but
   ///   never affect the return value: derived artifacts must not hold the
-  ///   retention clock hostage.
+  ///   retention clock hostage, and neither does an empty-transcript skip.
   @discardableResult
   public func runOnEndChain(
-    sessionID: String, stages: [OnEndStage], context: String
+    sessionID: String, stages: [OnEndStage],
+    emptiness: TranscriptEmptinessPolicy = .defaults,
+    context: String
   ) async -> Bool {
     // Config validation (`EarsdConfigSchema`) rejects LLM stages without
     // transcribe; an empty list means the whole chain is off. Defensive here
@@ -143,6 +152,22 @@ public struct OnClosePipelineRunner: Sendable {
         .transcribe, arguments: ["--session", sessionID, "--json"], sessionID: sessionID,
         context: context)
     else { return false }
+
+    // The empty-transcript gate. transcribe has written
+    // `sessions/<id>/transcript.md` and its frontmatter carries the two
+    // measurements the decision needs, so nothing here re-derives what the
+    // stage already counted.
+    let downstream = stages.filter { $0 != .transcribe }
+    if !downstream.isEmpty, emptiness.isEnabled,
+      let verdict = emptinessVerdict(
+        transcriptPath: transcriptPath, policy: emptiness, sessionID: sessionID, context: context),
+      verdict.isEmpty
+    {
+      log(
+        "\(context) on_end: skipping \(downstream.map(\.rawValue).joined(separator: ", ")) "
+          + "for session '\(sessionID)': transcript is empty (\(verdict.summary))")
+      return true
+    }
 
     var nextInput = transcriptPath
     if stages.contains(.cleanup) {
@@ -167,6 +192,30 @@ public struct OnClosePipelineRunner: Sendable {
       }
     }
     return true
+  }
+
+  /// Judges the just-written transcript against the emptiness thresholds, or
+  /// `nil` when the document can't be read or parsed.
+  ///
+  /// An unreadable transcript is *not* treated as empty: the gate exists to
+  /// stop the chain on a measurement, and a parse failure is not a
+  /// measurement. It logs and lets the chain run exactly as it did before:
+  /// running costs an LLM call, where wrongly skipping loses a real note.
+  private func emptinessVerdict(
+    transcriptPath: String, policy: TranscriptEmptinessPolicy, sessionID: String, context: String
+  ) -> TranscriptEmptinessVerdict? {
+    let frontmatter: TranscriptFrontmatter
+    do {
+      let markdown = try String(contentsOfFile: transcriptPath, encoding: .utf8)
+      frontmatter = try TranscriptParser.parseFrontmatter(markdown)
+    } catch {
+      log(
+        "\(context) on_end: could not read the transcript's frontmatter for "
+          + "session '\(sessionID)' at '\(transcriptPath)': \(error); "
+          + "running the remaining stages")
+      return nil
+    }
+    return policy.verdict(frontmatter: frontmatter)
   }
 
   /// Spawns a path-producing stage in `--json` mode and returns its

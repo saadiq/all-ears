@@ -8,11 +8,13 @@ public enum SessionShowRendering {
     artifacts: SessionArtifacts,
     now: Instant,
     timeZone: TimeZone,
-    showWarnings: Bool
+    showWarnings: Bool,
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> String {
     var lines = [header(session: session, now: now, timeZone: timeZone), ""]
 
-    let stages = SessionPipeline.stages(session: session, artifacts: artifacts, now: now)
+    let stages = SessionPipeline.stages(
+      session: session, artifacts: artifacts, now: now, emptiness: emptiness)
     let width = stages.map(\.name.count).max() ?? 0
     for stage in stages {
       let name = stage.name.padding(toLength: width, withPad: " ", startingAt: 0)
@@ -50,7 +52,7 @@ public enum SessionShowRendering {
     switch state {
     case .done: "✓"
     case .running, .waiting: "·"
-    case .missing: "–"
+    case .missing, .skipped: "–"
     }
   }
 }
@@ -85,13 +87,16 @@ public struct SessionShowView: Codable, Hashable, Sendable {
   }
 
   public static func build(
-    session: Session, artifacts: SessionArtifacts, now: Instant
+    session: Session, artifacts: SessionArtifacts, now: Instant,
+    emptiness: TranscriptEmptinessPolicy = .defaults
   ) -> SessionShowView {
     SessionShowView(
       schema: 1,
       session: session,
-      stages: SessionPipeline.stages(session: session, artifacts: artifacts, now: now)
-        .map { Stage(stage: $0.name, state: $0.state, detail: $0.detail) },
+      stages: SessionPipeline.stages(
+        session: session, artifacts: artifacts, now: now, emptiness: emptiness
+      )
+      .map { Stage(stage: $0.name, state: $0.state, detail: $0.detail) },
       artifacts: Artifacts(
         transcript: artifacts.transcriptExists ? artifacts.transcriptPath : nil,
         cleanup: artifacts.cleanupExists ? artifacts.cleanupPath : nil,

@@ -115,6 +115,15 @@ local_sources = ["mic"]
 # logged warning. Set to ["transcribe"] to skip the LLM stages, [] to disable
 # the chain entirely.
 on_end_stages = ["transcribe", "cleanup", "summarize"]
+# The empty-transcript gate. After transcribe, the chain reads the fresh
+# transcript's own word_count and speech_seconds; if either falls below its
+# threshold the session recorded nothing anyone said, and cleanup and summarize
+# are skipped rather than spent inventing a note from silence. The transcript is
+# still written and still stamps transcript-completion, so audio retention is
+# unaffected. Set either to 0 to disable that half of the test; both 0 runs the
+# whole chain unconditionally.
+min_words          = 10
+min_speech_seconds = 5
 
 # Audio ingestion from the browser extension (binary PCM). Off by default.
 [earsd.ingest_ws]
