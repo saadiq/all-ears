@@ -60,7 +60,8 @@ import os
     self.reloadConfig = reloadConfig
     connection = DaemonConnection(socketPath: config.socketPath)
     recentsProvider = RecentSessionsProvider(
-      dataRoot: config.dataRoot, publishing: config.publishing, onEndChain: config.onEndChain)
+      dataRoot: config.dataRoot, publishing: config.publishing, onEndChain: config.onEndChain,
+      emptiness: config.emptiness)
   }
 
   init(configError message: String) {
@@ -72,7 +73,8 @@ import os
     connection = nil
     recentsProvider = RecentSessionsProvider(
       dataRoot: "", publishing: PublishingSettings.resolve(from: .table([:])),
-      onEndChain: ConfiguredOnEndChain.resolve(from: .table([:])))
+      onEndChain: ConfiguredOnEndChain.resolve(from: .table([:])),
+      emptiness: ConfiguredEmptiness.resolve(from: .table([:])))
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }
 

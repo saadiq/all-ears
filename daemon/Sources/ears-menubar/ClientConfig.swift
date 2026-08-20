@@ -38,6 +38,10 @@ struct ClientConfig: Sendable {
   /// The chain a session that *inherits* one runs, which is what a recent
   /// session's outcome is read against — see ``ConfiguredOnEndChain``.
   var onEndChain: [OnEndStage]
+  /// The thresholds below which the daemon stops that chain after transcribe,
+  /// so the menu reads a deliberately stopped chain as stopped rather than as
+  /// a note that never arrives — see ``ConfiguredEmptiness``.
+  var emptiness: TranscriptEmptinessPolicy
 
   static func resolve() -> Result<ClientConfig, ConfigResolutionError> {
     let inputs = ConfigLoadInputs(
@@ -62,7 +66,8 @@ struct ClientConfig: Sendable {
           publishing: PublishingSettings.resolve(from: loaded.value),
           sources: ManualSessionSources.resolve(from: loaded.value),
           onEndStages: ManualSessionStages.resolve(from: loaded.value),
-          onEndChain: ConfiguredOnEndChain.resolve(from: loaded.value)))
+          onEndChain: ConfiguredOnEndChain.resolve(from: loaded.value),
+          emptiness: ConfiguredEmptiness.resolve(from: loaded.value)))
     }
   }
 

@@ -34,6 +34,8 @@ struct RecentSessionsProvider: Sendable {
   /// The chain an inheriting session runs, resolved once for the whole scan —
   /// it is a property of the config, not of any one session.
   var onEndChain: [OnEndStage]
+  /// The daemon's empty-transcript thresholds, likewise config-wide.
+  var emptiness: TranscriptEmptinessPolicy
 
   func load(limit: Int = 7, now: Instant) -> [RecentSessionItem] {
     let all = SessionStore.readAll(dataRoot: URL(fileURLWithPath: dataRoot))
@@ -66,6 +68,12 @@ struct RecentSessionsProvider: Sendable {
         session: session, transcript: transcript, clean: nil, summaries: [],
         outcome: outcome(session: session, artifacts: artifacts, now: now))
     }
+    // The two measurements the daemon's gate reads. Without them `outcome`
+    // cannot tell a chain the daemon deliberately stopped from one still
+    // waiting on a note, and renders the former as the latter forever.
+    artifacts.transcriptWords = frontmatter.wordCount
+    artifacts.transcriptSpeechSeconds = frontmatter.speechSeconds
+
     let paths = SessionArtifactLocator.published(
       frontmatter: frontmatter, transcriptPath: transcriptURL.path,
       settings: publishing)
@@ -86,7 +94,8 @@ struct RecentSessionsProvider: Sendable {
     session: Session, artifacts: SessionArtifacts, now: Instant
   ) -> PipelineOutcome {
     SessionPipeline.outcome(
-      session: session, artifacts: artifacts, now: now, configuredChain: onEndChain)
+      session: session, artifacts: artifacts, now: now, configuredChain: onEndChain,
+      emptiness: emptiness)
   }
 
   /// Frontmatter only: the published-path context and `outcome` never read
