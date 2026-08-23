@@ -61,34 +61,20 @@ public struct CoreAudioInputDeviceEnumerator: AudioInputDeviceEnumerating {
 
   public func inputDevices() -> [AudioInputDevice] {
     allDeviceIDs().compactMap { id in
-      guard deviceHasInput(id), let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) else {
+      guard deviceHasInput(id),
+        let uid = HALObjects.stringProperty(id, kAudioDevicePropertyDeviceUID)
+      else {
         return nil
       }
       return AudioInputDevice(
         id: id,
         uid: uid,
-        name: stringProperty(id, kAudioObjectPropertyName) ?? uid)
+        name: HALObjects.stringProperty(id, kAudioObjectPropertyName) ?? uid)
     }
   }
 
   private func allDeviceIDs() -> [AudioObjectID] {
-    var address = AudioObjectPropertyAddress(
-      mSelector: kAudioHardwarePropertyDevices,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain)
-    let systemObject = AudioObjectID(kAudioObjectSystemObject)
-    var dataSize: UInt32 = 0
-    guard AudioObjectGetPropertyDataSize(systemObject, &address, 0, nil, &dataSize) == noErr else {
-      return []
-    }
-    let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
-    guard count > 0 else { return [] }
-    var ids = [AudioObjectID](repeating: 0, count: count)
-    guard AudioObjectGetPropertyData(systemObject, &address, 0, nil, &dataSize, &ids) == noErr
-    else {
-      return []
-    }
-    return ids
+    HALObjects.systemObjectIDs(kAudioHardwarePropertyDevices)
   }
 
   /// `true` if `id` exposes at least one input channel — the filter that keeps
@@ -115,19 +101,4 @@ public struct CoreAudioInputDeviceEnumerator: AudioInputDeviceEnumerating {
     return list.contains { $0.mNumberChannels > 0 }
   }
 
-  private func stringProperty(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector)
-    -> String?
-  {
-    var address = AudioObjectPropertyAddress(
-      mSelector: selector,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain)
-    var value: CFString?
-    var dataSize = UInt32(MemoryLayout<CFString?>.size)
-    let status = withUnsafeMutablePointer(to: &value) { pointer in
-      AudioObjectGetPropertyData(id, &address, 0, nil, &dataSize, pointer)
-    }
-    guard status == noErr else { return nil }
-    return value as String?
-  }
 }
