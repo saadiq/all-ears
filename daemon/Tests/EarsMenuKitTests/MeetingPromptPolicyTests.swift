@@ -97,6 +97,8 @@ struct MeetingPromptPolicyTests {
     #expect(
       DetectedSessionIdentity.platform(forBundleID: "com.tinyspeck.slackmacgap") == "slack-app")
     #expect(
+      DetectedSessionIdentity.platform(forBundleID: "com.apple.avconferenced") == "facetime-app")
+    #expect(
       DetectedSessionIdentity.platform(forBundleID: "com.example.other") == "com.example.other")
   }
 }

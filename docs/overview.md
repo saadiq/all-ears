@@ -52,7 +52,7 @@ Built and in use:
 - LLM cleanup (with validation guardrails) and preset-based summaries via a subprocess backend (the `llm` CLI by default).
 - Browser extension: per-participant capture and real-name identity on Google Meet, Zoom web; `Speaker N` attribution on Teams.
 - Menu bar app (`ears-menubar`, [plan](./plans/menubar-app.md)): dropdown session control, pipeline visibility, and notifications from the daemon's control socket — stage 1 only; a richer dashboard window is future work.
-- Native-app meeting detection: any configured `app:*` source (Zoom, Teams) watched for confirmed microphone use; the menu bar prompts to start a session within seconds of joining, auto-ends it once the app's audio goes quiet, and enriches the title and roster from a matching macOS Calendar event when one exists.
+- Native-app meeting detection: any configured `app:*` source (Zoom, Teams, Slack; FaceTime via its `avconferenced` media daemon, pending live verification) watched for confirmed microphone use; the menu bar prompts to start a session within seconds of joining, auto-ends it once the app's audio goes quiet, and enriches the title and roster from a matching macOS Calendar event when one exists.
 
 Not built yet:
 

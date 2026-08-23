@@ -177,6 +177,14 @@ id    = "app:us.zoom.xos"
 class = "app"
 label = "Zoom"
 
+# Name the process that holds the audio, which is not always the app you
+# click: FaceTime's is its avconferenced media daemon (see
+# specs/capture-daemon.md, "Per-app scoping").
+[[earsd.source]]
+id    = "app:com.apple.avconferenced"
+class = "app"
+label = "FaceTime"
+
 # --- LLM stages ---
 [llm]
 backend = "llm-cli"           # llm-cli | command — both run a subprocess:

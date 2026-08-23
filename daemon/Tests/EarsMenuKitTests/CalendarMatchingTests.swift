@@ -81,6 +81,8 @@ struct CalendarMatchingTests {
     // invite, which would mark an event that is not a huddle at all.
     #expect(
       CalendarMatching.marker(forBundleID: "com.tinyspeck.slackmacgap") == "slack.com/huddle")
+    #expect(
+      CalendarMatching.marker(forBundleID: "com.apple.avconferenced") == "facetime.apple.com")
     #expect(CalendarMatching.marker(forBundleID: "com.example.other") == nil)
   }
 }

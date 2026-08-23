@@ -10,13 +10,19 @@ public enum KnownMeetingApp: Sendable, CaseIterable {
   case zoom
   case teams
   case slack
+  case facetime
 
-  /// Every bundle id this app has shipped under.
+  /// The bundle id(s) an `app:` source names for this app — the process that
+  /// holds its audio, which is not always the app you click — across every
+  /// id it has shipped under.
   public var bundleIDs: [String] {
     switch self {
     case .zoom: ["us.zoom.xos"]
     case .teams: ["com.microsoft.teams2", "com.microsoft.teams"]
     case .slack: ["com.tinyspeck.slackmacgap"]
+    // FaceTime's audio belongs to its avconferenced media daemon, not
+    // FaceTime.app (see RealRunningApplicationTracker).
+    case .facetime: ["com.apple.avconferenced"]
     }
   }
 
@@ -26,13 +32,14 @@ public enum KnownMeetingApp: Sendable, CaseIterable {
     case .zoom: "zoom-app"
     case .teams: "teams-app"
     case .slack: "slack-app"
+    case .facetime: "facetime-app"
     }
   }
 
   /// The substring this app's join links carry, matched against a calendar
   /// event's location, notes, and URL.
   ///
-  /// Slack's is narrower than the other two by necessity: `zoom.us` and
+  /// Slack's is narrower than the others by necessity: `zoom.us` and
   /// `teams.microsoft` appear in join links and virtually nowhere else, but a
   /// bare `slack.com` also matches every message permalink and workspace URL
   /// pasted into an invite — it would mark events that are not huddles. Most
@@ -43,6 +50,9 @@ public enum KnownMeetingApp: Sendable, CaseIterable {
     case .zoom: "zoom.us"
     case .teams: "teams.microsoft"
     case .slack: "slack.com/huddle"
+    // FaceTime links are `https://facetime.apple.com/join#...`; nothing else
+    // lives on that host.
+    case .facetime: "facetime.apple.com"
     }
   }
 
