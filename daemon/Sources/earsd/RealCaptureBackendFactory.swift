@@ -114,7 +114,8 @@ func realCaptureBackendFactory() -> CaptureBackendFactory {
         // even be running yet when earsd starts (its source still captures
         // -- just silence -- until the app launches), and
         // SystemAudioCaptureBackend itself keeps this current afterward via
-        // its own launch/terminate tracking.
+        // the tracker's launch/terminate events (with the daemon gap noted
+        // on RunningApplicationTracking.events()).
         let bundleID = descriptor.id.detail ?? ""
         let pids = RealRunningApplicationTracker().livePIDs(forBundleID: bundleID)
         return SystemAudioCaptureBackend(

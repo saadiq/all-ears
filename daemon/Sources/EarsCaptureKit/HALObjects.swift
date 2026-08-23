@@ -3,9 +3,9 @@ import Foundation
 
 /// Read-only global-scope property reads on HAL objects, and the two system
 /// lists built from them: audio devices, and process objects — every process
-/// Core Audio knows, each carrying its bundle id and input-running flag.
-/// Shared by the mic device picker and the meeting-detection probe; neither
-/// creates a tap, so no TCC grant is involved.
+/// Core Audio knows, each carrying its pid, bundle id, and input-running flag.
+/// Shared by the mic device picker, the meeting-detection probe, and the
+/// per-app pid resolver; none creates a tap, so no TCC grant is involved.
 enum HALObjects {
   /// `kAudioHardwarePropertyProcessObjectList`.
   static func processObjects() -> [AudioObjectID] {
@@ -33,6 +33,10 @@ enum HALObjects {
 
   static func bundleID(of object: AudioObjectID) -> String? {
     stringProperty(object, kAudioProcessPropertyBundleID)
+  }
+
+  static func pid(of object: AudioObjectID) -> pid_t? {
+    scalar(object, kAudioProcessPropertyPID, zero: pid_t(0))
   }
 
   static func isRunningInput(_ object: AudioObjectID) -> Bool {

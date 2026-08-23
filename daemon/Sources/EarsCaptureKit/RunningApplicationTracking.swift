@@ -19,18 +19,35 @@ public protocol RunningApplicationTracking: Sendable {
 
   /// A stream of every subsequent launch/terminate event, system-wide.
   /// Callers filter to the bundle id(s) they care about.
+  ///
+  /// Known gap: the production stream is `NSWorkspace`'s, which posts only
+  /// for LaunchServices-tracked applications. A pid set that ``livePIDs``
+  /// resolved through the HAL — a media daemon — is therefore resolved once
+  /// at backend build and never re-resolved: it stays empty if the daemon had
+  /// not yet touched audio, and stale if the daemon relaunches. Closing it
+  /// means sourcing events from a listener on the HAL's process-object list.
   func events() -> AsyncStream<RunningApplicationEvent>
 }
 
-/// The production ``RunningApplicationTracking``, backed by
-/// `NSWorkspace.shared`.
+/// The production ``RunningApplicationTracking``: `NSWorkspace.shared`, with
+/// the HAL's process objects as the pid fallback. The workspace lists only
+/// launched *applications*; a media daemon that carries a bundle id —
+/// FaceTime's `com.apple.avconferenced`, which owns the call's audio while
+/// FaceTime.app only draws it — is invisible there, yet the HAL knows it the
+/// moment it touches audio, and a tap built on that pid scopes to it like any
+/// app. The fallback is taken only when the workspace has nothing, so an
+/// app's pid set is never mixed with a stale HAL entry.
 public struct RealRunningApplicationTracker: RunningApplicationTracking {
   public init() {}
 
   public func livePIDs(forBundleID bundleID: String) -> [pid_t] {
-    NSWorkspace.shared.runningApplications
+    let applications = NSWorkspace.shared.runningApplications
       .filter { $0.bundleIdentifier == bundleID }
       .map(\.processIdentifier)
+    guard applications.isEmpty else { return applications }
+    return HALObjects.processObjects()
+      .filter { HALObjects.bundleID(of: $0) == bundleID }
+      .compactMap(HALObjects.pid(of:))
   }
 
   public func events() -> AsyncStream<RunningApplicationEvent> {

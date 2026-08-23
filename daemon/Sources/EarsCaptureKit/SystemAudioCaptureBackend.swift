@@ -126,7 +126,8 @@ public actor SystemAudioCaptureBackend: CaptureBackend, CaptureStatsReporting {
   ///   - source: `"system"` or `"app:<bundle-id>"`.
   ///   - mode: `.system` for a global tap, `.app(pids:)` for a per-process
   ///     tap scoped to `bundleID`'s live processes at construction time (kept
-  ///     current afterward via `tracker`'s launch/terminate events).
+  ///     current afterward via `tracker`'s launch/terminate events — see
+  ///     ``RunningApplicationTracking/events()`` for what those do not cover).
   ///   - bundleID: The bundle id to track for `.app` mode's PID-set rebuild;
   ///     `nil` for `.system` (nothing to track).
   public init(
