@@ -259,6 +259,63 @@ struct SummarizePipelineTests {
         atPath: directory.appendingPathComponent("daily/2026-08-05.json").path))
   }
 
+  @Test("two presets resolving to one path: the first keeps it, the second is renamed and logged")
+  func collidingPresetsGetSeparatePaths() async throws {
+    let directory = Self.makeTempDirectory("path-collision")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcriptURL = try Self.writeFixtureTranscript(at: directory, text: "Transcript body.")
+    let notesURL = directory.appendingPathComponent("daily/2026-08-21.md")
+    try FileManager.default.createDirectory(
+      at: notesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "- jotted".write(to: notesURL, atomically: true, encoding: .utf8)
+
+    let logs = Mutex<[String]>([])
+    let results = Mutex<[SummarizePipeline.PresetResult]>([])
+    let deps = SummarizePipeline.Dependencies(
+      clock: ManualClock(Instant(secondsSinceEpoch: 120)),
+      llmBackend: FakeLLMBackend(results: [
+        .success(LLMCompletionResult(text: "The meeting note.")),
+        .success(LLMCompletionResult(text: "The workshop note.")),
+      ]),
+      log: { line in logs.withLock { $0.append(line) } },
+      writeStderr: { _ in },
+      onPresetResult: { result in results.withLock { $0.append(result) } })
+
+    // Both presets are pointed at the same daily note — the config shape that
+    // let a workshop-shaped summary overwrite a user-research note.
+    let toTheDailyNote = PathTemplate("{output_root}/daily/2026-08-21.md")
+    let exitCode = await SummarizePipeline.run(
+      inputs: SummarizePipeline.Inputs(
+        transcriptPaths: [transcriptURL.path],
+        presets: [
+          SummarizePipeline.Preset(
+            name: "meeting", promptContent: "Meeting:", out: toTheDailyNote, frontmatter: false),
+          SummarizePipeline.Preset(
+            name: "workshop", promptContent: "Workshop:", out: toTheDailyNote, frontmatter: false),
+        ],
+        out: nil, outputRoot: directory.path),
+      dependencies: deps)
+
+    #expect(exitCode == 0)
+    // The first preset in run order keeps the resolved path, and nothing
+    // overwrites what it just wrote.
+    #expect(try String(contentsOf: notesURL, encoding: .utf8) == "The meeting note.\n")
+    let renamedURL = directory.appendingPathComponent("daily/2026-08-21.workshop.md")
+    #expect(try String(contentsOf: renamedURL, encoding: .utf8) == "The workshop note.\n")
+    // Both notes are reported where they actually landed…
+    #expect(
+      results.withLock { $0 } == [
+        SummarizePipeline.PresetResult(preset: "meeting", path: notesURL.path, ok: true),
+        SummarizePipeline.PresetResult(preset: "workshop", path: renamedURL.path, ok: true),
+      ])
+    // …and the redirection names both presets and both paths.
+    #expect(
+      logs.withLock { $0 }.contains {
+        $0.contains("preset 'workshop': \(notesURL.path) is already the output of preset 'meeting'")
+          && $0.contains(renamedURL.path)
+      })
+  }
+
   @Test("--out overrides a preset's own out template, including out = {notes}")
   func explicitOutBeatsPresetOut() async throws {
     let directory = Self.makeTempDirectory("out-precedence")

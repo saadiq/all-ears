@@ -222,6 +222,30 @@ struct JSONEnvelopeContractSmokeTests {
     return scriptURL.path
   }
 
+  /// A fake `[llm]` command that answers the `--select-preset` classification
+  /// call with `preset`, and every other call with a one-line summary. The
+  /// two calls are told apart by the classification prompt's own menu line,
+  /// so this fixture breaks loudly if that prompt stops asking for a preset.
+  private static func writeClassifyingLLMScript(
+    in temp: TempDirectory, answering preset: String
+  ) throws -> String {
+    let scriptURL = temp.url.appendingPathComponent("classifying-llm.sh")
+    let script = """
+      #!/bin/sh
+      prompt=$(/bin/cat)
+      case "$prompt" in
+        *"Choose exactly one of these presets"*)
+          printf 'preset: \(preset)\\nbecause: that is what this conversation is.' ;;
+        *)
+          printf 'A one-line summary.' ;;
+      esac
+      """
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+    return scriptURL.path
+  }
+
   private static func writeFixtureSession(dataRoot: URL) throws -> String {
     let sessionID = "json-envelope-smoke"
     let session = Session(
@@ -521,5 +545,147 @@ struct JSONEnvelopeContractSmokeTests {
       #expect(FileManager.default.fileExists(atPath: path))
     }
     #expect(envelope.stats?.presets == 2)
+  }
+
+  @Test("summarize --json --select-preset: one preset runs, and output names its note")
+  func summarizeJSONSelectPreset() throws {
+    let temp = TempDirectory()
+    let transcriptPath = try Self.writeFixtureTranscript(in: temp)
+    let scriptPath = try Self.writeClassifyingLLMScript(in: temp, answering: "workshop")
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+
+      [llm]
+      backend = "command"
+      command = "\(scriptPath)"
+
+      [[summarize.preset]]
+      name = "brief"
+      when = "a call with an external person: user research, sales, investor"
+
+      [[summarize.preset]]
+      name = "workshop"
+      when = "a working session with an advisor coaching me"
+      """,
+      named: "config.toml")
+    let logPath = temp.url.appendingPathComponent("summarize.jsonl").path
+
+    let result = try Self.run(
+      "summarize",
+      ["--config", configPath, "--log-file", logPath, transcriptPath, "--select-preset", "--json"])
+
+    let envelope = try Self.decodeSuccessEnvelope(
+      result, as: SummarizeResultEnvelope.self, mode: .plain)
+    #expect(envelope.ok)
+    // The classified run is the single-preset path: one primary artifact, so
+    // `output` is populated — the shape the daemon's on-end chain now gets.
+    let output = try #require(envelope.output, "one selected preset is one primary artifact")
+    #expect(FileManager.default.fileExists(atPath: output))
+    let outputs = try #require(envelope.outputs)
+    #expect(outputs.map(\.preset) == ["workshop"])
+    #expect(envelope.stats?.presets == 1)
+    // Why this session got this preset, in the stderr the daemon re-logs.
+    #expect(result.stderr.contains("selected preset 'workshop'"))
+  }
+
+  @Test("summarize --select-preset: an answer naming no preset still files the note, loudly")
+  func summarizeSelectPresetUnknownAnswer() throws {
+    let temp = TempDirectory()
+    let transcriptPath = try Self.writeFixtureTranscript(in: temp)
+    let scriptPath = try Self.writeClassifyingLLMScript(in: temp, answering: "podcast")
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+
+      [llm]
+      backend = "command"
+      command = "\(scriptPath)"
+
+      [[summarize.preset]]
+      name = "brief"
+      when = "a call with an external person"
+
+      [[summarize.preset]]
+      name = "workshop"
+      when = "a working session with an advisor"
+      """,
+      named: "config.toml")
+    let logPath = temp.url.appendingPathComponent("summarize.jsonl").path
+
+    let result = try Self.run(
+      "summarize",
+      ["--config", configPath, "--log-file", logPath, transcriptPath, "--select-preset", "--json"])
+
+    // Exit 0 with a note written: losing the note is worse than filing it
+    // under the wrong shape, which a rerun with --preset fixes.
+    let envelope = try Self.decodeSuccessEnvelope(
+      result, as: SummarizeResultEnvelope.self, mode: .plain)
+    #expect(envelope.outputs?.map(\.preset) == ["brief"])
+    #expect(result.stderr.contains("which names no configured preset"))
+    #expect(result.stderr.contains("falling back to the first configured preset 'brief'"))
+  }
+
+  @Test("summarize --select-preset with --all-presets or --preset is a usage error")
+  func summarizeSelectPresetFlagConflict() throws {
+    let temp = TempDirectory()
+    let transcriptPath = try Self.writeFixtureTranscript(in: temp)
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+
+      [[summarize.preset]]
+      name = "brief"
+      when = "any call"
+      """,
+      named: "config.toml")
+    let logPath = temp.url.appendingPathComponent("summarize.jsonl").path
+
+    for conflicting in [["--all-presets"], ["--preset", "brief"]] {
+      let result = try Self.run(
+        "summarize",
+        [
+          "--config", configPath, "--log-file", logPath, transcriptPath, "--select-preset",
+          "--json",
+        ]
+          + conflicting)
+
+      let envelope = try Self.decodeFailureEnvelope(
+        result, as: SummarizeResultEnvelope.self, expectedExit: 64, mode: .plain)
+      #expect(envelope.exitClass == "usage")
+      #expect(
+        try #require(envelope.message).contains(
+          "--select-preset cannot be combined with --preset or --all-presets"))
+    }
+  }
+
+  @Test("summarize --select-preset against presets with no `when` names the gap")
+  func summarizeSelectPresetWithoutWhen() throws {
+    let temp = TempDirectory()
+    let transcriptPath = try Self.writeFixtureTranscript(in: temp)
+    let configPath = temp.write(
+      """
+      data_root = "\(temp.url.path)/data"
+
+      [[summarize.preset]]
+      name = "brief"
+
+      [[summarize.preset]]
+      name = "actions"
+      """,
+      named: "config.toml")
+    let logPath = temp.url.appendingPathComponent("summarize.jsonl").path
+
+    let result = try Self.run(
+      "summarize",
+      ["--config", configPath, "--log-file", logPath, transcriptPath, "--select-preset", "--json"])
+
+    let envelope = try Self.decodeFailureEnvelope(
+      result, as: SummarizeResultEnvelope.self, expectedExit: 4, mode: .plain)
+    #expect(envelope.exitClass == "stage-failed")
+    let message = try #require(envelope.message)
+    #expect(message.contains("--select-preset needs a `when"))
+    // The gap is named, not just reported: which presets were looked at.
+    #expect(message.contains("brief, actions"))
   }
 }

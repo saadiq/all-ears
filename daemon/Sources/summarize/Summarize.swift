@@ -68,6 +68,13 @@ struct Summarize: AsyncParsableCommand {
   @Flag(name: .customLong("all-presets"), help: "Run every configured preset.")
   var allPresets = false
 
+  @Flag(
+    name: .customLong("select-preset"),
+    help:
+      "Run the single preset this conversation is for, chosen by classifying the transcript against each preset's `when` description."
+  )
+  var selectPreset = false
+
   @Option(name: .customLong("out"), help: "Override the output path (single-preset runs only).")
   var out: String?
 
@@ -120,6 +127,7 @@ struct Summarize: AsyncParsableCommand {
     let session = self.session
     let preset = self.preset
     let allPresets = self.allPresets
+    let selectPreset = self.selectPreset
     let out = self.out
     let notes = self.notes
     let model = self.model
@@ -143,7 +151,13 @@ struct Summarize: AsyncParsableCommand {
         switch (transcripts.isEmpty, session) {
         case (true, nil): "error: at least one transcript path, or --session, is required"
         case (false, .some): "error: transcript paths cannot be combined with --session"
-        default: nil
+        default:
+          // The three preset flags each answer "which presets run?", so any
+          // pairing of `--select-preset` with another is a contradiction, not
+          // a precedence question — and a silent precedence rule here is
+          // exactly how a session ends up summarized as something it wasn't.
+          selectPreset && (allPresets || !preset.isEmpty)
+            ? "error: --select-preset cannot be combined with --preset or --all-presets" : nil
         }
       if let usageError {
         FileHandle.standardError.write(Data((usageError + "\n").utf8))
@@ -157,6 +171,7 @@ struct Summarize: AsyncParsableCommand {
           sessionID: session,
           presetNames: preset,
           allPresets: allPresets,
+          selectPreset: selectPreset,
           out: out,
           notes: notes,
           model: model

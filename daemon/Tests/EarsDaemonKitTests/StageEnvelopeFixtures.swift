@@ -76,6 +76,15 @@ enum StageEnvelopeFixtures {
       + #""stats":{"presets":\#(presets.count)},"warnings":[]}"# + "\n"
   }
 
+  /// `summarize --select-preset --json` success: the on-end chain's shape now
+  /// that one preset is chosen per session. One `outputs` entry, and `output`
+  /// populated — a single-preset run has a single primary artifact.
+  static func summarizeSelectedPresetSuccess(preset: String, path: String) -> String {
+    #"{"ok":true,"output":"\#(path)","#
+      + #""outputs":[{"ok":true,"path":"\#(path)","preset":"\#(preset)"}],"#
+      + #""schema":"allears.summarize/v1","stats":{"presets":1},"warnings":[]}"# + "\n"
+  }
+
   /// `summarize --all-presets --json` partial success: a non-zero exit whose
   /// last-stderr-line error envelope still carries per-preset `outputs`, so
   /// "wrote 2 of 3 presets" is expressible. Mirrors the

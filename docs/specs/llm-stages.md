@@ -92,10 +92,14 @@ This exists because every failure behind a mislabelled note was already being de
 
 ### CLI
 ```
-summarize (<transcript.md> [more...] | --session <id>) [--preset brief] [--all-presets] [--out <path>] [--notes <path>] [--model <name>]
+summarize (<transcript.md> [more...] | --session <id>) [--preset brief] [--all-presets] [--select-preset] [--out <path>] [--notes <path>] [--model <name>]
 ```
 
 `--notes` applies to a single-preset run, like `--out`; selecting more than one preset with it is a usage error.
+
+`--select-preset` runs the one preset the conversation is for: a single LLM call classifies the transcript against each preset's `when` description and the preset that matches is the only one rendered. It is what the daemon's session-end chain spawns, since a conversation has one type and two presets writing to one note destroy each other's work. Combining it with `--preset` or `--all-presets` is a usage error, and a config where no preset declares a `when` is a config error naming the gap. An answer that names no configured preset falls back to the first one and says so on stderr — a note filed under the wrong shape can be rerun with `--preset`, where a failed chain leaves the session with no note at all.
+
+Whatever selects the presets, no two of them share a destination: presets resolving to one path are disambiguated in run order (`<name>.<preset>.<ext>` for each later collider), so nothing overwrites a note the same run just wrote.
 
 ## Composition
 
@@ -110,7 +114,7 @@ transcribe --session "$SESSION_ID" \
 Or by path, since each stage prints where it wrote:
 
 ```sh
-summarize "$(cleanup "$(transcribe --session "$SESSION_ID")")" --all-presets
+summarize "$(cleanup "$(transcribe --session "$SESSION_ID")")" --select-preset
 ```
 
 The daemon runs this chain itself when a browser session ends (`[earsd.sessions] on_end_stages`, default all three stages — see [capture-daemon](capture-daemon.md)). Any stage can still be run alone against an existing file.
