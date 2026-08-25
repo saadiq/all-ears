@@ -42,7 +42,7 @@ struct LLMStagesConfigSchemaTests {
     #expect(LLMStagesConfigSchema.defaults == expected)
   }
 
-  @Test("a preset's notes/out/frontmatter keys validate")
+  @Test("a preset's when/notes/out/frontmatter keys validate")
   func presetPublishingKeysValidate() {
     let value = mergeConfigLayers([
       LLMStagesConfigSchema.defaults,
@@ -52,6 +52,9 @@ struct LLMStagesConfigSchemaTests {
             .table([
               "name": .string("meeting-notes"),
               "prompt_file": .string("/prompts/notes.md"),
+              // What `summarize --select-preset` classifies against; a preset
+              // without it is simply never selected automatically.
+              "when": .string("a call with an external person"),
               "notes": .string("{output_root}/daily/{date}/{date} - {title}.md"),
               "out": .string("{notes}"),
               "frontmatter": .bool(false),

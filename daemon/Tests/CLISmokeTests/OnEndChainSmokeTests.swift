@@ -74,10 +74,20 @@ struct OnEndChainSmokeTests {
   /// deterministic and network-free (mirrors `PlainModeContractSmokeTests`).
   private static func writeFakeLLMScript(in temp: TempDirectory) throws -> String {
     let scriptURL = temp.url.appendingPathComponent("fake-llm.sh")
+    // Two prompts reach this script per session: the `--select-preset`
+    // classification call, answered with the one configured preset, and the
+    // preset's own summary call. Telling them apart here is what makes the
+    // chain's selection step real end to end rather than exercising the
+    // unknown-answer fallback by accident.
     let script = """
       #!/bin/sh
-      /bin/cat >/dev/null
-      printf '%s' 'scripted summary line'
+      prompt=$(/bin/cat)
+      case "$prompt" in
+        *"Choose exactly one of these presets"*)
+          printf 'preset: brief\\nbecause: the fixture session is a call.' ;;
+        *)
+          printf '%s' 'scripted summary line' ;;
+      esac
       """
     try script.write(to: scriptURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes(
@@ -169,6 +179,7 @@ struct OnEndChainSmokeTests {
 
       [[summarize.preset]]
       name = "brief"
+      when = "any conversation this fixture captures"
       """,
       named: "config.toml")
 
@@ -277,6 +288,14 @@ struct OnEndChainSmokeTests {
     #expect(
       daemonLog.contains("summarize wrote 1/1 presets for session '\(session.id)'"),
       "expected the per-preset summary line; daemon log:\n\(daemonLog)")
+    // Which preset this session got, and why, reached the daemon log — the
+    // chain selects one preset per session rather than running them all.
+    #expect(
+      daemonLog.contains("spawning summarize") && daemonLog.contains("--select-preset --json"),
+      "expected summarize to be spawned with --select-preset; daemon log:\n\(daemonLog)")
+    #expect(
+      daemonLog.contains("selected preset 'brief': the fixture session is a call."),
+      "expected the selected preset and its reasoning; daemon log:\n\(daemonLog)")
     #expect(!daemonLog.contains("exited 0 but failed"))
     #expect(!daemonLog.contains("schema mismatch"))
 
@@ -451,6 +470,7 @@ struct OnEndChainSmokeTests {
 
       [[summarize.preset]]
       name = "brief"
+      when = "any conversation this fixture captures"
       """,
       named: "config.toml")
 

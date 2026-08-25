@@ -24,7 +24,8 @@ final class PresetResultLog: Sendable {
 
 /// `summarize`'s CLI inputs beyond the shared day-one flags, per
 /// `docs/specs/llm-stages.md`'s
-/// `summarize <transcript.md> [more...] [--preset ...] [--all-presets] [--out] [--model]`.
+/// `summarize <transcript.md> [more...] [--preset ...] [--all-presets]
+/// [--select-preset] [--out] [--model]`.
 struct SummarizeCLIInputs: Sendable {
   var transcriptPaths: [String]
   /// `--session <id>`: summarize the session's *cleaned* transcript, falling
@@ -32,6 +33,9 @@ struct SummarizeCLIInputs: Sendable {
   var sessionID: String?
   var presetNames: [String]
   var allPresets: Bool
+  /// `--select-preset`: classify the transcript against the configured
+  /// presets' `when` descriptions and run the single preset that matches.
+  var selectPreset: Bool = false
   var out: String?
   /// `--notes <path>`: an ad-hoc companion notes file (single-preset runs).
   var notes: String?
@@ -124,7 +128,23 @@ enum SummarizeRuntime {
 
     let configuredPresets = presetEntries(root)
     let selected: [ConfigPreset]
-    if inputs.allPresets {
+    if inputs.selectPreset {
+      // Checked before the other two branches: the CLI already refuses to
+      // combine the flags, so a caller that sets `selectPreset` alongside them
+      // has bypassed that check, and running the one preset a classification
+      // chose is the safer reading of a contradictory instruction than running
+      // all of them over one conversation.
+      switch await selectPreset(
+        configuredPresets, transcriptPaths: transcriptPaths, backend: llmBackend)
+      {
+      case .success(let preset): selected = [preset]
+      case .failure(let failure):
+        writeStderr(failure.message)
+        diagnostics.recordError(failure.message)
+        // Config that cannot answer the question `--select-preset` asks.
+        return RunOutcome(class: .stageFailed, error: failure.message)
+      }
+    } else if inputs.allPresets {
       selected = configuredPresets
     } else if !inputs.presetNames.isEmpty {
       selected = configuredPresets.filter { inputs.presetNames.contains($0.name) }
@@ -137,7 +157,8 @@ enum SummarizeRuntime {
         return RunOutcome(class: .inputMissing, error: message)
       }
     } else {
-      let message = "error: at least one --preset is required (or pass --all-presets)"
+      let message =
+        "error: at least one --preset is required (or pass --all-presets or --select-preset)"
       writeStderr(message)
       diagnostics.recordError(message)
       return RunOutcome(class: .usage, error: message)
@@ -231,20 +252,94 @@ enum SummarizeRuntime {
       FileManager.default.fileExists(atPath: cleanPath) ? cleanPath : rawURL.path)
   }
 
+  /// Resolves `--select-preset`: one classification call against the
+  /// configured `when` descriptions, made before any preset prompt runs, whose
+  /// answer names the single preset this conversation gets summarized with.
+  ///
+  /// Fails only where the config cannot answer the question — no presets at
+  /// all, or none carrying a `when`. Everything the model can get wrong
+  /// (an unparseable reply, a name that matches nothing, a backend that
+  /// throws) resolves to the first configured preset and is reported on
+  /// stderr, which the daemon promotes into `earsd.jsonl`: a note filed under
+  /// the wrong shape can be rerun with `--preset`, where a failed chain leaves
+  /// the session with no note at all.
+  private static func selectPreset(
+    _ configured: [ConfigPreset], transcriptPaths: [String], backend: any LLMBackend
+  ) async -> Result<ConfigPreset, ResolutionFailure> {
+    guard let fallback = configured.first else {
+      return .failure(
+        ResolutionFailure(message: "error: no [[summarize.preset]] entries are configured"))
+    }
+    let candidates = configured.compactMap { preset in
+      preset.when.map { PresetSelection.Candidate(name: preset.name, when: $0) }
+    }
+    guard !candidates.isEmpty else {
+      return .failure(
+        ResolutionFailure(
+          message: "error: --select-preset needs a `when = \"…\"` description on at least one "
+            + "[[summarize.preset]]; none of "
+            + configured.map(\.name).joined(separator: ", ") + " declares one"))
+    }
+
+    // Read here rather than handed down from the pipeline, which reads the
+    // same files again a moment later: an unreadable transcript is the
+    // pipeline's failure to report, with the input-missing class and the path
+    // in the message, so classification degrades to the fallback rather than
+    // pre-empting it with a worse-shaped error.
+    let transcript =
+      transcriptPaths
+      .compactMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+      .joined(separator: "\n\n")
+
+    let choice = await PresetSelection.select(
+      candidates: candidates, fallback: fallback.name, transcript: transcript, backend: backend)
+    if choice.fellBack {
+      let cause: String
+      if let answer = choice.rawAnswer {
+        cause = "the model answered \"\(oneLine(answer))\", which names no configured preset"
+      } else {
+        cause = choice.reason ?? "the classification produced no answer"
+      }
+      writeStderr(
+        "warning: --select-preset: \(cause); falling back to the first configured preset "
+          + "'\(choice.name)'")
+    } else {
+      writeStderr(
+        "summarize: selected preset '\(choice.name)'"
+          + (choice.reason.map { ": \(oneLine($0))" } ?? ""))
+    }
+    return .success(configured.first { $0.name == choice.name } ?? fallback)
+  }
+
+  /// A model's reply as one bounded log line: a chatty classifier must not be
+  /// able to push the rest of a run's diagnostics out of the daemon's bounded
+  /// stderr capture.
+  private static func oneLine(_ text: String) -> String {
+    let joined = text.split(whereSeparator: \.isNewline)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .joined(separator: " ")
+    return joined.count > 200 ? String(joined.prefix(200)) + "…" : joined
+  }
+
   /// A resolution failure carrying its own already-formatted message.
   private struct ResolutionFailure: Error {
     var message: String
   }
 
-  private struct ConfigPreset {
+  struct ConfigPreset {
     var name: String
     var promptFile: String
+    /// `when`: a plain-language description of the conversations this preset
+    /// is for. Absent means this preset describes no conversation and is never
+    /// a `--select-preset` candidate; it still runs under `--preset` and
+    /// `--all-presets`.
+    var when: String?
     var notes: String?
     var out: String?
     var frontmatter: Bool
   }
 
-  private static func presetEntries(_ root: ConfigValue) -> [ConfigPreset] {
+  static func presetEntries(_ root: ConfigValue) -> [ConfigPreset] {
     guard case .table(let rootTable) = root,
       case .table(let summarizeTable)? = rootTable["summarize"],
       case .array(let entries)? = summarizeTable["preset"]
@@ -260,7 +355,7 @@ enum SummarizeRuntime {
       var frontmatter = true
       if case .bool(let value)? = fields["frontmatter"] { frontmatter = value }
       return ConfigPreset(
-        name: name, promptFile: string("prompt_file") ?? "",
+        name: name, promptFile: string("prompt_file") ?? "", when: string("when"),
         notes: string("notes"), out: string("out"), frontmatter: frontmatter)
     }
   }

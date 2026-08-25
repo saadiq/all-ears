@@ -164,7 +164,7 @@ name = "action-items"
 prompt_file = "prompts/action-items.md"
 ```
 
-Summarisation prompts are entirely yours: each `[[summarize.preset]]` pairs a name with a prompt file you write, and `summarize --preset <name>` (or `--all-presets`) runs it over the transcript — one output file per preset. Both tools take `--model` to override the configured model for a single run. The full option reference is in [`docs/configuration.md`](docs/configuration.md).
+Summarisation prompts are entirely yours: each `[[summarize.preset]]` pairs a name with a prompt file you write, and `summarize --preset <name>` (or `--all-presets`) runs it over the transcript — one output file per preset. Give a preset a `when = "…"` description of the conversations it is for and `summarize --select-preset` picks the single preset that fits, which is what a session runs at the end of a call: a conversation has one type. Both tools take `--model` to override the configured model for a single run. The full option reference is in [`docs/configuration.md`](docs/configuration.md).
 
 Transcription currently has one model: Parakeet, running locally on the Neural Engine via FluidAudio. A `[transcribe]` table arrives when there is more than one choice to make.
 

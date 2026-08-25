@@ -205,14 +205,18 @@ enum SummarizePipeline {
         // `--out` outranks a preset's `out` template, matching how `--notes`
         // already outranks `notes` just above and how `--set` outranks config
         // everywhere else: the flag is the highest-precedence layer, not the
-        // lowest. Left `nil` here, the write falls through to `baseOutputURL`,
-        // which `outputBaseURL(for:explicitOut:)` has already resolved to the
-        // explicit path. A preset whose `out` is `{notes}` is redirected too —
-        // overriding the destination is the whole point of the flag.
-        outputURL: inputs.out == nil
-          ? preset.out.map { URL(fileURLWithPath: $0.expand(notesContext)) }
-          : nil)
+        // lowest. With no template in play the destination falls through to
+        // `baseOutputURL`, which `outputBaseURL(for:explicitOut:)` has already
+        // resolved to the explicit path. A preset whose `out` is `{notes}` is
+        // redirected too — overriding the destination is the whole point of
+        // the flag.
+        outputURL: (inputs.out == nil
+          ? preset.out.map { URL(fileURLWithPath: $0.expand(notesContext)) } : nil)
+          ?? outputURL(
+            for: baseOutputURL, preset: preset.name,
+            isOnlyPreset: inputs.presets.count == 1))
     }
+    let resolved = disambiguated(plans, dependencies: dependencies)
 
     // Presets run independently (issue #63): one preset's failure no longer
     // aborts the rest — each outcome is reported through `onPresetResult`, so
@@ -221,7 +225,7 @@ enum SummarizePipeline {
     // exits non-zero unless *all* presets succeeded, carrying the first
     // failure's taxonomy class (issue #61).
     var firstFailure: ExitClass? = nil
-    for plan in plans {
+    for plan in resolved {
       let preset = plan.preset
       // A configured notes file that isn't there used to fail this preset, on
       // the reasoning that a fold-in prompt would silently lose the jottings.
@@ -272,10 +276,7 @@ enum SummarizePipeline {
             segment: Segment(start: 0, end: 0, text: summaryText))
         ])
 
-      let outputURL =
-        plan.outputURL
-        ?? outputURL(
-          for: baseOutputURL, preset: preset.name, isOnlyPreset: inputs.presets.count == 1)
+      let outputURL = plan.outputURL
       do {
         // `frontmatter = false` means this artifact is plain Markdown, not an
         // ears document — so it gets no YAML block, and no JSON sidecar
@@ -428,8 +429,73 @@ enum SummarizePipeline {
     /// stderr warning's trigger, and the one thing `notes == ""` can't
     /// distinguish from a genuinely empty notes file.
     var notesMissing: Bool = false
-    /// The expanded `out` path, or `nil` for the default sibling naming.
-    var outputURL: URL?
+    /// Where this preset's summary is written: its expanded `out` template,
+    /// or the default sibling naming, and in either case already
+    /// disambiguated against the other presets in this run (see
+    /// ``disambiguated(_:dependencies:)``).
+    var outputURL: URL
+  }
+
+  /// Gives every preset in one run its own destination.
+  ///
+  /// Two presets can resolve to the same path — most easily by both setting
+  /// `out = "{notes}"`, which is how a 2026-08-21 user-research call ended up
+  /// with a workshop-shaped note: `meeting` wrote the right summary, and
+  /// `workshop` overwrote it seconds later. The first preset in run order
+  /// keeps the resolved path and each later collider gets its own name
+  /// inserted before the extension, the same shape multi-preset runs already
+  /// use. Both paths are logged, because a note that silently lands somewhere
+  /// other than where its preset asked for is its own kind of loss.
+  ///
+  /// This is a backstop, not the fix: `--select-preset` is what stops the
+  /// on-end chain running several presets over one conversation at all. It
+  /// exists so that no run — `--all-presets`, repeated `--preset`, a config
+  /// with two presets pointed at one file — can destroy a note it just wrote.
+  private static func disambiguated(
+    _ plans: [PresetPlan], dependencies: Dependencies
+  ) -> [PresetPlan] {
+    var claimed: [String: String] = [:]  // standardized path -> the preset holding it
+    return plans.map { plan in
+      var plan = plan
+      guard let holder = claimed[plan.outputURL.standardizedFileURL.path] else {
+        claimed[plan.outputURL.standardizedFileURL.path] = plan.preset.name
+        return plan
+      }
+      // The preset's own name first, then `-2`, `-3`… for the pathological
+      // case of two presets configured under one name: the loop has to end on
+      // a path nobody holds, whatever the config says.
+      var candidate = inserting(plan.preset.name, into: plan.outputURL)
+      var suffix = 2
+      while claimed[candidate.standardizedFileURL.path] != nil {
+        candidate = inserting("\(plan.preset.name)-\(suffix)", into: plan.outputURL)
+        suffix += 1
+      }
+      dependencies.log(
+        "preset '\(plan.preset.name)': \(plan.outputURL.path) is already the output of preset "
+          + "'\(holder)'; writing to \(candidate.path) instead")
+      claimed[candidate.standardizedFileURL.path] = plan.preset.name
+      plan.outputURL = candidate
+      return plan
+    }
+  }
+
+  /// `<stem>.<name>.<ext>` — the disambiguating shape
+  /// ``outputURL(for:preset:isOnlyPreset:)`` already produces, extended to the
+  /// arbitrary destinations an `out` template can name. A `.summary.md` tail
+  /// is treated as one extension so a disambiguated summary is still named
+  /// like every other multi-preset summary.
+  private static func inserting(_ name: String, into url: URL) -> URL {
+    let directory = url.deletingLastPathComponent()
+    let fileName = url.lastPathComponent
+    if fileName.hasSuffix(".summary.md") {
+      let stem = String(fileName.dropLast(".summary.md".count))
+      return directory.appendingPathComponent("\(stem).\(name).summary.md")
+    }
+    guard let dot = fileName.lastIndex(of: "."), dot != fileName.startIndex else {
+      return directory.appendingPathComponent("\(fileName).\(name)")
+    }
+    return directory.appendingPathComponent(
+      "\(fileName[fileName.startIndex..<dot]).\(name)\(fileName[dot...])")
   }
 
   /// Everything about this run the note's reader needs to know and cannot see

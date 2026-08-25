@@ -113,16 +113,15 @@ struct OnClosePipelineRunnerTests {
     let transcript = try Self.makeTranscript(
       EmptySessionTranscripts.substantive, named: "10-00-00_abc.transcript.md", in: directory)
     let clean = try Self.makeFile("10-00-00_abc.clean.md", in: directory)
-    let brief = try Self.makeFile("10-00-00_abc.brief.summary.md", in: directory)
-    let actions = try Self.makeFile("10-00-00_abc.actions.summary.md", in: directory)
+    let note = try Self.makeFile("10-00-00_abc.summary.md", in: directory)
     let logs = LogCollector()
     let runner = ScriptedRunner([
       Self.transcribeOutcome(transcript),
       Self.cleanupOutcome(clean),
       SpawnOutcome(
         exitCode: 0,
-        stdout: StageEnvelopeFixtures.summarizeAllPresetsSuccess(
-          presets: [(preset: "brief", path: brief), (preset: "actions", path: actions)])),
+        stdout: StageEnvelopeFixtures.summarizeSelectedPresetSuccess(
+          preset: "meeting", path: note)),
     ])
     let pipeline = OnClosePipelineRunner(runProcess: runner.runner, log: { logs.append($0) })
 
@@ -139,15 +138,17 @@ struct OnClosePipelineRunnerTests {
         ])
     // cleanup consumes the `output` path transcribe's envelope named…
     #expect(runner.calls[1].arguments == [transcript, "--json"])
-    // …and summarize consumes the cleaned path cleanup's envelope named.
-    #expect(runner.calls[2].arguments == [clean, "--all-presets", "--json"])
+    // …and summarize consumes the cleaned path cleanup's envelope named,
+    // selecting the one preset this conversation is for rather than running
+    // every configured preset over it.
+    #expect(runner.calls[2].arguments == [clean, "--select-preset", "--json"])
     for stage in ["transcribe", "cleanup", "summarize"] {
       #expect(logs.snapshot().contains { $0.contains("\(stage) succeeded for session 'b7acc61f'") })
     }
     // Summarize's per-preset results are visible in the daemon log.
     #expect(
       logs.snapshot().contains {
-        $0.contains("summarize wrote 2/2 presets for session 'b7acc61f'")
+        $0.contains("summarize wrote 1/1 presets for session 'b7acc61f'")
       })
   }
 
@@ -308,7 +309,7 @@ struct OnClosePipelineRunnerTests {
       sessionID: "b7acc61f", stages: [.transcribe, .summarize], context: "session-end")
 
     #expect(runner.calls.map(\.name) == ["transcribe", "summarize"])
-    #expect(runner.calls[1].arguments == [transcript, "--all-presets", "--json"])
+    #expect(runner.calls[1].arguments == [transcript, "--select-preset", "--json"])
   }
 
   @Test("a failed transcribe stops the chain and returns false")
@@ -797,7 +798,7 @@ struct OnClosePipelineRunnerTests {
         ])
     // …and each envelope's `output` (not its raw stdout) feeds the next stage.
     #expect(runner.calls[1].arguments == [transcript, "--json"])
-    #expect(runner.calls[2].arguments == [clean, "--all-presets", "--json"])
+    #expect(runner.calls[2].arguments == [clean, "--select-preset", "--json"])
   }
 
   @Test("a wrong-major envelope fails the stage, naming expected and received schemas")

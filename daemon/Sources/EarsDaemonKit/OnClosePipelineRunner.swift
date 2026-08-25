@@ -196,13 +196,21 @@ public struct OnClosePipelineRunner: Sendable {
       await publishJob(
         JobPublishParams(
           job: jobID, kind: OnEndStage.summarize.rawValue, session: sessionID, state: .started))
-      // Summarize writes one file per preset, so it has no single output path
-      // to thread — exit 0 is the success signal, exactly as before the
-      // envelope. The envelope's per-preset `outputs` feed the log: what was
-      // written on success here, and — via `spawn`'s error-envelope decode —
-      // partial success ("wrote 2/3 presets") on failure.
+      // `--select-preset`, not `--all-presets`: a conversation has one type,
+      // and summarizing a user-research call as a workshop as well cost a
+      // second LLM call to produce a note that then overwrote the right one
+      // (two presets writing to `out = "{notes}"` collide on one path, and
+      // config order decided which survived). summarize classifies the
+      // transcript against each preset's `when` description and runs the one
+      // that matches; `--all-presets` survives for reruns by hand.
+      //
+      // Summarize still has no single output path to thread — exit 0 is the
+      // success signal, exactly as before the envelope. The envelope's
+      // per-preset `outputs` feed the log: what was written on success here,
+      // and — via `spawn`'s error-envelope decode — partial success ("wrote
+      // 2/3 presets") on failure.
       let outcome = await spawn(
-        .summarize, arguments: [nextInput, "--all-presets", "--json"], sessionID: sessionID,
+        .summarize, arguments: [nextInput, "--select-preset", "--json"], sessionID: sessionID,
         context: context)
       if outcome.exitCode == 0 {
         logSummarizeResults(stdout: outcome.stdout, sessionID: sessionID, context: context)

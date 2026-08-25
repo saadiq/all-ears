@@ -122,7 +122,9 @@ ingest_close_grace_s = 120
 local_sources = ["mic"]
 # The DEFAULT pipeline chain for a session that declares none of its own, in
 # chain order: transcribe writes the transcript, cleanup corrects it with the
-# [llm] backend, summarize renders every [[summarize.preset]]. cleanup/summarize
+# [llm] backend, summarize renders the one [[summarize.preset]] this
+# conversation is for, chosen by classifying the transcript against each
+# preset's `when` description (`summarize --select-preset`). cleanup/summarize
 # require transcribe (they consume its output); an invalid entry is dropped
 # with a logged warning. Set to ["transcribe"] to skip the LLM stages, [] to
 # disable this default.
@@ -202,9 +204,20 @@ output = "{output_root}/{year}/{month}/{day}/{date} - {title}.md"
 [[summarize.preset]]
 name = "brief"
 prompt_file = "prompts/brief.md"
+# `when` describes, in plain language, the conversations this preset is for. A
+# session gets exactly one preset: the daemon's on-end chain runs
+# `summarize --select-preset`, which classifies the transcript against these
+# descriptions in one short LLM call and renders only the preset that matches.
+# A conversation has one type, and running every preset over it both costs a
+# call per preset and lets two presets writing to the same note overwrite each
+# other. A preset with no `when` is never selected automatically; it stays
+# available to `summarize --preset <name>` and `--all-presets`, which run
+# exactly what you name whatever the descriptions say.
+when = "a call with an external person: user research, sales, investor"
 [[summarize.preset]]
 name = "actions"
 prompt_file = "prompts/action-items.md"
+when = "a working session with an advisor coaching me"
 # A preset may read a companion notes file, write anywhere, and skip the
 # ears frontmatter — enough to fold a call into an Obsidian daily note:
 # [[summarize.preset]]
@@ -215,6 +228,10 @@ prompt_file = "prompts/action-items.md"
 # frontmatter = false      # body only — the vault owns its own frontmatter
 # A call with no note waiting at that path still summarizes — the jotted-notes
 # section comes through empty and the missing file is warned about on stderr.
+# If a run does end up with two presets resolving to one path (`--all-presets`
+# over presets that share an `out`), the first keeps the path and each later
+# one is written to `<name>.<preset>.<ext>` — no note is overwritten by a
+# summary the same run just produced.
 
 # --- Vocabulary ---
 [vocab]

@@ -67,6 +67,11 @@ public enum LLMStagesConfigSchema {
       "name": ConfigSchema.Field(type: .string, description: "Preset name, selected via --preset."),
       "prompt_file": ConfigSchema.Field(
         type: .string, description: "Path to this preset's summary prompt."),
+      "when": ConfigSchema.Field(
+        type: .string,
+        description:
+          "Plain-language description of the conversations this preset is for; what --select-preset classifies against."
+      ),
       "notes": ConfigSchema.Field(
         type: .string,
         description:
@@ -132,7 +137,7 @@ public enum LLMStagesConfigSchema {
             "preset": ConfigSchema.Field(
               type: .array, elementSchema: presetElementSchema,
               description:
-                "Named summary presets: a name, a prompt_file, and optional notes/out/frontmatter."
+                "Named summary presets: a name, a prompt_file, and optional when/notes/out/frontmatter."
             )
           ]
         ),
