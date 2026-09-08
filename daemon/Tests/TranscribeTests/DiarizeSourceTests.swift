@@ -34,6 +34,22 @@ struct DiarizeSourceTests {
     #expect(TranscribePipeline.shouldDiarize(SourceID("device:AB12")))
   }
 
+  @Test("the mixed Teams far-end track is diarized; per-participant browser streams are not")
+  func shouldDiarizeAdmitsMixedBrowserPlatforms() {
+    // Teams delivers one receiver track carrying every remote participant, so
+    // it is the one browser source with something to split.
+    #expect(TranscribePipeline.shouldDiarize(SourceID("browser:teams:t1")))
+    #expect(TranscribePipeline.shouldDiarize(SourceID("browser:teams:speaker-2")))
+    // Per-participant platforms stay excluded — one stream, one named person.
+    #expect(TranscribePipeline.shouldDiarize(SourceID("browser:zoom:16778240")) == false)
+    #expect(TranscribePipeline.shouldDiarize(SourceID("browser:meet:t3")) == false)
+    // An unknown platform is treated as per-participant: the conservative
+    // default is to leave a source's identity alone.
+    #expect(TranscribePipeline.shouldDiarize(SourceID("browser:webex:t1")) == false)
+    // A platform name is matched whole, never by prefix.
+    #expect(TranscribePipeline.shouldDiarize(SourceID("browser:teamsx:t1")) == false)
+  }
+
   @Test("spans are clipped to each slice and translated onto the range timeline")
   func diarizeSourceStitchesAndTranslates() throws {
     // Two 1s speech slices with a 4s VAD gap between them: slice A covers real
