@@ -529,12 +529,8 @@ enum TranscribePipeline {
         "session \(sessionRecord.id): titling this transcript \"\(derived)\" from the roster; "
           + "the session itself is still named \"\(sessionRecord.title)\"")
     }
-    let localAttendeeID = reconciled?.localAttendeeID
-    let attendees: [String] = (sessionRecord?.attendees ?? []).compactMap { attendee in
-      guard let name = attendee.displayName, !name.isEmpty else { return nil }
-      let isLocal = attendee.isLocal || attendee.id == localAttendeeID
-      return isLocal ? "\(name) (me)" : name
-    }
+    let attendees = RosterReconciler.attendeeNames(
+      sessionRecord?.attendees ?? [], localID: reconciled?.localAttendeeID)
 
     // The chosen lookup order, recorded in frontmatter so a wrong-store read is
     // visible after the fact (issue #20). Only a `--session` run resolves a
