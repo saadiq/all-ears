@@ -444,6 +444,19 @@ public actor SessionRegistry {
     sessions[session.id] = session
   }
 
+  /// Replaces this session's pipeline issues with what the latest on-end
+  /// chain reported. A no-op for an unknown session.
+  public func recordPipelineIssues(id: String, issues: [PipelineIssue]) {
+    guard var session = knownSession(id), session.pipelineIssues != issues else { return }
+    session.pipelineIssues = issues
+    do {
+      try persist(session)
+    } catch {
+      log("session \(id): persisting pipeline issues failed: \(error)")
+    }
+    sessions[session.id] = session
+  }
+
   /// `session.pause`: closes the open interval. No-op success if already
   /// paused; `session_ended` if the session is over.
   public func pause(id: String) async throws -> Session {

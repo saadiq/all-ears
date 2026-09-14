@@ -52,6 +52,25 @@ struct SessionDescriptorTOMLTests {
     #expect(decoded == Self.referenceSession(reconcilerVersion: RosterReconciler.version))
   }
 
+  @Test("pipeline issues round-trip, and a file without them decodes to none")
+  func pipelineIssuesRoundTrip() throws {
+    var session = Self.referenceSession()
+    session.pipelineIssues = [
+      PipelineIssue(
+        stage: "summarize", kind: .failed, message: "LLM backend call timed out",
+        exitClass: "retryable-upstream"),
+      PipelineIssue(stage: "cleanup", kind: .warning, message: "chunk fell back"),
+    ]
+    #expect(try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(session)) == session)
+
+    guard case .table(var table) = SessionDescriptorTOML.encode(Self.referenceSession()) else {
+      Issue.record("session.toml did not encode to a table")
+      return
+    }
+    table["pipeline_issue"] = nil
+    #expect(try SessionDescriptorTOML.decode(.table(table)).pipelineIssues.isEmpty)
+  }
+
   @Test("attendee origin round-trips: platform, synthetic, and unknown-as-absent")
   func attendeeOriginRoundTrips() throws {
     let encoded = SessionDescriptorTOML.encode(Self.referenceSession())

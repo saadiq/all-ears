@@ -21,6 +21,11 @@ public enum SessionShowRendering {
       lines.append("  \(name)  \(glyph(stage.state)) \(stage.detail)")
     }
 
+    // Stage failures already show in their rows; stage warnings are few and
+    // print in full.
+    for issue in session.pipelineIssues where issue.kind == .warning {
+      lines.append("  ⚠ \(issue.stage): \(issue.message)")
+    }
     if !session.warnings.isEmpty {
       if showWarnings {
         lines.append(contentsOf: session.warnings.map { "  ⚠ \($0)" })
@@ -53,6 +58,7 @@ public enum SessionShowRendering {
     case .done: "✓"
     case .running, .waiting: "·"
     case .missing, .skipped: "–"
+    case .failed: "✗"
     }
   }
 }

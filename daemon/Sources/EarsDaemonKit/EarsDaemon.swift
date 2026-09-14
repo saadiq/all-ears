@@ -452,7 +452,10 @@ public actor EarsDaemon {
         Task { [weak self] in
           let transcribed = await pipeline.runOnEndChain(
             sessionID: session.id, stages: stages, emptiness: emptiness,
-            context: "session-end")
+            context: "session-end",
+            recordIssues: { [weak self] issues in
+              await self?.recordSessionPipelineIssues(session.id, issues)
+            })
           if transcribed {
             await self?.markSessionTranscriptCompleted(session.id)
           }
@@ -1159,6 +1162,12 @@ public actor EarsDaemon {
   /// the retention sweeper can start that session's eviction clock.
   private func markSessionTranscriptCompleted(_ id: String) async {
     await sessionRegistry?.markTranscriptCompleted(id: id, at: clock.now())
+  }
+
+  /// Saves what the on-end chain's stages reported, so `ears sessions` and
+  /// `ears session show` can say which stage failed and why.
+  private func recordSessionPipelineIssues(_ id: String, _ issues: [PipelineIssue]) async {
+    await sessionRegistry?.recordPipelineIssues(id: id, issues: issues)
   }
 
   /// Every source's current status, keyed by id — a test-only seam so an

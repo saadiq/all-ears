@@ -43,6 +43,15 @@ public enum SessionDescriptorTOML {
           ])
         }),
       "warnings": .array(session.warnings.map { .string($0) }),
+      "pipeline_issue": .array(
+        session.pipelineIssues.map { issue in
+          .table([
+            "stage": .string(issue.stage),
+            "kind": .string(issue.kind.rawValue),
+            "message": .string(issue.message),
+            "exit_class": .string(issue.exitClass ?? ""),
+          ])
+        }),
       "attendee": .array(
         session.attendees.map { attendee in
           .table([
@@ -206,6 +215,22 @@ public enum SessionDescriptorTOML {
       warnings.append(warning)
     }
 
+    // Post-dates schema 3's first files too: absent reads as no issues.
+    var pipelineIssues: [PipelineIssue] = []
+    for element in fields.optionalArray("pipeline_issue") {
+      guard case .table(let issueTable) = element else { throw .invalidField("pipeline_issue") }
+      let issueFields = TOMLFieldReader(table: issueTable)
+      guard let kind = PipelineIssue.Kind(rawValue: try issueFields.string("kind")) else {
+        throw .invalidField("pipeline_issue.kind")
+      }
+      pipelineIssues.append(
+        PipelineIssue(
+          stage: try issueFields.string("stage"),
+          kind: kind,
+          message: try issueFields.string("message"),
+          exitClass: issueFields.optionalString("exit_class")))
+    }
+
     return Session(
       id: try fields.string("id"),
       identity: identity,
@@ -220,6 +245,7 @@ public enum SessionDescriptorTOML {
       sources: sources,
       trigger: trigger,
       transcriptCompleted: transcriptCompleted,
+      pipelineIssues: pipelineIssues,
       // Absent = 0: a file from before reconciliation was versioned, which
       // every consumer treats as "older than any current reconciler".
       reconcilerVersion: fields.optionalInt("reconciler_version"))

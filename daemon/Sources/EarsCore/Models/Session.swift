@@ -61,6 +61,10 @@ public struct Session: Sendable, Hashable {
   /// session whose transcript never succeeds keeps this `nil` and its audio is
   /// instead retained until `max_audio_age_seconds` after it ended.
   public var transcriptCompleted: Instant?
+  /// What the last on-end stage chain reported: a stage that failed, or one
+  /// that succeeded with a `warning:`. Replaced wholesale by each chain run.
+  /// Kept apart from ``warnings``, which feed the transcript's frontmatter.
+  public var pipelineIssues: [PipelineIssue]
   /// The last state revision that touched this session. Boot-scoped (see
   /// `hello`'s `boot_id`), so never persisted to `session.toml`.
   public var rev: Int
@@ -79,6 +83,7 @@ public struct Session: Sendable, Hashable {
     sources: [SourceID] = [],
     trigger: TriggerKind = .manual,
     transcriptCompleted: Instant? = nil,
+    pipelineIssues: [PipelineIssue] = [],
     reconcilerVersion: Int = 0,
     rev: Int = 0
   ) {
@@ -95,6 +100,7 @@ public struct Session: Sendable, Hashable {
     self.sources = sources
     self.trigger = trigger
     self.transcriptCompleted = transcriptCompleted
+    self.pipelineIssues = pipelineIssues
     self.reconcilerVersion = reconcilerVersion
     self.rev = rev
   }
@@ -162,6 +168,38 @@ public struct SessionIdentity: Sendable, Hashable, Codable {
   private enum CodingKeys: String, CodingKey {
     case platform
     case externalID = "external_id"
+  }
+}
+
+/// One thing an on-end pipeline stage reported about its run.
+public struct PipelineIssue: Sendable, Hashable, Codable {
+  public enum Kind: String, Sendable, Hashable, Codable {
+    /// The stage exited non-zero or broke its result contract.
+    case failed
+    /// The stage succeeded but wrote a `warning:` line.
+    case warning
+  }
+
+  /// `transcribe`, `cleanup` or `summarize`.
+  public var stage: String
+  public var kind: Kind
+  /// The stage's own error or warning text, without its `error:`/`warning:`
+  /// prefix.
+  public var message: String
+  /// The exit-code class label (`retryable-upstream`) of a failure; `nil` for
+  /// a warning.
+  public var exitClass: String?
+
+  public init(stage: String, kind: Kind, message: String, exitClass: String? = nil) {
+    self.stage = stage
+    self.kind = kind
+    self.message = message
+    self.exitClass = exitClass
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case stage, kind, message
+    case exitClass = "exit_class"
   }
 }
 
@@ -252,6 +290,7 @@ extension Session: Codable {
     case id, identity, title, state, started, ended, intervals, attendees, speakers, warnings
     case sources, trigger, rev
     case transcriptCompleted = "transcript_completed"
+    case pipelineIssues = "pipeline_issues"
   }
 
   public init(from decoder: any Decoder) throws {
@@ -269,6 +308,8 @@ extension Session: Codable {
     sources = try container.decodeIfPresent([SourceID].self, forKey: .sources) ?? []
     trigger = try container.decode(TriggerKind.self, forKey: .trigger)
     transcriptCompleted = try container.decodeISO8601InstantIfPresent(forKey: .transcriptCompleted)
+    pipelineIssues =
+      try container.decodeIfPresent([PipelineIssue].self, forKey: .pipelineIssues) ?? []
     // TOML-only (see the property's doc comment): the wire shape neither
     // carries nor needs it, so decoding always starts it at 0.
     reconcilerVersion = 0
@@ -290,6 +331,11 @@ extension Session: Codable {
     try container.encode(sources, forKey: .sources)
     try container.encode(trigger, forKey: .trigger)
     try container.encodeISO8601InstantIfPresent(transcriptCompleted, forKey: .transcriptCompleted)
+    // Omitted when empty, so every frame without issues stays byte-identical
+    // to the shared golden fixtures.
+    if !pipelineIssues.isEmpty {
+      try container.encode(pipelineIssues, forKey: .pipelineIssues)
+    }
     try container.encode(rev, forKey: .rev)
   }
 }

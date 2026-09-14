@@ -123,6 +123,10 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
   "sources": ["mic", "browser:meet:jane-a1b2"],
   "trigger": "browser-extension",         // manual | browser-extension
   "transcript_completed": null,           // set when the auto-transcribe exits 0
+  "pipeline_issues": [                    // omitted when empty; see capture-daemon.md
+    {"stage": "summarize", "kind": "failed", "exit_class": "retryable-upstream",
+     "message": "LLM backend call timed out"}
+  ],
   "rev": 43                               // last revision that touched this session
 }
 ```

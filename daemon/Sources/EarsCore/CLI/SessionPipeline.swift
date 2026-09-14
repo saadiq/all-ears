@@ -39,6 +39,9 @@ public enum SessionPipeline {
     if transcribeDone {
       stages.append(
         PipelineStage(name: "transcribe", state: .done, detail: transcribeDetail(artifacts)))
+    } else if let failure = failure(of: "transcribe", in: session) {
+      stages.append(
+        PipelineStage(name: "transcribe", state: .failed, detail: failedDetail(failure)))
     } else {
       stages.append(
         recent
@@ -54,6 +57,7 @@ public enum SessionPipeline {
           ?? "published",
         previousDone: transcribeDone,
         missingDetail: "not published",
+        failure: failure(of: "cleanup", in: session),
         recent: recent,
         skipReason: skipReason))
 
@@ -67,6 +71,7 @@ public enum SessionPipeline {
           : "note published",
         previousDone: artifacts.cleanupExists,
         missingDetail: "no summaries",
+        failure: failure(of: "summarize", in: session),
         recent: recent,
         skipReason: skipReason))
 
@@ -100,9 +105,10 @@ public enum SessionPipeline {
       break
     }
 
-    let warningsSuffix = warningsSuffix(session)
+    let warningCount = warningCount(session)
+    let warningsSuffix = ", \(warningCount) warning\(warningCount == 1 ? "" : "s")"
     if artifacts.noteLink != nil {
-      guard session.warnings.isEmpty else {
+      guard warningCount == 0 else {
         return PipelineOutcome(glyph: "⚠", text: "published\(warningsSuffix)")
       }
       return PipelineOutcome(glyph: "✓", text: "published")
@@ -110,7 +116,15 @@ public enum SessionPipeline {
 
     let recent = isRecent(session: session, now: now)
     let base: PipelineOutcome
-    if transcribeDone(session: session, artifacts: artifacts) {
+    if let failure = session.pipelineIssues.first(where: { $0.kind == .failed }) {
+      // A recorded failure is a fact, not a stage still in flight: name the
+      // stage and its exit class, and leave the message to `ears session show`.
+      let failed = "\(failure.stage) failed" + (failure.exitClass.map { " (\($0))" } ?? "")
+      base = PipelineOutcome(
+        glyph: "✗",
+        text: transcribeDone(session: session, artifacts: artifacts)
+          ? "transcribed, \(failed)" : failed)
+    } else if transcribeDone(session: session, artifacts: artifacts) {
       // A gated session has a transcript and will never have a note; saying
       // "summarizing" of it would be a wait that never ends.
       if skipReason(artifacts: artifacts, emptiness: emptiness) != nil {
@@ -127,8 +141,9 @@ public enum SessionPipeline {
         ? PipelineOutcome(glyph: "·", text: "transcribing")
         : PipelineOutcome(glyph: "–", text: "no transcript")
     }
-    guard session.warnings.isEmpty else {
-      return PipelineOutcome(glyph: "⚠", text: base.text + warningsSuffix)
+    guard warningCount == 0 else {
+      return PipelineOutcome(
+        glyph: base.glyph == "✗" ? "✗" : "⚠", text: base.text + warningsSuffix)
     }
     return base
   }
@@ -144,9 +159,18 @@ public enum SessionPipeline {
     session.transcriptCompleted != nil || artifacts.transcriptExists
   }
 
-  private static func warningsSuffix(_ session: Session) -> String {
-    let count = session.warnings.count
-    return ", \(count) warning\(count == 1 ? "" : "s")"
+  /// Attribution warnings plus the `warning:` lines the on-end stages wrote.
+  private static func warningCount(_ session: Session) -> Int {
+    session.warnings.count + session.pipelineIssues.filter { $0.kind == .warning }.count
+  }
+
+  private static func failure(of stage: String, in session: Session) -> PipelineIssue? {
+    session.pipelineIssues.first { $0.stage == stage && $0.kind == .failed }
+  }
+
+  /// `failed (retryable-upstream): LLM backend call timed out`.
+  private static func failedDetail(_ failure: PipelineIssue) -> String {
+    "failed" + (failure.exitClass.map { " (\($0))" } ?? "") + ": \(failure.message)"
   }
 
   private static func captureStage(
@@ -222,10 +246,14 @@ public enum SessionPipeline {
     doneDetail: String,
     previousDone: Bool,
     missingDetail: String,
+    failure: PipelineIssue? = nil,
     recent: Bool,
     skipReason: String?
   ) -> PipelineStage {
     if done { return PipelineStage(name: name, state: .done, detail: doneDetail) }
+    if let failure {
+      return PipelineStage(name: name, state: .failed, detail: failedDetail(failure))
+    }
     // A stage the daemon's emptiness gate stopped is never coming — not
     // running, not queued, not a fault. The reason outranks the grace window
     // for exactly that reason.
@@ -341,6 +369,9 @@ public enum PipelineStageState: String, Sendable, Equatable, Codable {
   case waiting
   case missing
   case skipped
+  /// The daemon's last on-end chain recorded this stage as failed
+  /// (``Session/pipelineIssues``).
+  case failed
 }
 
 /// A one-line pipeline outcome: a status glyph and its text.
