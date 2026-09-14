@@ -161,6 +161,8 @@ label = "Zoom"
 backend = "llm-cli"           # llm-cli | command — both run a subprocess:
 model   = "claude-sonnet-5"   #   llm-cli runs `llm -m <model>`; command runs the line below
 # command = "my-llm-wrapper --fast"   # prompt on stdin, completion on stdout
+timeout_seconds = 120         # per LLM call, cleanup and summarize; on expiry the
+                              #   stage exits 5 (retryable). <= 0 uses 120
 
 [cleanup]
 prompt_file = ""              # empty => built-in cleanup prompt

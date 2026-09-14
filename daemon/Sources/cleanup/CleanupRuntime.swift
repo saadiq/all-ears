@@ -117,8 +117,12 @@ enum CleanupRuntime {
       diagnostics.recordError(message)
       return RunOutcome(class: .stageFailed, error: message)
     }
+    let timeoutSeconds = intValue(
+      root, ["llm", "timeout_seconds"], default: LLMStagesConfigSchema.defaultLLMTimeoutSeconds)
     let llmBackend = CommandLLMBackend(
-      info: LLMBackendInfo(name: backend, model: model.isEmpty ? nil : model), command: command)
+      info: LLMBackendInfo(name: backend, model: model.isEmpty ? nil : model), command: command,
+      timeout: .seconds(
+        timeoutSeconds > 0 ? timeoutSeconds : LLMStagesConfigSchema.defaultLLMTimeoutSeconds))
 
     let systemPrompt = resolvePromptFile(
       explicit: inputs.promptFile,

@@ -22,6 +22,7 @@ struct LLMStagesConfigSchemaTests {
         "backend": .string("llm-cli"),
         "model": .string(""),
         "command": .string(""),
+        "timeout_seconds": .int(120),
       ]),
       "cleanup": .table([
         "prompt_file": .string(""),
