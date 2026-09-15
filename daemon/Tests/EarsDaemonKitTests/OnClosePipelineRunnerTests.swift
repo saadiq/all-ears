@@ -58,6 +58,15 @@ struct OnClosePipelineRunnerTests {
     var snapshot: [JobPublishParams] { entries.withLock { $0 } }
   }
 
+  /// Collects each list the runner hands `recordIssues`, one entry per chain run.
+  private final class IssueCollector: Sendable {
+    private let recorded = Mutex<[[PipelineIssue]]>([])
+
+    func record(_ issues: [PipelineIssue]) { recorded.withLock { $0.append(issues) } }
+
+    var calls: [[PipelineIssue]] { recorded.withLock { $0 } }
+  }
+
   /// A `transcribe --json` success whose stdout is the recorded v1 envelope
   /// naming `path` — the result contract as the real stage emits it.
   private static func transcribeOutcome(_ path: String) -> SpawnOutcome {
@@ -479,6 +488,99 @@ struct OnClosePipelineRunnerTests {
       logs.snapshot().contains {
         $0.contains("summarize failed (exit 2, unclassified)") && $0.contains("no stderr captured")
       })
+  }
+
+  @Test("a failed summarize records its envelope message and exit class as a pipeline issue")
+  func summarizeFailureRecordsIssue() async throws {
+    let directory = try Self.makeTempDirectory("summarize-issue")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let clean = try Self.makeFile("t.clean.md", in: directory)
+    let collector = IssueCollector()
+    let jobs = JobCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
+      SpawnOutcome(
+        exitCode: 5,
+        stderr: "error: LLM call failed for preset 'meeting': LLM backend call timed out\n"
+          + #"{"exit_class":"retryable-upstream","#
+          + #""message":"error: LLM call failed for preset 'meeting': LLM backend call timed out","#
+          + #""ok":false,"outputs":[{"ok":false,"preset":"meeting"}],"#
+          + #""schema":"allears.summarize/v1"}"#),
+    ])
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, publishJob: { jobs.append($0) })
+
+    let transcribed = await pipeline.runOnEndChain(
+      sessionID: "90bc7ed7", stages: OnEndStage.allCases, context: "session-end",
+      recordIssues: { collector.record($0) })
+
+    #expect(transcribed)
+    #expect(jobs.snapshot.map(\.state) == [.started, .done, .started, .failed])
+    #expect(jobs.snapshot.last?.kind == "summarize")
+    #expect(jobs.snapshot.last?.detail == "exit 5")
+    #expect(
+      collector.calls == [
+        [
+          PipelineIssue(
+            stage: "summarize", kind: .failed,
+            message: "LLM call failed for preset 'meeting': LLM backend call timed out",
+            exitClass: "retryable-upstream")
+        ]
+      ])
+  }
+
+  @Test("a successful stage's warning is recorded, and a clean rerun records an empty list")
+  func warningsRecordedAndCleared() async throws {
+    let directory = try Self.makeTempDirectory("warning-issue")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transcript = try Self.makeFile("t.transcript.md", in: directory)
+    let note = try Self.makeFile("t.meeting.summary.md", in: directory)
+    let summarized = StageEnvelopeFixtures.summarizeSelectedPresetSuccess(
+      preset: "meeting", path: note)
+    let collector = IssueCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      SpawnOutcome(
+        exitCode: 0,
+        stderr: "{\"event\":\"run.start\"}\n"
+          + "summarize: selected preset 'meeting': a user interview\n"
+          + "warning: preset 'meeting': no notes file at /vault/jotted.md; "
+          + "summarizing from the transcript alone\n",
+        stdout: summarized),
+      Self.transcribeOutcome(transcript),
+      SpawnOutcome(exitCode: 0, stdout: summarized),
+    ])
+    let pipeline = OnClosePipelineRunner(runProcess: runner.runner)
+
+    for _ in 0..<2 {
+      _ = await pipeline.runOnEndChain(
+        sessionID: "b7acc61f", stages: [.transcribe, .summarize], context: "session-end",
+        recordIssues: { collector.record($0) })
+    }
+
+    #expect(
+      collector.calls == [
+        [
+          PipelineIssue(
+            stage: "summarize", kind: .warning,
+            message: "preset 'meeting': no notes file at /vault/jotted.md; "
+              + "summarizing from the transcript alone")
+        ],
+        [],
+      ])
+  }
+
+  @Test("a failure without an envelope takes its last plain stderr line, or says there was none")
+  func failureMessageFallbacks() {
+    #expect(
+      OnClosePipelineRunner.failureMessage(
+        envelope: nil, stderr: "{\"event\":\"run.start\"}\nerror: kaboom\n", exitCode: 1)
+        == "kaboom")
+    #expect(
+      OnClosePipelineRunner.failureMessage(envelope: nil, stderr: "  \n", exitCode: 2)
+        == "exited 2 with no error message")
   }
 
   @Test("a stage list without transcribe spawns nothing and returns false")

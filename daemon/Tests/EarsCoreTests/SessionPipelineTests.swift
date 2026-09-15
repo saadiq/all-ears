@@ -20,7 +20,8 @@ struct SessionPipelineTests {
     sources: [String] = ["mic", "browser:meet:t1", "browser:meet:t2", "browser:meet:t3"],
     warnings: [String] = [],
     trigger: TriggerKind = .browserExtension,
-    onEndStages: [String]? = nil
+    onEndStages: [String]? = nil,
+    pipelineIssues: [PipelineIssue] = []
   ) -> Session {
     Session(
       id: "3db61b03-aaaa-bbbb-cccc-ddddeeeeffff",
@@ -31,7 +32,8 @@ struct SessionPipelineTests {
       warnings: warnings,
       sources: sources.map { SourceID($0) },
       trigger: trigger,
-      onEndStages: onEndStages)
+      onEndStages: onEndStages,
+      pipelineIssues: pipelineIssues)
   }
 
   private func fullArtifacts() -> SessionArtifacts {
@@ -189,6 +191,48 @@ struct SessionPipelineTests {
         session: session(state: .paused), artifacts: SessionArtifacts(),
         now: started.advanced(by: 600), configuredChain: fullChain)
         == PipelineOutcome(glyph: "◐", text: "paused (10m)"))
+  }
+
+  // MARK: - recorded pipeline issues
+
+  @Test("a recorded failure names the stage and class in the outcome, and the reason in its row")
+  func recordedFailure() {
+    var artifacts = fullArtifacts()
+    artifacts.noteLink = nil
+    artifacts.summaryCount = 0
+    let failed = session(
+      warnings: ["w1"],
+      pipelineIssues: [
+        PipelineIssue(
+          stage: "summarize", kind: .failed, message: "LLM backend call timed out",
+          exitClass: "retryable-upstream")
+      ])
+
+    // A recorded failure is not in flight, so the grace window doesn't apply.
+    #expect(
+      SessionPipeline.outcome(
+        session: failed, artifacts: artifacts, now: justAfter, configuredChain: fullChain)
+        == PipelineOutcome(
+          glyph: "✗", text: "transcribed, summarize failed (retryable-upstream), 1 warning"))
+    let stages = SessionPipeline.stages(
+      session: failed, artifacts: artifacts, now: muchLater, configuredChain: fullChain)
+    #expect(
+      stages[3]
+        == PipelineStage(
+          name: "summarize", state: .failed,
+          detail: "failed (retryable-upstream): LLM backend call timed out"))
+    #expect(stages[4] == PipelineStage(name: "note", state: .missing, detail: "not run"))
+  }
+
+  @Test("stage warnings count toward the outcome's warnings")
+  func stageWarningsCount() {
+    let warned = session(pipelineIssues: [
+      PipelineIssue(stage: "summarize", kind: .warning, message: "no notes file")
+    ])
+    #expect(
+      SessionPipeline.outcome(
+        session: warned, artifacts: fullArtifacts(), now: muchLater, configuredChain: fullChain)
+        == PipelineOutcome(glyph: "⚠", text: "published, 1 warning"))
   }
 
   // MARK: - the empty-transcript gate

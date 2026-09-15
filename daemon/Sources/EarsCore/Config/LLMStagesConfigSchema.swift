@@ -31,6 +31,10 @@ public enum LLMStagesConfigSchema {
   /// ``CleanupChunker`` for why the unit is talking time.
   public static let defaultCleanupChunkSeconds = 300
 
+  /// Seconds one LLM call may run before `cleanup` or `summarize` stops it
+  /// and fails as retryable. A zero or negative value falls back to this.
+  public static let defaultLLMTimeoutSeconds = 120
+
   public static let defaults: ConfigValue = .table([
     "llm": .table([
       // "llm-cli" | "command"; see docs/configuration.md's [llm] table.
@@ -39,6 +43,7 @@ public enum LLMStagesConfigSchema {
       // Only consulted when backend == "command": a full shell command
       // template taking the prompt on stdin, completion on stdout.
       "command": .string(""),
+      "timeout_seconds": .int(defaultLLMTimeoutSeconds),
     ]),
     "cleanup": .table([
       // Empty => the built-in cleanup prompt (CleanupPromptBuilder's default).
@@ -103,6 +108,10 @@ public enum LLMStagesConfigSchema {
               description:
                 "Shell command template (backend=\"command\" only): prompt on stdin, completion on stdout."
             ),
+            "timeout_seconds": ConfigSchema.Field(
+              type: .int,
+              description:
+                "Seconds one LLM call may run before cleanup or summarize fails it as retryable."),
           ]
         ),
         description: "Shared LLM backend used by cleanup and summarize."),

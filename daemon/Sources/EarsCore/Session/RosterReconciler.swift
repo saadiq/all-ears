@@ -401,6 +401,26 @@ public enum RosterReconciler {
     return names
   }
 
+  /// The note's `attendees:` list: every named roster row, one entry per
+  /// distinct display name in roster order, the local participant marked
+  /// `(me)`.
+  ///
+  /// Distinct by name for the same reason as ``namedRemoteAttendees(_:localID:)``:
+  /// one human seen on several tracks or device ids is several rows but one
+  /// attendee. A name is marked `(me)` when any of its rows is local.
+  public static func attendeeNames(
+    _ attendees: [SessionAttendee], localID: String?
+  ) -> [String] {
+    var names: [String] = []
+    var local: Set<String> = []
+    for attendee in attendees {
+      guard let name = attendee.displayName, !name.isEmpty else { continue }
+      if !names.contains(name) { names.append(name) }
+      if attendee.isLocal || attendee.id == localID { local.insert(name) }
+    }
+    return names.map { local.contains($0) ? "\($0) (me)" : $0 }
+  }
+
   /// A session title built from who was on the call, for a session nobody
   /// ever named.
   ///

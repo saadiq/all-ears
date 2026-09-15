@@ -532,12 +532,8 @@ enum TranscribePipeline {
         "session \(sessionRecord.id): titling this transcript \"\(derived)\" from the roster; "
           + "the session itself is still named \"\(sessionRecord.title)\"")
     }
-    let localAttendeeID = reconciled?.localAttendeeID
-    let attendees: [String] = (sessionRecord?.attendees ?? []).compactMap { attendee in
-      guard let name = attendee.displayName, !name.isEmpty else { return nil }
-      let isLocal = attendee.isLocal || attendee.id == localAttendeeID
-      return isLocal ? "\(name) (me)" : name
-    }
+    let attendees = RosterReconciler.attendeeNames(
+      sessionRecord?.attendees ?? [], localID: reconciled?.localAttendeeID)
 
     // The chosen lookup order, recorded in frontmatter so a wrong-store read is
     // visible after the fact (issue #20). Only a `--session` run resolves a
@@ -813,15 +809,28 @@ enum TranscribePipeline {
     return result
   }
 
+  /// Browser platforms whose capture is one *mixed* far-end stream rather than
+  /// a stream per participant. Teams hands the extension a single receiver
+  /// track carrying everyone (`docs/specs/browser/extension.md` §Teams), so it
+  /// is the one `browser:*` source a diarizer has anything to split. Meet and
+  /// Zoom arrive already separated and must stay out: splitting one named
+  /// participant into `Speaker 1`/`Speaker 2` would destroy a real identity to
+  /// invent two fake ones.
+  static let mixedBrowserPlatforms: Set<String> = ["teams"]
+
   /// Which sources the diarizer refines into `Speaker N`. Source-of-origin is
   /// the primary label, so single-speaker sources are left alone: the `mic`
   /// (you) and each per-participant `browser:*` stream (one named speaker each)
-  /// are never diarized. Everything else — `system`, `app:*`, `device:*` — is a
-  /// potentially multi-speaker far end worth splitting. (This coarse rule is a
-  /// documented first cut; see `docs/plans/diarization-sortformer.md`.)
+  /// are never diarized. Everything else — `system`, `app:*`, `device:*`, and
+  /// the mixed browser platforms above — is a potentially multi-speaker far end
+  /// worth splitting. (See `docs/plans/diarization-sortformer.md`.)
   static func shouldDiarize(_ sourceID: SourceID) -> Bool {
     let raw = sourceID.rawValue
-    return raw != "mic" && !raw.hasPrefix("browser:")
+    if raw == "mic" { return false }
+    guard raw.hasPrefix("browser:") else { return true }
+    // `browser:<platform>:<track>` — the platform is the middle segment.
+    let platform = raw.dropFirst("browser:".count).prefix { $0 != ":" }
+    return mixedBrowserPlatforms.contains(String(platform))
   }
 
   /// Runs the offline diarization pass over one source and returns its speaker

@@ -280,3 +280,6 @@ label, so finer diarized labels flow through it for free.
    offset map) — affects cross-pause speaker stability.
 4. Which sources count as "multi-speaker" — start with the simple rule (`system`/`app`
    yes, `mic`/`browser:*` no); revisit if a per-participant source ever blends people.
+   **Revisited 2026-09-08:** `browser:teams:*` always blended people — Teams delivers
+   one mixed far-end track — so the rule now admits it by platform
+   (`TranscribePipeline.mixedBrowserPlatforms`). Meet and Zoom stay excluded.

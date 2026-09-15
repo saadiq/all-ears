@@ -156,6 +156,12 @@ end = "2026-07-19T10:12:30Z"
 start = "2026-07-19T10:20:05Z"
 end = ""                                # "" = currently marked
 
+[[pipeline_issue]]                      # what the last on-end chain reported; replaced
+stage = "summarize"                     #   by each run, absent = none
+kind = "failed"                         # failed | warning
+message = "LLM call failed for preset 'meeting': LLM backend call timed out"
+exit_class = "retryable-upstream"       # "" for a warning
+
 [[attendee]]                            # roster, upserted by whoever knows it
 id = "spaces/x/devices/y"               #   (the extension's DOM layer today)
 display_name = "Jane Doe"

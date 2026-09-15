@@ -162,7 +162,8 @@ enum TranscribeFilePipeline {
     }
 
     // A standalone file is one whole recording, so — unlike the captured path,
-    // which skips the single-speaker `mic`/`browser:*` sources — diarization
+    // which skips the single-speaker `mic` and per-participant `browser:*`
+    // sources (`TranscribePipeline.shouldDiarize`) — diarization
     // always applies here when a diarizer is configured: treat the file as one
     // multi-speaker source and split its turns into `Speaker N`. Best-effort:
     // a diarization failure logs and falls back to the file's source label.

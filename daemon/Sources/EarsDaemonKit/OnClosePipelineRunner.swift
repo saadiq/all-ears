@@ -106,6 +106,10 @@ public struct OnClosePipelineRunner: Sendable {
   /// frontmatter says there was nothing said; a skipped chain returns `true`
   /// exactly like a completed one.
   ///
+  /// `recordIssues` receives every failure and `warning:` the stages
+  /// reported, once, after the chain stops. A clean run hands it an empty
+  /// list, so a rerun clears what an earlier run recorded.
+  ///
   /// - Returns: `true` iff `transcribe --session` exited 0 — the signal the
   ///   caller uses to stamp the session's transcript-completion marker (which
   ///   in turn starts the retention clock). LLM-stage failures are logged but
@@ -115,13 +119,26 @@ public struct OnClosePipelineRunner: Sendable {
   public func runOnEndChain(
     sessionID: String, stages: [OnEndStage],
     emptiness: TranscriptEmptinessPolicy = .defaults,
-    context: String
+    context: String,
+    recordIssues: @Sendable ([PipelineIssue]) async -> Void = { _ in }
   ) async -> Bool {
     // Config validation (`EarsdConfigSchema`) rejects LLM stages without
     // transcribe; an empty list means the whole chain is off. Defensive here
     // so a mis-wired caller degrades to a no-op, not a cleanup of nothing.
     guard stages.contains(.transcribe) else { return false }
 
+    var issues: [PipelineIssue] = []
+    let transcribed = await runChain(
+      sessionID: sessionID, stages: stages, emptiness: emptiness, context: context,
+      issues: &issues)
+    await recordIssues(issues)
+    return transcribed
+  }
+
+  private func runChain(
+    sessionID: String, stages: [OnEndStage], emptiness: TranscriptEmptinessPolicy,
+    context: String, issues: inout [PipelineIssue]
+  ) async -> Bool {
     // The spawner owns the transcribe job's identity and hands it to the
     // child (`--job-id`), so the child's own events and the daemon's are one
     // row rather than two: `upsertJob` keys on this id. That is what lets the
@@ -133,7 +150,7 @@ public struct OnClosePipelineRunner: Sendable {
     let transcriptPath: String
     switch await runPathStage(
       .transcribe, arguments: ["--session", sessionID, "--job-id", transcribeJobID, "--json"],
-      sessionID: sessionID, context: context)
+      sessionID: sessionID, context: context, issues: &issues)
     {
     case .success(let path):
       transcriptPath = path
@@ -181,7 +198,8 @@ public struct OnClosePipelineRunner: Sendable {
         JobPublishParams(
           job: jobID, kind: OnEndStage.cleanup.rawValue, session: sessionID, state: .started))
       let cleanPath = await runPathStage(
-        .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context
+        .cleanup, arguments: [transcriptPath, "--json"], sessionID: sessionID, context: context,
+        issues: &issues
       ).path
       await publishJob(
         JobPublishParams(
@@ -211,12 +229,15 @@ public struct OnClosePipelineRunner: Sendable {
       // 2/3 presets") on failure.
       let outcome = await spawn(
         .summarize, arguments: [nextInput, "--select-preset", "--json"], sessionID: sessionID,
-        context: context)
+        context: context, issues: &issues)
       if outcome.exitCode == 0 {
-        logSummarizeResults(stdout: outcome.stdout, sessionID: sessionID, context: context)
+        let valid = logSummarizeResults(
+          stdout: outcome.stdout, sessionID: sessionID, context: context, issues: &issues)
         await publishJob(
           JobPublishParams(
-            job: jobID, kind: OnEndStage.summarize.rawValue, session: sessionID, state: .done))
+            job: jobID, kind: OnEndStage.summarize.rawValue, session: sessionID,
+            state: valid ? .done : .failed,
+            detail: valid ? nil : "invalid result envelope"))
       } else {
         await publishJob(
           JobPublishParams(
@@ -275,9 +296,11 @@ public struct OnClosePipelineRunner: Sendable {
   /// check kills a lie or stale path at this seam instead of letting it
   /// corrupt a later stage.
   private func runPathStage(
-    _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
+    _ stage: OnEndStage, arguments: [String], sessionID: String, context: String,
+    issues: inout [PipelineIssue]
   ) async -> PathStageOutcome {
-    let outcome = await spawn(stage, arguments: arguments, sessionID: sessionID, context: context)
+    let outcome = await spawn(
+      stage, arguments: arguments, sessionID: sessionID, context: context, issues: &issues)
     guard outcome.exitCode == 0 else { return .exitFailure(outcome.exitCode) }
     let envelope: StageResultEnvelope
     switch StageResultEnvelope.decodeSuccessDocument(stdout: outcome.stdout, tool: stage.rawValue)
@@ -288,6 +311,7 @@ public struct OnClosePipelineRunner: Sendable {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': \(violation.message)")
+      issues.append(PipelineIssue(stage: stage.rawValue, kind: .failed, message: violation.message))
       return .contractViolation
     }
     guard let path = envelope.output else {
@@ -295,33 +319,48 @@ public struct OnClosePipelineRunner: Sendable {
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': result envelope carries no output path; "
           + Self.stdoutNote(outcome.stdout))
+      issues.append(
+        PipelineIssue(
+          stage: stage.rawValue, kind: .failed,
+          message: "result envelope carries no output path"))
       return .contractViolation
     }
     guard FileManager.default.fileExists(atPath: path) else {
       log(
         "\(context) on_end: \(stage.rawValue) exited 0 but failed for "
           + "session '\(sessionID)': envelope output path '\(path)' does not exist")
+      issues.append(
+        PipelineIssue(
+          stage: stage.rawValue, kind: .failed,
+          message: "envelope output path '\(path)' does not exist"))
       return .contractViolation
     }
     return .success(path)
   }
 
   /// Logs summarize's per-preset results from its success envelope's
-  /// `outputs` — e.g. `summarize wrote 3/3 presets`. Exit 0 already carried
-  /// the success signal, so an undecodable envelope here is logged loudly as
-  /// a contract violation but changes nothing else.
-  private func logSummarizeResults(stdout: String, sessionID: String, context: String) {
+  /// `outputs` — e.g. `summarize wrote 3/3 presets`. An undecodable envelope
+  /// records a failure and returns false so live job events agree with the
+  /// persisted issue. Transcription success still governs retention.
+  private func logSummarizeResults(
+    stdout: String, sessionID: String, context: String, issues: inout [PipelineIssue]
+  ) -> Bool {
     switch StageResultEnvelope.decodeSuccessDocument(
       stdout: stdout, tool: OnEndStage.summarize.rawValue)
     {
     case .success(let envelope):
-      guard let presets = envelope.presetOutputs, !presets.isEmpty else { return }
+      guard let presets = envelope.presetOutputs, !presets.isEmpty else { return true }
       log(
         "\(context) on_end: \(Self.presetSummary(presets)) for session '\(sessionID)'")
+      return true
     case .failure(let violation):
       log(
         "\(context) on_end: summarize exited 0 but its result envelope is unusable for "
           + "session '\(sessionID)': \(violation.message)")
+      issues.append(
+        PipelineIssue(
+          stage: OnEndStage.summarize.rawValue, kind: .failed, message: violation.message))
+      return false
     }
   }
 
@@ -342,7 +381,8 @@ public struct OnClosePipelineRunner: Sendable {
   /// `detail`) doesn't have to re-run anything; callers that only care about
   /// success check `exitCode == 0`.
   private func spawn(
-    _ stage: OnEndStage, arguments: [String], sessionID: String, context: String
+    _ stage: OnEndStage, arguments: [String], sessionID: String, context: String,
+    issues: inout [PipelineIssue]
   ) async -> SpawnOutcome {
     log(
       "\(context) on_end: spawning \(stage.rawValue) \(arguments.joined(separator: " ")) "
@@ -369,6 +409,12 @@ public struct OnClosePipelineRunner: Sendable {
       }
       line += "; \(Self.stderrNote(outcome.stderr))"
       log(line)
+      issues.append(
+        PipelineIssue(
+          stage: stage.rawValue, kind: .failed,
+          message: Self.failureMessage(
+            envelope: envelope, stderr: outcome.stderr, exitCode: outcome.exitCode),
+          exitClass: envelope?.exitClass ?? ExitClass.label(forCode: outcome.exitCode)))
       // A failed summarize's error envelope still carries per-preset results,
       // so partial success ("wrote 2/3 presets") is visible in the daemon log
       // instead of vanishing into a bare exit code.
@@ -388,7 +434,31 @@ public struct OnClosePipelineRunner: Sendable {
         "\(context) on_end: \(stage.rawValue) reported for session '\(sessionID)': "
           + diagnostics)
     }
+    issues.append(
+      contentsOf: Self.warnings(outcome.stderr).map {
+        PipelineIssue(stage: stage.rawValue, kind: .warning, message: $0)
+      })
     return outcome
+  }
+
+  /// The one-line reason a failed stage gives: its error envelope's message,
+  /// else its last plain stderr line, each without the `error: ` prefix.
+  static func failureMessage(
+    envelope: StageResultEnvelope?, stderr: String, exitCode: Int32
+  ) -> String {
+    let message =
+      envelope?.message
+      ?? plainDiagnostics(stderr).split(separator: "\n").last.map(String.init)
+    guard let message, !message.isEmpty else { return "exited \(exitCode) with no error message" }
+    return message.hasPrefix("error: ") ? String(message.dropFirst("error: ".count)) : message
+  }
+
+  /// A successful stage's `warning:` lines, without the prefix.
+  static func warnings(_ stderr: String) -> [String] {
+    plainDiagnostics(stderr)
+      .split(separator: "\n")
+      .filter { $0.hasPrefix("warning: ") }
+      .map { String($0.dropFirst("warning: ".count)) }
   }
 
   /// The largest slice of a child's captured output (stderr or stdout) the

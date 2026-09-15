@@ -124,7 +124,8 @@ enum SummarizeRuntime {
       return RunOutcome(class: .stageFailed, error: message)
     }
     let llmBackend = CommandLLMBackend(
-      info: LLMBackendInfo(name: backend, model: model.isEmpty ? nil : model), command: command)
+      info: LLMBackendInfo(name: backend, model: model.isEmpty ? nil : model), command: command,
+      timeout: .seconds(llmTimeoutSeconds(root)))
 
     let configuredPresets = presetEntries(root)
     let selected: [ConfigPreset]
@@ -389,6 +390,14 @@ enum SummarizeRuntime {
     _ config: ConfigValue, _ path: [String], default defaultValue: String = ""
   ) -> String {
     guard case .string(let value) = walk(config, path) else { return defaultValue }
+    return value
+  }
+
+  /// `[llm] timeout_seconds`, or the default when unset or not positive.
+  private static func llmTimeoutSeconds(_ config: ConfigValue) -> Int {
+    guard case .int(let value) = walk(config, ["llm", "timeout_seconds"]), value > 0 else {
+      return LLMStagesConfigSchema.defaultLLMTimeoutSeconds
+    }
     return value
   }
 

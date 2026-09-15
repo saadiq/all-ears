@@ -80,6 +80,26 @@ struct SessionPipelineChainTests {
         == PipelineOutcome(glyph: "✓", text: "transcribed"))
   }
 
+  @Test("a declared manual chain keeps failures and warnings with the configured default off")
+  func declaredChainRetainsRecordedIssues() {
+    var record = session(trigger: .manual, onEndStages: ["transcribe", "cleanup"])
+    record.pipelineIssues = [
+      PipelineIssue(stage: "cleanup", kind: .failed, message: "backend unavailable"),
+      PipelineIssue(stage: "transcribe", kind: .warning, message: "partial audio"),
+    ]
+    var artifacts = capturedOnly()
+    artifacts.transcriptExists = true
+    let stages = SessionPipeline.stages(
+      session: record, artifacts: artifacts, now: justAfter, configuredChain: [])
+    #expect(stages[2].state == .failed)
+    #expect(stages[3].state == .notRequested)
+    #expect(stages[4].state == .notRequested)
+    #expect(
+      SessionPipeline.outcome(
+        session: record, artifacts: artifacts, now: justAfter, configuredChain: [])
+        == PipelineOutcome(glyph: "✗", text: "transcribed, cleanup failed, 1 warning"))
+  }
+
   @Test("a cleanup-terminated chain is done at the cleaned transcript")
   func cleanupTerminatedChain() {
     let record = session(trigger: .manual, onEndStages: ["transcribe", "cleanup"])

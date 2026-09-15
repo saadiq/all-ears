@@ -90,6 +90,33 @@ struct SessionShowRenderingTests {
     #expect(text.contains("  transcribe  · waits for session end"))
   }
 
+  @Test("a failed stage renders ✗ with its reason, and stage warnings print in full")
+  func pipelineIssuesRender() throws {
+    var failed = session()
+    failed.pipelineIssues = [
+      PipelineIssue(stage: "cleanup", kind: .warning, message: "chunk fell back"),
+      PipelineIssue(
+        stage: "summarize", kind: .failed, message: "LLM backend call timed out",
+        exitClass: "retryable-upstream"),
+    ]
+    var partial = artifacts()
+    partial.summaryCount = 0
+    partial.noteLink = nil
+
+    let text = SessionShowRendering.render(
+      session: failed, artifacts: partial, now: now, timeZone: utc, showWarnings: false,
+      configuredChain: OnEndStage.allCases)
+    #expect(
+      text.contains("  summarize   ✗ failed (retryable-upstream): LLM backend call timed out"))
+    #expect(text.hasSuffix("  ⚠ cleanup: chunk fell back"))
+
+    // On the wire the key appears only when there is something to carry.
+    let withIssues = String(decoding: try JSONEncoder().encode(failed), as: UTF8.self)
+    #expect(withIssues.contains(#""pipeline_issues":[{"#))
+    let without = String(decoding: try JSONEncoder().encode(session()), as: UTF8.self)
+    #expect(!without.contains("pipeline_issues"))
+  }
+
   @Test("the JSON view mirrors the rendered structure")
   func jsonViewMirrorsStructure() {
     let view = SessionShowView.build(

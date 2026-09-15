@@ -192,6 +192,8 @@ label = "FaceTime"
 backend = "llm-cli"           # llm-cli | command — both run a subprocess:
 model   = "claude-sonnet-5"   #   llm-cli runs `llm -m <model>`; command runs the line below
 # command = "my-llm-wrapper --fast"   # prompt on stdin, completion on stdout
+timeout_seconds = 120         # per LLM call, cleanup and summarize; on expiry the
+                              #   stage exits 5 (retryable). <= 0 uses 120
 
 [cleanup]
 prompt_file = ""              # empty => built-in cleanup prompt
@@ -260,7 +262,7 @@ compute = "automatic"    # "ane" | "gpu" | "cpu" | "automatic"
 
 With `backend = "sortformer"`, `transcribe` runs NVIDIA Sortformer (via FluidAudio) as an offline pass and refines multi-speaker turns into `<source> · Speaker N`. Source-of-origin stays the primary label; the diarizer only adds the within-source split. A diarizer that fails to load or run is non-fatal: the transcript falls back to source-only labels. The Sortformer model downloads automatically on first use.
 
-- **Captured audio** (`--last`/`--from`/`--to`, `--session`): only multi-speaker far-end sources are diarized — `system`, `app:*`, `device:*` — never the `mic` or per-participant `browser:*` streams (each already a single speaker).
+- **Captured audio** (`--last`/`--from`/`--to`, `--session`): only multi-speaker far-end sources are diarized — `system`, `app:*`, `device:*`, and `browser:teams:*` — never the `mic` or the per-participant `browser:meet:*` / `browser:zoom:*` streams (each already a single speaker). Teams is the exception among browser sources because it delivers one mixed track carrying every remote participant; splitting a per-participant stream would trade a real name for two invented ones.
 - **Standalone files** (`--file`): the whole file is treated as one multi-speaker source and always diarized when a backend is configured, since a file carries no source-of-origin separation. Example: `transcribe --file memo.m4a`.
 
 ## Two tiers of artifact

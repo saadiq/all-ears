@@ -68,6 +68,8 @@ public enum PipelineStageState: String, Sendable, Equatable, Codable {
   case missing
   case notRequested = "not-requested"
   case skipped
+  /// A failure recorded by the daemon's last on-end chain.
+  case failed
 }
 
 /// A one-line pipeline outcome: a status glyph and its text.

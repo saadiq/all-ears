@@ -23,6 +23,11 @@ public enum SessionShowRendering {
       lines.append("  \(name)  \(glyph(stage.state)) \(stage.detail)")
     }
 
+    // Stage failures already show in their rows; stage warnings are few and
+    // print in full.
+    for issue in session.pipelineIssues where issue.kind == .warning {
+      lines.append("  ⚠ \(issue.stage): \(issue.message)")
+    }
     if !session.warnings.isEmpty {
       if showWarnings {
         lines.append(contentsOf: session.warnings.map { "  ⚠ \($0)" })
@@ -58,6 +63,7 @@ public enum SessionShowRendering {
     // Hollow, so a stage nobody asked for reads as an empty slot rather than
     // as the gap `–` marks or the in-flight `·`.
     case .notRequested: "○"
+    case .failed: "✗"
     }
   }
 }

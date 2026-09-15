@@ -646,4 +646,35 @@ struct RosterReconcilerTests {
 
     #expect(!outcome.warnings.contains { $0.contains("no audio was matched") })
   }
+
+  /// The 2026-09-14 Niranjan Rao call: one guest seen on three Meet tracks
+  /// was listed three times under `attendees:`.
+  @Test("attendee names list each person once")
+  func attendeeNamesAreDistinct() {
+    let attendees = [
+      SessionAttendee(
+        id: "devices/1", displayName: "Tom Elliot", joined: Self.at(0), isLocal: true),
+      SessionAttendee(id: "devices/2", displayName: "Niranjan Rao", joined: Self.at(10)),
+      SessionAttendee(id: "speaker-1", joined: Self.at(12)),
+      SessionAttendee(id: "devices/3", displayName: "Niranjan Rao", joined: Self.at(20)),
+      SessionAttendee(id: "devices/4", displayName: "Niranjan Rao", joined: Self.at(30)),
+    ]
+
+    #expect(
+      RosterReconciler.attendeeNames(attendees, localID: nil)
+        == ["Tom Elliot (me)", "Niranjan Rao"])
+  }
+
+  @Test("a name is marked (me) when any of its rows is local")
+  func attendeeNamesMarkLocalAcrossRows() {
+    let attendees = [
+      SessionAttendee(id: "devices/1", displayName: "Tom Elliot", joined: Self.at(0)),
+      SessionAttendee(id: "devices/2", displayName: "Guest", joined: Self.at(5)),
+      SessionAttendee(id: "devices/3", displayName: "Tom Elliot", joined: Self.at(10)),
+    ]
+
+    #expect(
+      RosterReconciler.attendeeNames(attendees, localID: "devices/3")
+        == ["Tom Elliot (me)", "Guest"])
+  }
 }
