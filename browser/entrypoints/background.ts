@@ -6,6 +6,12 @@ import { SessionTracker, type BadgeState, type SessionState } from "../lib/sessi
 import { applyActionBadge } from "../lib/action-badge";
 import { KEEPALIVE_ALARM, KeepaliveTracker } from "../lib/keepalive";
 import { DEBUG_LOG_KEY, PERF_ENABLED_KEY, resolvePerfToggleState } from "../lib/capture-toggle";
+import {
+  parseSiteHookPatterns,
+  SITE_HOOK_SCRIPT_IDS,
+  SITE_HOOKS_KEY,
+  siteHookScripts,
+} from "../lib/site-hooks";
 import { createBatcher, installConsoleTap, type LogEntry } from "../lib/debug-log";
 import {
   appendEntries,
@@ -242,7 +248,46 @@ export default defineBackground(() => {
     if (dl) setDebugLogging(dl.newValue === true);
     const pf = changes[PERF_ENABLED_KEY];
     if (pf) setPerfEnabled(resolvePerfToggleState(pf.newValue));
+    const sh = changes[SITE_HOOKS_KEY];
+    if (sh) queueSiteHookSync(sh.newValue);
   });
+
+  // ── Site hooks: runtime content scripts for user-enabled origins ──────────
+  // storage.local[SITE_HOOKS_KEY] is the source of truth (the popup writes it);
+  // the registration is rebuilt from it on every start and change, keeping only
+  // patterns whose host permission is still granted. Syncs are chained so two
+  // quick changes can't race into a duplicate-id registration.
+  let siteHookSync: Promise<void> = Promise.resolve();
+
+  async function syncSiteHooks(raw: unknown): Promise<void> {
+    const scripting = browser.scripting;
+    if (!scripting?.registerContentScripts) return; // Firefox MV2: no runtime registration
+    const granted: string[] = [];
+    for (const pattern of parseSiteHookPatterns(raw)) {
+      if (await browser.permissions.contains({ origins: [pattern] })) granted.push(pattern);
+    }
+    const ids = [...SITE_HOOK_SCRIPT_IDS];
+    const existing = await scripting.getRegisteredContentScripts({ ids });
+    if (existing.length > 0) await scripting.unregisterContentScripts({ ids: existing.map((s) => s.id) });
+    if (granted.length > 0) await scripting.registerContentScripts(siteHookScripts(granted));
+    console.debug(`[ears][bg] site hooks registered on ${granted.length} origin(s)`, granted);
+  }
+
+  function queueSiteHookSync(raw: unknown): void {
+    siteHookSync = siteHookSync
+      .then(() => syncSiteHooks(raw))
+      .catch((err) => console.warn("[ears][bg] site hook sync failed:", err));
+  }
+
+  const resyncSiteHooksFromStorage = (): void => {
+    browser.storage.local
+      .get(SITE_HOOKS_KEY)
+      .then((v) => queueSiteHookSync((v as Record<string, unknown>)[SITE_HOOKS_KEY]))
+      .catch(() => {});
+  };
+  resyncSiteHooksFromStorage();
+  // A grant revoked from the extensions page drops that origin's scripts.
+  browser.permissions.onRemoved?.addListener(resyncSiteHooksFromStorage);
 
   let nextPortId = 0;
 

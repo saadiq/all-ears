@@ -1,6 +1,6 @@
 import { defineContentScript } from "#imports";
 import { claimEpoch } from "../lib/epoch";
-import { installHook, hookDebugState, livePeerConnections } from "../lib/rtc-hook";
+import { installHook, hookDebugState, livePeerConnections, liveTracks } from "../lib/rtc-hook";
 import { setMeetGraphSinks, stopMeetGraphProbe } from "../lib/meet-webaudio-probe";
 import { initCapture, captureDebugState, __devCaptureStream } from "../lib/audio-tap";
 import {
@@ -22,6 +22,9 @@ import { TeamsMeetingIdWatcher, type TeamsIdSources } from "../lib/identity/team
 import "../lib/identity/meet";
 import "../lib/identity/zoom";
 import "../lib/identity/teams";
+import "../lib/identity/daily";
+import { DailyAudioCheck, parseDailyRoom } from "../lib/identity/daily";
+import { platformForHost } from "../lib/site-hooks";
 
 // MAIN-world hook. Registered as a content script so the browser runs it at
 // document_start, in the page realm, BEFORE any page script — no fetch race.
@@ -52,6 +55,7 @@ export default defineContentScript({
     "https://meet.google.com/*",
     "https://*.zoom.us/*",
     "https://teams.microsoft.com/*",
+    "https://*.daily.co/*",
     // Dev harness (dev/); stripped unless WXT_DEV_LOCALHOST is set at build.
     ...(import.meta.env.WXT_DEV_LOCALHOST ? ["http://localhost/*", "http://127.0.0.1/*"] : []),
   ],
@@ -250,6 +254,7 @@ const MEETING_TITLE_WATCH_MS = 60_000;
 function startMeetingWatch(platform: Platform, onMeetingId?: (id: string) => void): () => void {
   if (platform === "zoom") return startZoomMeetingWatch(onMeetingId);
   if (platform === "teams") return startTeamsMeetingWatch(onMeetingId);
+  if (platform === "daily") return startDailyMeetingWatch(onMeetingId);
   if (platform !== "meet") return () => {};
 
   let spaceId: string | null = null;
@@ -366,6 +371,65 @@ function startZoomMeetingWatch(onMeetingId?: (id: string) => void): () => void {
   };
 }
 
+const DAILY_CHECK_MS = 2000;
+
+/**
+ * Daily meeting start/end marking, plus the audio check. Runs in the call frame
+ * (`<sub>.daily.co/<room>`), where the room is in the URL — Zoom's shape, and
+ * the same gate: declare only once a peer connection is live, so a pre-join
+ * screen nobody went past records nothing.
+ *
+ * The audio check runs for the whole call. It logs `[ears][daily]` whenever
+ * the connection or track counts change, and warns if Daily plays a remote
+ * track the hook never registered — the failure that would otherwise look
+ * like a successful mic-only recording (journal #157).
+ */
+function startDailyMeetingWatch(onMeetingId?: (id: string) => void): () => void {
+  const room = parseDailyRoom(location.href);
+  if (!room) {
+    console.debug("[ears][daily] no room in this frame's URL — not declaring a meeting");
+    return () => {};
+  }
+
+  const check = new DailyAudioCheck();
+  let declared = false;
+  const tick = (): void => {
+    const pcs = livePeerConnections().size;
+    if (!declared && pcs > 0) {
+      declared = true;
+      onMeetingId?.(room);
+      postToIsolated({ kind: "meeting-started", platform: "daily", externalMeetingId: room });
+      console.debug(`[ears][daily] meeting declared: ${room}`);
+    }
+    const elementTrackIds: string[] = [];
+    for (const el of document.querySelectorAll("audio,video")) {
+      const stream = (el as HTMLMediaElement).srcObject;
+      if (stream instanceof MediaStream) {
+        for (const t of stream.getAudioTracks()) elementTrackIds.push(t.id);
+      }
+    }
+    const { log, warn } = check.observe(
+      {
+        peerConnections: pcs,
+        hookedTrackIds: [...liveTracks().keys()].map((t) => t.id),
+        elementTrackIds,
+      },
+      Date.now(),
+    );
+    if (log) console.debug(`[ears][daily] ${log}`);
+    if (warn) console.warn(`[ears][daily] ${warn}`);
+  };
+
+  tick();
+  const interval = setInterval(tick, DAILY_CHECK_MS);
+  return () => {
+    clearInterval(interval);
+    if (declared) {
+      postToIsolated({ kind: "meeting-ended", platform: "daily", externalMeetingId: room });
+    }
+  };
+}
+
 /**
  * Teams meeting start/end marking. Teams sits between the other two: the id
  * has to be scraped like Meet's, but there is no participant traffic carrying
@@ -437,11 +501,4 @@ function startTeamsMeetingWatch(onMeetingId?: (id: string) => void): () => void 
       postToIsolated({ kind: "meeting-ended", platform: "teams", externalMeetingId: declared });
     }
   };
-}
-
-function platformForHost(host: string, adapter: PlatformAdapter | null): Platform {
-  if (adapter) return adapter.platform;
-  if (host === "meet.google.com") return "meet";
-  if (host.endsWith("zoom.us")) return "zoom";
-  return "teams";
 }

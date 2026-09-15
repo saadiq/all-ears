@@ -52,7 +52,11 @@ export function parseKeepaliveState(raw: unknown): KeepaliveState {
   if (typeof raw !== "object" || raw === null) return { active: false };
   const r = raw as Record<string, unknown>;
   const platform =
-    r.platform === "meet" || r.platform === "zoom" || r.platform === "teams"
+    r.platform === "meet" ||
+    r.platform === "zoom" ||
+    r.platform === "teams" ||
+    r.platform === "daily" ||
+    r.platform === "web"
       ? (r.platform as Platform)
       : undefined;
   return { active: r.active === true, ...(platform ? { platform } : {}) };
