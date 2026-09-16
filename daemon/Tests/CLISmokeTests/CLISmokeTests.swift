@@ -856,6 +856,8 @@ struct CLISmokeTests {
     let human = try Self.runEars(["sessions", "--all", "--config", configPath])
     #expect(human.exitCode == 0)
     #expect(human.stdout.contains("Matt Silva"))
+    // The id is on the row, so it can be handed to `session show` / `--session`.
+    #expect(human.stdout.contains("3db61b03-aaaa-bbbb-cccc-ddddeeeeffff"))
     // An old session with no transcript reads as a neutral gap, not a crash.
     #expect(human.stdout.contains("– no transcript"))
 

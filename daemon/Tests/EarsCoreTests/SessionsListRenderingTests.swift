@@ -25,7 +25,7 @@ struct SessionsListRenderingTests {
     return artifacts
   }
 
-  @Test("sessions group under TODAY/YESTERDAY/date, newest first, with outcomes")
+  @Test("sessions group under TODAY/YESTERDAY/date, newest first, with ids and outcomes")
   func groupsByLocalDay() {
     let entries = [
       SessionListEntry(
@@ -49,12 +49,12 @@ struct SessionsListRenderingTests {
     #expect(
       text == """
         TODAY
-          18:01  Weekly Product Meeting  ● recording (1h)
-          15:01  Matt Silva              ⚠ published, 2 warnings
+          18:01  a  Weekly Product Meeting  ● recording (1h)
+          15:01  b  Matt Silva              ⚠ published, 2 warnings
         YESTERDAY
-          15:01  Stefni Bridges          ✓ published
+          15:01  c  Stefni Bridges          ✓ published
         2026-08-14
-          15:01  Kickoff                 – no transcript
+          15:01  d  Kickoff                 – no transcript
         """)
   }
 
