@@ -76,6 +76,6 @@ struct SessionsListRenderingTests {
     ]
     let text = SessionsListRendering.render(
       entries: entries, now: now, timeZone: utc, configuredChain: OnEndStage.allCases)
-    #expect(text.hasSuffix("15:01  Scratch capture  ✓ recorded"))
+    #expect(text.hasSuffix("15:01  e  Scratch capture  ✓ recorded"))
   }
 }
