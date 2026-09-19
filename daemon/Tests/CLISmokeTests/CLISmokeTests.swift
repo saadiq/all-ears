@@ -863,6 +863,8 @@ struct CLISmokeTests {
     // configured chain, so its missing transcript is.
     #expect(human.stdout.contains("Matt Silva   ✓ recorded"))
     #expect(human.stdout.contains("Weekly Sync  – no transcript"))
+    // The id is on the row, so it can be handed to `session show` / `--session`.
+    #expect(human.stdout.contains("3db61b03-aaaa-bbbb-cccc-ddddeeeeffff"))
 
     // The machine surface keeps `session list`'s payload shape.
     let json = try Self.runEars(["sessions", "--all", "--json", "--config", configPath])

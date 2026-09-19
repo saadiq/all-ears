@@ -10,6 +10,102 @@ import {
 import { toJsonl, type LogEntry } from "../../lib/debug-log";
 import { perfToJsonl, type PerfRecord } from "../../lib/perf";
 import type { BadgeState } from "../../lib/session-tracker";
+import {
+  hostOfPattern,
+  parseSiteHookPatterns,
+  patternsForFrames,
+  SITE_HOOKS_KEY,
+} from "../../lib/site-hooks";
+
+// ── Site hooks: enable capture scripts on the current, unlisted site ────────
+//
+// activeTab gives the popup the tab's URL and one isolated-world read of the
+// top frame, which lists iframe origins (the call is often in one). The click
+// requests host permission for those origins and records them; background.ts
+// registers the scripts. They load on the next page load — the popup offers
+// the reload instead of doing it, because reloading leaves a call in progress.
+
+const siteHooksEl = document.getElementById("site-hooks");
+const siteHooksBtnEl = document.getElementById("site-hooks-btn") as HTMLButtonElement | null;
+const siteHooksReloadEl = document.getElementById("site-hooks-reload") as HTMLButtonElement | null;
+const siteHooksNoteEl = document.getElementById("site-hooks-note");
+
+let siteTab: { id: number; patterns: string[] } | null = null;
+let siteStored: string[] = [];
+
+function siteEnabled(): boolean {
+  return siteTab !== null && siteTab.patterns.every((p) => siteStored.includes(p));
+}
+
+function renderSiteHooks(note?: string): void {
+  if (!siteTab || !siteHooksEl || !siteHooksBtnEl) return;
+  siteHooksEl.hidden = false;
+  siteHooksBtnEl.textContent = siteEnabled() ? "Disable hooks on this site" : "Enable hooks on this site";
+  if (siteHooksNoteEl) {
+    siteHooksNoteEl.textContent = note ?? siteTab.patterns.map(hostOfPattern).join(", ");
+  }
+}
+
+async function loadSiteHooks(): Promise<void> {
+  if (!browser.scripting?.executeScript) return;
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id === undefined || !tab.url) return;
+  let frameUrls: string[] = [];
+  try {
+    const [res] = await browser.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => [...document.querySelectorAll("iframe")].map((f) => f.src),
+    });
+    if (Array.isArray(res?.result)) frameUrls = res.result as string[];
+  } catch {
+    // No script access to this page — fall back to the top origin alone.
+  }
+  const patterns = patternsForFrames(tab.url, frameUrls);
+  if (patterns.length === 0) return; // built-in platform or non-web page
+  siteTab = { id: tab.id, patterns };
+  const v = await browser.storage.local.get(SITE_HOOKS_KEY);
+  siteStored = parseSiteHookPatterns((v as Record<string, unknown>)[SITE_HOOKS_KEY]);
+  renderSiteHooks();
+}
+
+void loadSiteHooks().catch(() => {});
+
+siteHooksBtnEl?.addEventListener("click", () => {
+  if (!siteTab) return;
+  const { patterns } = siteTab;
+  if (!siteEnabled()) {
+    // The request has to be the first call in the handler, or the click's user
+    // gesture lapses and the browser rejects it.
+    browser.permissions
+      .request({ origins: patterns })
+      .then(async (granted) => {
+        if (!granted) {
+          renderSiteHooks("Permission not granted.");
+          return;
+        }
+        siteStored = [...new Set([...siteStored, ...patterns])];
+        await browser.storage.local.set({ [SITE_HOOKS_KEY]: siteStored });
+        if (siteHooksReloadEl) siteHooksReloadEl.hidden = false;
+        renderSiteHooks("Hooks registered. Reload the tab to load them — a reload leaves any call in progress.");
+      })
+      .catch(() => renderSiteHooks("Couldn't enable hooks."));
+  } else {
+    siteStored = siteStored.filter((p) => !patterns.includes(p));
+    browser.storage.local
+      .set({ [SITE_HOOKS_KEY]: siteStored })
+      .then(() => browser.permissions.remove({ origins: patterns }))
+      .then(() => {
+        if (siteHooksReloadEl) siteHooksReloadEl.hidden = false;
+        renderSiteHooks("Hooks removed. Reload the tab to unload them.");
+      })
+      .catch(() => renderSiteHooks("Couldn't disable hooks."));
+  }
+});
+
+siteHooksReloadEl?.addEventListener("click", () => {
+  if (!siteTab) return;
+  void browser.tabs.reload(siteTab.id).then(() => window.close());
+});
 
 // Popup: capture on/off toggle + earsd status badge + (while a meeting is
 // live) a pause-transcription toggle.

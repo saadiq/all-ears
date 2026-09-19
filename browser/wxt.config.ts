@@ -42,11 +42,16 @@ export default defineConfig({
     ...(browser === "firefox"
       ? { browser_specific_settings: { gecko: { id: "ears-capture@tomelliot.net" } } }
       : {}),
-    permissions: ["storage", "alarms"],
+    // scripting + activeTab + optional hosts: the popup's "Enable hooks on this
+    // site" button (lib/site-hooks.ts). Each origin is granted on click, never
+    // up front.
+    permissions: ["storage", "alarms", "scripting", "activeTab"],
+    optional_host_permissions: ["https://*/*", "http://*/*"],
     host_permissions: [
       "https://meet.google.com/*",
       "https://*.zoom.us/*",
       "https://teams.microsoft.com/*",
+      "https://*.daily.co/*",
       // Background WebSocket to loopback earsd. Some browsers (notably Brave,
       // with stricter localhost handling than Chrome) require this for the SW
       // to open ws://127.0.0.1. Harmless on browsers that don't.

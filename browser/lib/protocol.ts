@@ -11,8 +11,11 @@ import type { PerfRecord } from "./perf";
 /** Marker on every window.postMessage envelope crossing the world boundary. */
 export const EARS_MARKER = "__ears" as const;
 
-/** Platform tag, mirrored into the earsd `browser:<platform>:<track-slug>` label. */
-export type Platform = "meet" | "zoom" | "teams";
+/**
+ * Platform tag, mirrored into the earsd `browser:<platform>:<track-slug>` label.
+ * `web` is any site the user enabled hooks on from the popup (site-hooks.ts).
+ */
+export type Platform = "meet" | "zoom" | "teams" | "daily" | "web";
 
 /**
  * Where a participant reference was minted. `platform` ids come from the

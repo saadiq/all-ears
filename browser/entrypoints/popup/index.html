@@ -311,6 +311,14 @@
       <!-- Debug: dump MAIN-world capture/probe/hook state to each open meeting
            tab's console (filter the console by [ears][debug][state]). -->
       <button type="button" id="debug-report" class="debug-btn">Report state to console</button>
+      <!-- Site hooks: register the capture scripts on the current site (and its
+           iframe origins) when the manifest doesn't cover it. Hidden on built-in
+           platforms and non-web pages. lib/site-hooks.ts. -->
+      <div id="site-hooks" hidden>
+        <button type="button" id="site-hooks-btn" class="debug-btn">Enable hooks on this site</button>
+        <button type="button" id="site-hooks-reload" class="debug-btn" hidden>Reload tab to load hooks</button>
+        <div id="site-hooks-note" class="debug-note" aria-live="polite"></div>
+      </div>
       <!-- Debug logging: tee every context's console into a persisted ring
            buffer, exportable as a .jsonl file. Off by default. -->
       <label class="row debug-log-row">

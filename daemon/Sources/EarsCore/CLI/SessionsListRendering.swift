@@ -12,8 +12,8 @@ public struct SessionListEntry: Sendable, Equatable {
   }
 }
 
-/// Renders the `ears sessions` list: one line per session with its pipeline
-/// outcome, grouped by local start day (`TODAY`, `YESTERDAY`, then ISO
+/// Renders the `ears sessions` list: one line per session with its id and
+/// pipeline outcome, grouped by local start day (`TODAY`, `YESTERDAY`, then ISO
 /// dates), newest first.
 public enum SessionsListRendering {
   public static func render(
@@ -22,6 +22,7 @@ public enum SessionsListRendering {
   ) -> String {
     guard !entries.isEmpty else { return "(no sessions)" }
     let sorted = entries.sorted { $0.session.started > $1.session.started }
+    let idWidth = sorted.map(\.session.id.count).max() ?? 0
     let titleWidth = sorted.map(\.session.title.count).max() ?? 0
 
     let today = HumanUnits.localDate(now, timeZone: timeZone)
@@ -40,12 +41,16 @@ public enum SessionsListRendering {
         }
       }
       let clock = HumanUnits.clock(entry.session.started, timeZone: timeZone)
+      // The id is what every other verb takes (`ears session show <id>`,
+      // `ears summarize --session <id>`), so it sits beside the clock where
+      // it can be copied without hunting through `--json`.
+      let id = entry.session.id.padding(toLength: idWidth, withPad: " ", startingAt: 0)
       let title = entry.session.title.padding(
         toLength: titleWidth, withPad: " ", startingAt: 0)
       let outcome = SessionPipeline.outcome(
         session: entry.session, artifacts: entry.artifacts, now: now,
         configuredChain: configuredChain, emptiness: emptiness)
-      lines.append("  \(clock)  \(title)  \(outcome.glyph) \(outcome.text)")
+      lines.append("  \(clock)  \(id)  \(title)  \(outcome.glyph) \(outcome.text)")
     }
     return lines.joined(separator: "\n")
   }
