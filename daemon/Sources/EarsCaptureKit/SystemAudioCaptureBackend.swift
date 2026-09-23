@@ -9,8 +9,8 @@ import struct EarsCore.AudioBuffer
 
 /// Errors surfaced by ``SystemAudioCaptureBackend``.
 public enum SystemAudioCaptureError: Error, Sendable, CustomStringConvertible {
-  /// The tap's first grace window of audio was all-zero — the signature of
-  /// a TCC-denied system-audio tap (`docs/specs/capture-daemon.md`'s
+  /// A `system` tap's first grace window of audio was all-zero — the
+  /// signature of a TCC-denied system-audio tap (`docs/specs/capture-daemon.md`'s
   /// "Permissions and TCC probing": no query API exists, so this is
   /// detected by observing the stream itself).
   case permissionDenied
@@ -70,7 +70,7 @@ public actor SystemAudioCaptureBackend: CaptureBackend, CaptureStatsReporting {
     public var stallCheckInterval: Duration
     public var stallThresholdSeconds: Double
     /// How long ``start()`` waits after starting real IO before deciding
-    /// whether the stream looks TCC-denied (see ``AllZeroPCMDetector``'s
+    /// whether a `.system` stream looks TCC-denied (see ``AllZeroPCMDetector``'s
     /// documented limitation: this is a heuristic, not a query).
     public var deniedGraceWindow: Duration
 
@@ -174,10 +174,13 @@ public actor SystemAudioCaptureBackend: CaptureBackend, CaptureStatsReporting {
 
     // Grace-window TCC-denial check, *before* the normal consumer loop
     // starts — any real samples collected during the wait are still
-    // delivered below, not discarded.
+    // delivered below, not discarded. `.system` mode only: a per-app tap
+    // on an app that is simply quiet (a call still connecting, a solo
+    // call, everyone muted) is all-zero too, and treating that as a
+    // denial disabled the source for the whole session.
     try? await Task.sleep(for: config.deniedGraceWindow)
     let sampled = ring.read(maxCount: config.ringCapacity)
-    if !sampled.isEmpty && AllZeroPCMDetector.isAllZero(sampled) {
+    if case .system = mode, !sampled.isEmpty && AllZeroPCMDetector.isAllZero(sampled) {
       teardownCurrentEngine()
       isRunning = false
       continuation.finish()

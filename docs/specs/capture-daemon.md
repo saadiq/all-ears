@@ -38,6 +38,7 @@ Capture each active session's audio sources under the session's own directory, m
 ### Permissions and TCC probing
 
 - There is **no query API** for the system-audio tap's TCC grant. The daemon detects it by creating and destroying a throwaway tap, and by detecting the all-zero PCM stream a denied tap returns.
+- The all-zero check at tap start applies to the `system` source only. A per-app tap (`app:<bundle-id>`) on an app that is merely quiet — a call still connecting, a solo call, everyone muted — is all-zero too, so an `app:` source keeps capturing through a silent start rather than being disabled as denied.
 - On denial, the error names the exact pane — macOS 15's "System Audio Recording Only" sub-pane — rather than failing generically.
 - Missing permission for a source logs an error and **disables just that source**, never the daemon.
 

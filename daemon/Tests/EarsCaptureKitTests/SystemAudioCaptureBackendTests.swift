@@ -70,6 +70,27 @@ struct SystemAudioCaptureBackendTests {
     #expect(engine.stopCallCountForTesting == 1)
   }
 
+  @Test(".app mode keeps capturing through an all-zero grace window (a quiet app is not a denial)")
+  func appModeSilentGraceWindowIsNotDenial() async throws {
+    let engine = FakeProcessTapEngine(
+      format: Self.monoFloatASBD(), autoFireSamplesOnStart: [0, 0, 0, 0])
+    let provider = FakeProcessTapEngineProvider(makeEngine: { engine })
+    let backend = SystemAudioCaptureBackend(
+      source: "app:com.microsoft.teams2", mode: .app(pids: [111]),
+      bundleID: "com.microsoft.teams2", provider: provider,
+      tracker: FakeRunningApplicationTracker(), config: testConfig())
+
+    let stream = try await backend.start()
+    var collected: [Float] = []
+    for await buffer in stream {
+      collected.append(contentsOf: buffer.samples)
+      if collected.count >= 4 { break }
+    }
+    await backend.stop()
+
+    #expect(collected == [0, 0, 0, 0])
+  }
+
   @Test("no samples at all during the grace window is not treated as denial")
   func noSamplesIsNotDenial() async throws {
     // No autoFireSamplesOnStart -- nothing arrives during the grace window,
