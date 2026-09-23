@@ -142,6 +142,39 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
+  @Test("a source that fails to start records capture_failed in the session's events.jsonl")
+  func sourceStartFailureLandsInSessionTimeline() async throws {
+    let dataRoot = try makeDataRoot()
+    let configuration = EarsDaemonConfiguration(
+      sources: [
+        makeDescriptor(id: "mic", sourceClass: .mic),
+        makeDescriptor(id: "app:com.microsoft.teams2", sourceClass: .app),
+      ],
+      dataRoot: dataRoot,
+      socketPath: tempSocketPath())
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in
+        if descriptor.id == "app:com.microsoft.teams2" {
+          return FailingStartCaptureBackend(source: descriptor.id)
+        }
+        return SyntheticCaptureBackend(
+          source: descriptor.id, buffers: [self.makeBuffer(seconds: 0.1)])
+      },
+      clock: ManualClock(Instant(secondsSinceEpoch: 1_000)))
+    try await daemon.start()
+
+    let session = try await daemon.startSessionForTesting(
+      SessionStartParams(title: "call", sources: ["mic", "app:com.microsoft.teams2"]))
+
+    let failures = SessionEventLog.readAll(dataRoot: dataRoot, sessionID: session.id)
+      .filter { $0.event == "capture_failed" }
+    #expect(failures.map(\.source) == ["app:com.microsoft.teams2"])
+    #expect(failures.first?.reason?.contains("StartFailure") == true)
+
+    await daemon.stop()
+  }
+
   @Test("boots idle: no source directory or meta.toml until a session starts the source")
   func idleBootWritesNothingUntilSession() async throws {
     let dataRoot = try makeDataRoot()

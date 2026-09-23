@@ -930,6 +930,15 @@ public actor EarsDaemon {
     }
     log(
       "⚠ capture failed: session=\(sessionID) source=\(source.rawValue) reason=\(reason)")
+    appendCaptureFailed(source: source, sessionID: sessionID, reason: reason)
+  }
+
+  /// Appends a `capture_failed` entry to `sessionID`'s `events.jsonl` — for a
+  /// browser source whose client reported it dead mid-call, and for a config
+  /// source that failed to build or start for the session. The latter was
+  /// once only a log line, so a source lost for the whole call left nothing
+  /// on the session's own record and read downstream as a silent participant.
+  private func appendCaptureFailed(source: SourceID, sessionID: String, reason: String) {
     let entry = SessionEventLog.Entry(
       t: ISO8601InstantCodec.format(clock.now()), event: "capture_failed",
       source: source.rawValue, reason: reason)
@@ -1203,6 +1212,7 @@ public actor EarsDaemon {
         log(
           "session capture: source '\(descriptor.id.rawValue)' failed to build and is disabled: \(error)"
         )
+        appendCaptureFailed(source: descriptor.id, sessionID: sessionID, reason: "\(error)")
         return
       }
       captureActors[descriptor.id] = actor
@@ -1218,6 +1228,7 @@ public actor EarsDaemon {
       // Already running for another session — nothing to do.
     } catch {
       log("session capture: source '\(descriptor.id.rawValue)' failed to start: \(error)")
+      appendCaptureFailed(source: descriptor.id, sessionID: sessionID, reason: "\(error)")
     }
   }
 

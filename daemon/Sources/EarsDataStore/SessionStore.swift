@@ -77,12 +77,13 @@ public enum SessionEventLog {
     public var attendee: String?
     /// `renamed`: the new title.
     public var title: String?
-    /// `capture_failed`: the source whose capture died mid-call.
+    /// `capture_failed`: the source whose capture failed (died mid-call, or
+    /// never started for the session).
     public var source: String?
     /// `ended`: `"client"` for an explicit `session.end`, `"ingest-idle"`
     /// for the browser orphan grace timer, `"app-idle"` for its app-detected
     /// mirror (app-audio activity went quiet past grace). `capture_failed`:
-    /// the capture client's stated cause.
+    /// the stated cause (the capture client's, or the start error's).
     public var reason: String?
 
     public init(
