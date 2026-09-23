@@ -567,7 +567,8 @@ enum TranscribePipeline {
       title: derivedTitle ?? sessionRecord?.title,
       started: sessionRecord?.started ?? requestedRange.start,
       attendees: attendees,
-      warnings: reconciled?.warnings ?? sessionRecord?.warnings ?? [],
+      warnings: (reconciled?.warnings ?? sessionRecord?.warnings ?? [])
+        + Self.captureFailureWarnings(sessionID: sessionRecord?.id, dataRoot: dataRoot),
       speakers: speakers,
       sourceLabels: sourceLabels,
       diarization: diarization,

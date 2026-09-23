@@ -186,7 +186,10 @@ confidence = "correlated"               # correlated | inferred
 
 `warnings = [...]` (a top-level array, omitted when empty) records what
 reconciliation could not resolve or resolved by inference. It travels into the
-transcript's frontmatter and from there into the note itself.
+transcript's frontmatter and from there into the note itself. `transcribe`
+appends one more frontmatter warning per distinct `capture_failed` event in
+`events.jsonl`, so a source lost for the call is flagged where the user reads
+rather than passing for a participant who never spoke.
 
 `events.jsonl` is the append-only per-session timeline — one line per domain event: `started`, `interval_opened`/`interval_closed`, `attendee_joined`/`attendee_left`, `renamed`, `capture_failed` (a source's capture failed — a browser source that died mid-call, or a configured source that failed to build or start for the session; carries `source` and the stated `reason`, so a gap in the audio is attributable rather than reading as silence), and `ended` with `reason = "client"` (explicit `session.end`), `"ingest-idle"` (the browser orphan grace timer), `"app-idle"` (the app-detected mirror of it — every configured `app:*` source went quiet past grace), `"superseded"` (a new `session.start` displaced it), or `"orphaned"` (swept at daemon boot). Written for disk consumers (`summarize`, humans, `jq`), never used for protocol sync.
 
@@ -264,7 +267,10 @@ vocab:
                             # so a wrong-store read is visible
 # warnings:                 # what was degraded or inferred about this
 # - "speaker attribution: …"
-#                           # transcript; omitted when there is nothing to say.
+#                           # transcript — the session's reconciliation warnings,
+                            # then one per distinct `capture_failed` event in
+                            # `events.jsonl` (a source whose audio is missing);
+                            # omitted when there is nothing to say.
                             # `summarize` renders these into the note as a
                             # callout, because a warning only in a log is a
                             # warning nobody reads

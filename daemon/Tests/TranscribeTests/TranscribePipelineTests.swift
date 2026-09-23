@@ -362,6 +362,49 @@ struct TranscribePipelineTests {
     #expect(stdoutLines.withLock { $0 }.last == paths.markdown.path)
   }
 
+  @Test("--session surfaces a source's capture_failed event as a frontmatter warning")
+  func sessionCaptureFailureBecomesWarning() async throws {
+    let dataRoot = makeTempDirectory("session-capture-failed")
+    let sessionID = "fixture-session"
+    let session = Session(
+      id: sessionID, title: "call", state: .ended,
+      started: now.advanced(by: -20), ended: now,
+      intervals: [SessionInterval(start: now.advanced(by: -20), end: now)],
+      sources: ["mic", "app:com.microsoft.teams2"])
+    try SessionStore.write(session, dataRoot: dataRoot)
+    try SessionEventLog.append(
+      .init(
+        t: "2026-09-23T12:30:08Z", event: "capture_failed",
+        source: "app:com.microsoft.teams2", reason: "tap build failed"),
+      dataRoot: dataRoot, sessionID: sessionID)
+    try await writeFixtureSource(
+      sourceID: "mic",
+      dataRoot: DataStoreLayout.sessionDirectory(dataRoot: dataRoot, sessionID: sessionID),
+      chunkStart: now.advanced(by: -20), chunkDuration: 20,
+      vadSpeechStart: now.advanced(by: -15), vadSpeechEnd: now.advanced(by: -5))
+
+    let exitCode = await TranscribePipeline.run(
+      inputs: .init(session: sessionID, sourceIDs: [], out: nil),
+      dataRoot: dataRoot,
+      backendName: "fluidaudio",
+      dependencies: .init(
+        clock: ManualClock(now),
+        transcriberFactory: {
+          ScriptedTranscriber(results: [[Segment(start: 0, end: 2, text: "hello")]])
+        },
+        loadOptions: LoadOptions(),
+        log: { _ in },
+        writeStderr: { _ in },
+        writeStdout: { _ in }
+      )
+    )
+
+    #expect(exitCode == 0)
+    let paths = TranscriptStorePaths.session(dataRoot: dataRoot, sessionID: sessionID)
+    let markdown = try outputText(at: paths.markdown)
+    #expect(markdown.contains("source 'app:com.microsoft.teams2' failed to capture"))
+  }
+
   @Test(
     "--session resolves speaker names from the roster (attendee source → display_name) at transcribe time"
   )
