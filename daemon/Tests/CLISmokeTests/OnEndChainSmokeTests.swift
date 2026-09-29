@@ -180,6 +180,22 @@ struct OnEndChainSmokeTests {
     }
     try #require(socketReady, "earsd's control socket never appeared at \(socketPath)")
 
+    // A subscriber sees the chain's job events: the LLM stages are reported
+    // by the daemon, which is the only way anyone learns a summary is ready.
+    let watcher = try await ControlSocketClient.connect(toPath: socketPath)
+    try await watcher.hello(client: "on-end-chain-smoke-watch")
+    let (_, events) = try await watcher.subscribe(SubscribeParams(events: [.job]))
+    let collector = Task { () -> [JobPublishParams] in
+      var jobs: [JobPublishParams] = []
+      for await frame in events {
+        guard case .job(let params) = frame.event else { continue }
+        jobs.append(params)
+        let doneKinds = Set(jobs.filter { $0.state == .done }.map(\.kind))
+        if doneKinds.isSuperset(of: ["cleanup", "summarize"]) { break }
+      }
+      return jobs
+    }
+
     // Drive a browser-triggered session — the only trigger that fires the
     // on-end hook — over the real control socket.
     let client = try await ControlSocketClient.connect(toPath: socketPath)
@@ -211,8 +227,13 @@ struct OnEndChainSmokeTests {
     // Every stage was spawned in --json mode and succeeded — the envelopes
     // really were parsed (a parse failure would log "exited 0 but failed"
     // and stop the chain before summarize).
+    // `--job-id` carries the daemon's own job identity into the child, so the
+    // two event streams are one job (see OnClosePipelineRunner).
     #expect(
-      daemonLog.contains("spawning transcribe --session \(session.id) --json"),
+      daemonLog.contains("spawning transcribe --session \(session.id) --job-id transcribe-"),
+      "expected the transcribe spawn line with --job-id; daemon log:\n\(daemonLog)")
+    #expect(
+      daemonLog.contains("--json for session '\(session.id)'"),
       "expected the transcribe spawn line with --json; daemon log:\n\(daemonLog)")
     for stage in ["transcribe", "cleanup", "summarize"] {
       #expect(
@@ -232,6 +253,24 @@ struct OnEndChainSmokeTests {
       "expected the selected preset and its reasoning; daemon log:\n\(daemonLog)")
     #expect(!daemonLog.contains("exited 0 but failed"))
     #expect(!daemonLog.contains("schema mismatch"))
+
+    // The log line above precedes the last publish by moments. Bound the wait:
+    // the collector is unstructured, so the test's time limit cannot cancel it,
+    // and a missing event must fail the test rather than hang it.
+    let deadline = Task {
+      try await Task.sleep(for: .seconds(10))
+      collector.cancel()
+    }
+    let jobs = await collector.value
+    deadline.cancel()
+    await watcher.close()
+    for kind in ["cleanup", "summarize"] {
+      #expect(jobs.contains { $0.kind == kind && $0.state == .started }, "missing \(kind) started")
+      #expect(jobs.contains { $0.kind == kind && $0.state == .done }, "missing \(kind) done")
+    }
+    #expect(jobs.allSatisfy { $0.session == session.id })
+    let summaryDone = jobs.first { $0.kind == "summarize" && $0.state == .done }
+    #expect(summaryDone?.outputs?.first?.hasSuffix(".summary.md") == true)
 
     // The chain's artifacts exist on disk: each stage's envelope named a real
     // file that fed the next stage.
