@@ -239,6 +239,38 @@ struct EarsDaemonTests {
     await daemon.stop()
   }
 
+  @Test("status reports the configured sources in order and the resolved chain, even idle")
+  func statusReportsConfigured() async throws {
+    let socketPath = tempSocketPath()
+    let configuration = EarsDaemonConfiguration(
+      sources: [
+        makeDescriptor(id: "mic", sourceClass: .mic),
+        makeDescriptor(id: "system", sourceClass: .system),
+      ],
+      dataRoot: try makeDataRoot(),
+      socketPath: socketPath,
+      onEndStages: [.transcribe, .cleanup]
+    )
+    let daemon = try EarsDaemon(
+      configuration: configuration,
+      backendFactory: { descriptor in
+        SyntheticCaptureBackend(source: descriptor.id, buffers: [self.makeBuffer(seconds: 0.1)])
+      },
+      clock: ManualClock(Instant(secondsSinceEpoch: 1_000))
+    )
+    try await daemon.start()
+    let client = try await ControlSocketClient.connect(toPath: socketPath)
+    _ = try await client.hello(client: "test/0")
+
+    let status = try await client.send(.status, expecting: StatusData.self)
+
+    let expected = StatusData.Configured(
+      sources: ["mic", "system"], onEndStages: ["transcribe", "cleanup"])
+    #expect(status.configured == expected)
+    await client.close()
+    await daemon.stop()
+  }
+
   @Test("boots idle, records only while a session is active, over a real control socket")
   func sessionScopedCaptureOverSocket() async throws {
     let dataRoot = try makeDataRoot()

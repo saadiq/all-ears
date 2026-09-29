@@ -42,6 +42,9 @@ public actor ControlServer {
   /// and `subscribe` snapshots read its revision. `nil` drops publishes and
   /// snapshots at rev 0.
   private let bus: EventBus?
+  /// What the daemon was configured with, reported by `status` so clients
+  /// never re-derive it from config. `nil` omits it.
+  private let configured: StatusData.Configured?
 
   public init(
     captureActors: [SourceID: CaptureActor],
@@ -49,10 +52,12 @@ public actor ControlServer {
     startInstant: Instant,
     clock: any NowProviding = SystemClock(),
     bus: EventBus? = nil,
-    sessions: SessionRegistry? = nil
+    sessions: SessionRegistry? = nil,
+    configured: StatusData.Configured? = nil
   ) {
     self.captureActors = captureActors
     self.sessions = sessions
+    self.configured = configured
     self.dataRoot = dataRoot
     self.startInstant = startInstant
     self.clock = clock
@@ -156,7 +161,8 @@ public actor ControlServer {
       result: StatusData(
         uptimeSeconds: uptime,
         sources: await sourceStatuses(),
-        sessions: liveSessions))
+        sessions: liveSessions,
+        configured: configured))
   }
 
   /// Builds the `subscribe` snapshot. The revision is read *before* the

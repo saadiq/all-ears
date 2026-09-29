@@ -28,7 +28,8 @@ struct ControlServerTests {
     startInstant: Instant = Instant(secondsSinceEpoch: 0),
     clock: any NowProviding,
     bus: EventBus? = nil,
-    sessions: SessionRegistry? = nil
+    sessions: SessionRegistry? = nil,
+    configured: StatusData.Configured? = nil
   ) -> ControlServer {
     ControlServer(
       captureActors: captureActors,
@@ -36,7 +37,8 @@ struct ControlServerTests {
       startInstant: startInstant,
       clock: clock,
       bus: bus,
-      sessions: sessions)
+      sessions: sessions,
+      configured: configured)
   }
 
   /// Decodes a `ControlReply`'s JSON frame (with a fixed test id) for
@@ -75,6 +77,21 @@ struct ControlServerTests {
     #expect(data["uptime_s"] as? Int == 900)
     #expect((data["sources"] as? [Any])?.isEmpty == true)
     #expect((data["sessions"] as? [Any])?.isEmpty == true)
+    // A server told nothing about its configuration says nothing, so a client
+    // can tell an older daemon from one configured with no sources.
+    #expect(data["configured"] == nil)
+  }
+
+  @Test("status carries the configured sources and chain it was built with")
+  func statusReportsConfigured() async throws {
+    let server = makeServer(
+      dataRoot: try makeDataRoot(), clock: ManualClock(Instant(secondsSinceEpoch: 1)),
+      configured: StatusData.Configured(sources: ["mic"], onEndStages: ["transcribe"]))
+
+    let data = try result(await server.handle(.status))
+    let configured = try #require(data["configured"] as? [String: Any])
+    #expect(configured["sources"] as? [String] == ["mic"])
+    #expect(configured["on_end_stages"] as? [String] == ["transcribe"])
   }
 
   @Test("status never reports negative uptime, even if the clock precedes startInstant")

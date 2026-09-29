@@ -508,7 +508,10 @@ public actor EarsDaemon {
       // `segment.publish`/`job.publish` → the live feed, and `subscribe`
       // snapshots read the bus's revision.
       bus: eventBus,
-      sessions: sessions)
+      sessions: sessions,
+      configured: StatusData.Configured(
+        sources: configuration.sources.map(\.id),
+        onEndStages: configuration.onEndStages.map(\.rawValue)))
 
     let socketDirectory = URL(fileURLWithPath: configuration.socketPath).deletingLastPathComponent()
     try FileManager.default.createDirectory(

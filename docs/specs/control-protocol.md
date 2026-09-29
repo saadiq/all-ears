@@ -206,7 +206,7 @@ Grouped by capability. All carried in the v2 envelope.
 | Capability | Method | Params → result |
 |---|---|---|
 | — | `hello` | see [Handshake](#handshake) |
-| `observe` | `status` | → `{uptime_s, sources, sessions}` — daemon + per-source state, active sessions |
+| `observe` | `status` | → `{uptime_s, sources, sessions, configured?}` — daemon + per-source state, active sessions, and `configured: {sources, on_end_stages}`: the capturable config-declared sources in declaration order and the resolved `[earsd.sessions] on_end_stages`, as loaded at boot. A client starting a manual session declares these rather than reading daemon config |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
 | `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing"; a chain naming a stage the daemon cannot run → `invalid_request`. A re-declare that names a chain replaces the stored one |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
