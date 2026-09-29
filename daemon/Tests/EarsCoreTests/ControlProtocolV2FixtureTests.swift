@@ -152,6 +152,15 @@ struct ControlProtocolV2FixtureTests {
         let snapshot = try frame.get()
         #expect(snapshot.rev == 41)
         #expect(snapshot.sources.count == 1)
+      case "status-result":
+        let frame = try JSONDecoder().decode(ControlResponseFrame<StatusData>.self, from: raw)
+        let status = try frame.get()
+        #expect(
+          status.configured
+            == StatusData.Configured(
+              sources: ["mic", "system"], onEndStages: ["transcribe", "cleanup", "summarize"]))
+        let reencoded = try JSONEncoder().encode(frame)
+        #expect(try JSONValue(data: reencoded) == entry.frame)
       case "error-session-not-found", "error-hello-required":
         let frame = try JSONDecoder().decode(
           ControlResponseFrame<EmptyData>.self, from: raw)

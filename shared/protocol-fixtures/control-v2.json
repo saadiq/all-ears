@@ -191,6 +191,22 @@
       }
     },
     {
+      "name": "status-result",
+      "expecting": "status",
+      "frame": {
+        "id": 1,
+        "result": {
+          "uptime_s": 3600,
+          "sources": [{ "id": "mic", "state": "capturing", "codec": "aac", "bytes_used": 0 }],
+          "sessions": [],
+          "configured": {
+            "sources": ["mic", "system"],
+            "on_end_stages": ["transcribe", "cleanup", "summarize"]
+          }
+        }
+      }
+    },
+    {
       "name": "error-session-not-found",
       "expecting": "error",
       "frame": {
