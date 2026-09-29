@@ -92,8 +92,10 @@ can't be known by any subscriber.
   - **`[]`:** run nothing;
   - **a list:** run exactly those stages.
 - The declaration is persisted in `session.toml` and honoured if the start is
-  repeated. Unknown names are reported and dropped, the same way a bad config
-  entry is.
+  repeated. A declared chain runs exactly as given or the call is refused:
+  any unknown name, or an LLM stage without `transcribe`, fails
+  `session.start` with `invalid_request`. (A config default is still resolved
+  leniently: dropped entries are logged at boot.)
 - `OnEndChainPolicy` (pure, `EarsCore`) is the single decision point, and the
   read side uses it too.
 - CLI: `ears session start --on-end-stage <stage>` (repeatable) and
