@@ -29,6 +29,17 @@ struct OnEndChainSmokeTests {
     Bundle(for: BundleMarker.self).bundleURL.deletingLastPathComponent()
   }
 
+  /// Stops `earsd` and waits for it to exit. Not `Process.waitUntilExit()`:
+  /// that spins the calling thread's run loop until Foundation observes the
+  /// exit, and an async test that launched the daemon on one cooperative
+  /// thread can resume on another, where under load the exit is never
+  /// observed and the wait never returns. `waitpid` waits on the child itself.
+  private static func stop(_ daemon: Process) {
+    daemon.terminate()
+    var status: Int32 = 0
+    _ = waitpid(daemon.processIdentifier, &status, 0)
+  }
+
   private static func binaryURL(_ name: String) throws -> URL {
     let url = try productsDirectory().appendingPathComponent(name)
     guard FileManager.default.fileExists(atPath: url.path) else {
@@ -165,8 +176,7 @@ struct OnEndChainSmokeTests {
     daemon.standardError = stderrPipe
     try daemon.run()
     defer {
-      daemon.terminate()
-      daemon.waitUntilExit()
+      Self.stop(daemon)
     }
 
     // Wait for the control socket — proof `EarsDaemon.start()` finished.
@@ -349,8 +359,7 @@ struct OnEndChainSmokeTests {
     daemon.standardError = Pipe()
     try daemon.run()
     defer {
-      daemon.terminate()
-      daemon.waitUntilExit()
+      Self.stop(daemon)
     }
 
     var socketReady = false
