@@ -1,0 +1,263 @@
+import EarsCore
+import Testing
+
+@testable import EarsMenuKit
+
+@Suite("NotificationPolicy")
+struct NotificationPolicyTests {
+  func stateWithEndedSession() -> MenuState {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession(state: .ended)]))
+    return state
+  }
+
+  @Test("summarize done notifies summary-ready with an open action")
+  func summarizeDoneNotifies() {
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "sum-1", kind: "summarize", session: "s1", state: .done)))
+    let request = NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+    #expect(
+      request
+        == NotificationRequest(
+          title: "Summary ready", body: "Weekly sync",
+          action: .openSummary(session: "s1", path: nil)))
+  }
+
+  /// The reconciler's attribution warnings are the one failure that looks
+  /// like success: the summary is there and reads fine, but a name on it may
+  /// be the wrong person's. They travel to the same note, so the summary's
+  /// own notification is where they belong.
+  @Test("a summary whose speakers were not resolved cleanly says so")
+  func summarizeDoneFlagsAttributionWarnings() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(
+        rev: 41,
+        sessions: [
+          makeSession(
+            state: .ended,
+            warnings: [
+              "speaker attribution: could not identify which roster entry is you",
+              "speaker attribution: dropped a binding of remote audio",
+            ])
+        ]))
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "sum-1", kind: "summarize", session: "s1", state: .done)))
+    #expect(
+      NotificationPolicy.onEvent(frame, state: state)
+        == NotificationRequest(
+          title: "Summary ready — check speaker names",
+          body:
+            "Weekly sync — speaker attribution: could not identify which roster entry is you "
+            + "(+1 more)",
+          action: .openSummary(session: "s1", path: nil)))
+  }
+
+  @Test("a lone warning is quoted without a count")
+  func singleWarningHasNoCount() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(
+        rev: 41, sessions: [makeSession(state: .ended, warnings: ["speaker attribution: nope"])]))
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "sum-1", kind: "summarize", session: "s1", state: .done)))
+    #expect(
+      NotificationPolicy.onEvent(frame, state: state)?.body
+        == "Weekly sync — speaker attribution: nope")
+  }
+
+  /// A session the menu never saw carries no warnings to report, so the
+  /// notification degrades to the plain form rather than claiming clean
+  /// attribution it cannot vouch for.
+  @Test("an unknown session's summary stays the plain summary-ready notice")
+  func unknownSessionSummaryIsPlain() {
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(job: "sum-1", kind: "summarize", session: "nope", state: .done)))
+    #expect(
+      NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+        == NotificationRequest(
+          title: "Summary ready", body: "nope", action: .openSummary(session: "nope", path: nil)))
+  }
+
+  @Test("any failed stage notifies with a reveal action")
+  func failureNotifies() {
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "t-1", kind: "transcribe", session: "s1", state: .failed)))
+    let request = NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+    #expect(
+      request
+        == NotificationRequest(
+          title: "Transcription failed", body: "Weekly sync", action: .revealSession(session: "s1"))
+    )
+  }
+
+  /// The daemon re-states a transcribe failure under the job id the child
+  /// already failed under, so a subscriber sees two `failed` frames for one
+  /// failure. The second is not news.
+  @Test("a failure re-stated under the same job id notifies once")
+  func restatedFailureNotifiesOnce() {
+    var state = stateWithEndedSession()
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(
+          job: "transcribe-1", kind: "transcribe", session: "s1", state: .failed,
+          detail: "exit 4")))
+
+    #expect(NotificationPolicy.onEvent(frame, state: state) != nil)
+    #expect(MenuStateReducer.apply(&state, frame) == .applied)
+    #expect(NotificationPolicy.onEvent(frame, state: state) == nil)
+  }
+
+  @Test("the quiet cases stay quiet")
+  func quietCases() {
+    let state = stateWithEndedSession()
+    let quiet: [EarsEvent] = [
+      .job(JobPublishParams(job: "t-1", kind: "transcribe", session: "s1", state: .started)),
+      .job(JobPublishParams(job: "t-1", kind: "transcribe", session: "s1", state: .done)),
+      .job(JobPublishParams(job: "c-1", kind: "cleanup", session: "s1", state: .done)),
+      .session(makeSession()),
+      .source(id: SourceID("mic"), state: .paused),
+    ]
+    for event in quiet {
+      #expect(NotificationPolicy.onEvent(EventFrame(event: event, rev: 42), state: state) == nil)
+    }
+  }
+
+  @Test("disconnect during an active session warns; while idle it does not")
+  func disconnectPolicy() {
+    var recording = MenuState()
+    MenuStateReducer.connected(
+      &recording, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+    #expect(
+      NotificationPolicy.onDisconnect(state: recording)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+    #expect(NotificationPolicy.onDisconnect(state: stateWithEndedSession()) == nil)
+  }
+
+  @Test("repeated disconnects on the same drop stay quiet; a reconnect re-arms the warning")
+  func disconnectIsEdgeTriggered() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+
+    // First drop while connected: warns.
+    #expect(
+      NotificationPolicy.onDisconnect(state: state)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+    MenuStateReducer.disconnected(&state)
+
+    // Subsequent redial failures while already unreachable: quiet.
+    #expect(NotificationPolicy.onDisconnect(state: state) == nil)
+    #expect(NotificationPolicy.onDisconnect(state: state) == nil)
+
+    // Reconnect, then drop again: warns again.
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+    #expect(
+      NotificationPolicy.onDisconnect(state: state)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+  }
+
+  @Test("a daemon that dies during a rev-gap resubscribe still warns")
+  func warnsWhileResubscribing() {
+    var state = MenuState()
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0",
+      snapshot: makeSnapshot(rev: 41, sessions: [makeSession()]))
+    // A dropped frame is a rev gap, which bounces the socket and leaves the
+    // state `.connecting` — the daemon is presumed alive. If it then dies,
+    // this drop is still the news the warning exists for.
+    MenuStateReducer.resubscribing(&state)
+    #expect(
+      NotificationPolicy.onDisconnect(state: state)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Weekly sync’ was recording.", action: .none))
+  }
+
+  @Test("a crash-looping daemon warns once per session, not once per crash")
+  func atRiskWarningIsPerSession() {
+    var state = MenuState()
+    var warned: Set<String> = []
+    let session = makeSession()
+
+    // Each crash/reconnect cycle re-arms the edge, so the edge alone is not
+    // enough: without per-session dedup this banners every second forever.
+    for _ in 0..<3 {
+      MenuStateReducer.connected(
+        &state, daemon: "earsd 0.1.0", snapshot: makeSnapshot(rev: 41, sessions: [session]))
+      if NotificationPolicy.onDisconnect(state: state, warnedSessions: warned) != nil {
+        warned.insert(session.id)
+      }
+      MenuStateReducer.disconnected(&state)
+    }
+    #expect(warned == [session.id])
+
+    // A different session at risk is news again.
+    let next = makeSession(id: "s2", title: "Standup")
+    MenuStateReducer.connected(
+      &state, daemon: "earsd 0.1.0", snapshot: makeSnapshot(rev: 41, sessions: [next]))
+    #expect(
+      NotificationPolicy.onDisconnect(state: state, warnedSessions: warned)
+        == NotificationRequest(
+          title: "Recording at risk",
+          body: "earsd stopped while ‘Standup’ was recording.", action: .none))
+  }
+
+  @Test("failed job with unknown session id shows first 8 chars as title")
+  func failureWithUnknownSessionId() {
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(
+          job: "t-1", kind: "transcribe", session: "deadbeef-1234", state: .failed)))
+    let request = NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+    #expect(
+      request
+        == NotificationRequest(
+          title: "Transcription failed", body: "deadbeef",
+          action: .revealSession(session: "deadbeef-1234"))
+    )
+  }
+
+  @Test("failed job with nil session id shows generic body and action")
+  func failureWithNilSessionId() {
+    let frame = EventFrame(
+      event: .job(JobPublishParams(job: "t-1", kind: "transcribe", session: nil, state: .failed)))
+    let request = NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
+    #expect(
+      request
+        == NotificationRequest(
+          title: "Transcription failed", body: "session", action: .none)
+    )
+  }
+
+  @Test("summary ready carries the path the daemon reported writing")
+  func summaryCarriesWrittenPath() {
+    var state = MenuState()
+    state.sessions = [
+      Session(id: "s1", title: "Weekly sync", state: .ended, started: Instant(secondsSinceEpoch: 0))
+    ]
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(
+          job: "summarize-1", kind: "summarize", session: "s1", state: .done,
+          outputs: ["/n/sync.summary.md"])))
+    let request = NotificationPolicy.onEvent(frame, state: state)
+    #expect(request?.title == "Summary ready")
+    #expect(request?.action == .openSummary(session: "s1", path: "/n/sync.summary.md"))
+  }
+}
