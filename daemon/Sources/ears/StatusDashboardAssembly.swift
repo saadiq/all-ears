@@ -37,7 +37,8 @@ enum StatusDashboardAssembly {
         .map {
           SessionListEntry(
             session: $0,
-            artifacts: SessionArtifactScanner.scan(session: $0, environment: environment))
+            artifacts: SessionArtifactScanner.scan(
+              session: $0, environment: environment, depth: .outcome))
         }
     }
 

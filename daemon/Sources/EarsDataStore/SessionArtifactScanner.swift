@@ -10,12 +10,24 @@ import Foundation
 /// The one implementation every read-only surface uses, so they agree on
 /// where a session's transcript, cleaned copy and summaries are.
 public enum SessionArtifactScanner {
+  /// How much of a session to read.
+  public enum Depth: Sendable {
+    /// Everything `ears session show` renders, including a size walk of every
+    /// source directory.
+    case full
+    /// Only what a one-line outcome reads — the transcript chain. List views
+    /// scan many sessions per render, where the size walk is wasted.
+    case outcome
+  }
+
   public static func scan(
-    session: Session, environment: SessionScanEnvironment
+    session: Session, environment: SessionScanEnvironment, depth: Depth = .full
   ) -> SessionArtifacts {
     var artifacts = SessionArtifacts()
-    scanCapture(session: session, environment: environment, into: &artifacts)
-    scanAttribution(session: session, environment: environment, into: &artifacts)
+    if depth == .full {
+      scanCapture(session: session, environment: environment, into: &artifacts)
+      scanAttribution(session: session, environment: environment, into: &artifacts)
+    }
     scanTranscriptChain(session: session, environment: environment, into: &artifacts)
     return artifacts
   }

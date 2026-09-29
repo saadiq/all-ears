@@ -46,4 +46,24 @@ struct SessionArtifactScannerTests {
       ])
     #expect(artifacts.summaryCount == 2)
   }
+
+  @Test("the outcome depth skips the capture walk and attribution but reads the transcript chain")
+  func outcomeDepthIsLighter() throws {
+    let (environment, session, _) = try Self.makeStore()
+    defer { try? FileManager.default.removeItem(at: environment.dataRoot) }
+    let sources = DataStoreLayout.sessionDirectory(
+      dataRoot: environment.dataRoot, sessionID: session.id
+    ).appendingPathComponent("sources/mic")
+    try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+    try Data(repeating: 1, count: 64).write(to: sources.appendingPathComponent("chunk"))
+
+    let full = SessionArtifactScanner.scan(session: session, environment: environment)
+    let light = SessionArtifactScanner.scan(
+      session: session, environment: environment, depth: .outcome)
+
+    #expect(!full.captureBytesBySource.isEmpty)
+    #expect(light.captureBytesBySource.isEmpty)
+    #expect(light.transcriptExists && light.cleanupExists)
+    #expect(light.summaryPaths == full.summaryPaths)
+  }
 }
