@@ -166,6 +166,8 @@ ears sessions [--all]                           # one line per session with its 
 ears session show <ref> [--warnings] [--json]   # one session's pipeline, stage by stage, from disk;
                                                 #   <ref> = id prefix | title fragment | HH:MM today
 ears session start --title standup --source mic --source app:us.zoom.xos
+ears session start --source mic --on-end-stage transcribe   # declare the end-of-session chain
+                                                #   (repeatable); --no-on-end declares none
 ears session pause <session-id>                 # closes the open mark; capture untouched
 ears session resume <session-id>                # opens a new mark
 ears session rename <session-id> --title "Weekly sync"

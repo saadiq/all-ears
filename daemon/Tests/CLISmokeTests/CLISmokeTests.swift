@@ -739,6 +739,15 @@ struct CLISmokeTests {
     #expect(run.result.stderr.contains("sources.add is not supported"))
   }
 
+  @Test("ears session start refuses --no-on-end together with --on-end-stage")
+  func sessionStartOnEndFlagsAreExclusive() throws {
+    let result = try Self.runEars([
+      "session", "start", "--no-on-end", "--on-end-stage", "transcribe",
+    ])
+    #expect(result.exitCode != 0)
+    #expect(result.stderr.contains("mutually exclusive"))
+  }
+
   @Test("ears sources add rejects an unrecognized --class before it reaches the socket")
   func earsSourcesAddRejectsUnknownClass() throws {
     let temp = TempDirectory()

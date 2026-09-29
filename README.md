@@ -189,7 +189,7 @@ frontmatter = false     # the vault owns its own frontmatter
 
 ## How it works
 
-A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends, for whichever sessions asked for it (the browser extension does; a manual session stays inert unless it asks). Four small tools operate on that store and its output:
+A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends, for whichever sessions asked for it (the browser extension does; `ears session start` stays inert unless you pass `--on-end-stage`). Four small tools operate on that store and its output:
 
 | Tool | Job |
 |------|-----|

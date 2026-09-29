@@ -55,7 +55,8 @@ Run for **at least 48–72 hours continuously**, spanning at least one real
 overnight system sleep. Several times a day, drive a real session cycle:
 
 ```sh
-ears session start --source mic     # prints the session id
+ears session start --source mic --on-end-stage transcribe   # prints the session id
+                                    # (manual sessions run no on-end chain unless asked)
 # ...talk for a few minutes...
 ears session end <id>
 ears session show <id>              # a while later: did it transcribe? (daemon-free, from disk)

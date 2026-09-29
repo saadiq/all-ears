@@ -120,8 +120,9 @@ local_sources = ["mic"]
 # This is a default, not a ceiling: only browser-extension sessions fall back
 # to it, and a session that declares its own chain runs that chain whatever
 # this says. A manual session runs nothing unless it asks, via
-# `session.start`'s own on_end_stages, so a scripted capture never spawns a
-# model load you didn't ask for.
+# `session.start`'s own on_end_stages (`ears session start --on-end-stage
+# transcribe`), so a scripted capture never spawns a model load you didn't ask
+# for. Per session, `--no-on-end` opts out whatever this says.
 on_end_stages = ["transcribe", "cleanup", "summarize"]
 # The empty-transcript gate. After transcribe, the chain reads the fresh
 # transcript's own word_count and speech_seconds; if either falls below its
