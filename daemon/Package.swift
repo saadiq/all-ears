@@ -49,6 +49,13 @@ let package = Package(
       exclude: ["README.md"]
     ),
 
+    // The menu bar app's pure core: state reduction, rendering, notification
+    // policy. No I/O, so it is tested like EarsCore.
+    .target(
+      name: "EarsMenuKit",
+      dependencies: ["EarsCore"]
+    ),
+
     // Shared bootstrap glue for the five executable stubs: config
     // discovery (`--print-config`/`--config-path`), config loading, and
     // the day-one logging requirements (bootstrap a `LogSink`, log
@@ -393,6 +400,10 @@ let package = Package(
     .testTarget(
       name: "EarsCLISupportTests",
       dependencies: ["EarsCLISupport"]
+    ),
+    .testTarget(
+      name: "EarsMenuKitTests",
+      dependencies: ["EarsMenuKit", "EarsCoreTestSupport"]
     ),
   ]
 )
