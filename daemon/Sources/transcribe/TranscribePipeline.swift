@@ -134,6 +134,9 @@ enum TranscribePipeline {
     /// with every other range flag — `Transcribe` validates that before the
     /// pipeline runs.
     var session: String? = nil
+    /// `--job-id <id>`: the spawner's correlation id for this run's
+    /// `job.publish` events. `nil` (every hand-run) mints one.
+    var jobID: String? = nil
     var sourceIDs: [String]
     var out: String?
     /// `--rereconcile`: re-derive the session's speaker map from its roster
@@ -160,7 +163,7 @@ enum TranscribePipeline {
     }
     let job = JobEventPublisher(
       socketPath: socketPath,
-      jobID: "transcribe-\(UUID().uuidString.lowercased().prefix(8))",
+      jobID: inputs.jobID ?? "transcribe-\(UUID().uuidString.lowercased().prefix(8))",
       sessionID: sessionID,
       log: dependencies.log)
     await job.publish(state: .started)
