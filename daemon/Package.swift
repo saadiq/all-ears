@@ -15,6 +15,7 @@ let package = Package(
     .executable(name: "transcribe", targets: ["transcribe"]),
     .executable(name: "cleanup", targets: ["cleanup"]),
     .executable(name: "summarize", targets: ["summarize"]),
+    .executable(name: "ears-menubar", targets: ["ears-menubar"]),
   ],
   dependencies: [
     .package(url: "https://github.com/LebJe/TOMLKit", exact: "0.6.0"),
@@ -296,6 +297,12 @@ let package = Package(
         "EarsLLMKit",
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
       ]
+    ),
+    // A thin SwiftUI client: learns what to record from `status.configured`
+    // and reads sessions back through the shared scanner.
+    .executableTarget(
+      name: "ears-menubar",
+      dependencies: ["EarsMenuKit", "EarsCore", "EarsConfig", "EarsIPC", "EarsDataStore"]
     ),
 
     // MARK: - Tests
