@@ -3,14 +3,16 @@ import EarsCore
 import EarsDataStore
 import Foundation
 
-/// The config-derived facts a disk scan needs: where the data root is, and
-/// how `cleanup` resolves its published path. One `loadConfig` pass, shared
-/// by every session the command scans.
+/// The config-derived facts a disk scan needs: where the data root is, how
+/// `cleanup` resolves its published path, and the on-end chain an undeclared
+/// session inherits. One `loadConfig` pass, shared by every session the
+/// command scans.
 struct ScanEnvironment {
   var dataRoot: URL
   var cleanupTemplate: PathTemplate
   var outputRoot: String
   var weekNumbering: WeekNumbering
+  var onEndChain: [OnEndStage]
   /// `[earsd.sessions] min_words` / `min_speech_seconds` as the daemon
   /// resolved them, so the pipeline view names a stopped chain for what it is
   /// (`skipped (empty transcript)`) instead of reporting absent artifacts.
@@ -45,8 +47,17 @@ enum SessionArtifactScanner {
             template.isEmpty ? LLMStagesConfigSchema.defaultCleanupOutput : template),
           outputRoot: stringValue(loaded.value, ["output_root"]),
           weekNumbering: WeekNumbering(configValue: stringValue(loaded.value, ["week_numbering"])),
+          onEndChain: onEndChain(loaded.value),
           emptiness: emptinessPolicy(loaded.value)))
     }
+  }
+
+  /// The resolved `[earsd.sessions] on_end_stages` — see
+  /// ``OnEndChainPolicy/configured(fromRaw:)`` for how an absent key, an
+  /// explicit list, and `[]` differ.
+  private static func onEndChain(_ config: ConfigValue) -> [OnEndStage] {
+    OnEndChainPolicy.configured(
+      fromRaw: stringArray(config, ["earsd", "sessions", "on_end_stages"]))
   }
 
   /// `[earsd.sessions]`'s two emptiness thresholds, each falling back to the
@@ -190,6 +201,16 @@ enum SessionArtifactScanner {
   private static func stringValue(_ config: ConfigValue, _ path: [String]) -> String {
     guard case .string(let value)? = nestedValue(config, path) else { return "" }
     return value
+  }
+
+  /// `nil` when the key is absent — a distinction the caller needs, since an
+  /// explicit `[]` means something different from no key at all.
+  private static func stringArray(_ config: ConfigValue, _ path: [String]) -> [String]? {
+    guard case .array(let entries)? = nestedValue(config, path) else { return nil }
+    return entries.compactMap { entry in
+      guard case .string(let value) = entry else { return nil }
+      return value
+    }
   }
 
   /// The value at a dotted config path, or `nil` when any segment is absent

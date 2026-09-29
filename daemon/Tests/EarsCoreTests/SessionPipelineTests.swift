@@ -12,10 +12,15 @@ struct SessionPipelineTests {
   /// Inside the post-end grace window.
   private var justAfter: Instant { ended.advanced(by: 60) }
 
+  /// The resolved `[earsd.sessions] on_end_stages` these tests run against.
+  private let fullChain = OnEndStage.allCases
+
   private func session(
     state: SessionState = .ended,
     sources: [String] = ["mic", "browser:meet:t1", "browser:meet:t2", "browser:meet:t3"],
     warnings: [String] = [],
+    trigger: TriggerKind = .browserExtension,
+    onEndStages: [String]? = nil,
     pipelineIssues: [PipelineIssue] = []
   ) -> Session {
     Session(
@@ -26,6 +31,8 @@ struct SessionPipelineTests {
       ended: state == .ended ? ended : nil,
       warnings: warnings,
       sources: sources.map { SourceID($0) },
+      trigger: trigger,
+      onEndStages: onEndStages,
       pipelineIssues: pipelineIssues)
   }
 
@@ -55,7 +62,7 @@ struct SessionPipelineTests {
   @Test("a fully published session derives five done stages")
   func fullyPublishedSessionIsAllDone() {
     let stages = SessionPipeline.stages(
-      session: session(), artifacts: fullArtifacts(), now: muchLater)
+      session: session(), artifacts: fullArtifacts(), now: muchLater, configuredChain: fullChain)
     #expect(stages.map(\.name) == ["capture", "transcribe", "cleanup", "summarize", "note"])
     #expect(stages.allSatisfy { $0.state == .done })
     #expect(stages[0].detail == "33 MB mic, 21 MB remote (1 of 3 tracks carried speech)")
@@ -70,7 +77,8 @@ struct SessionPipelineTests {
     var artifacts = SessionArtifacts()
     artifacts.captureBytesBySource = [SourceID("mic"): 9_904_279]
     let stages = SessionPipeline.stages(
-      session: session(sources: ["mic"]), artifacts: artifacts, now: justAfter)
+      session: session(sources: ["mic"]), artifacts: artifacts, now: justAfter,
+      configuredChain: fullChain)
     #expect(stages[0].state == .done)
     #expect(stages[0].detail == "9.9 MB mic")
   }
@@ -82,7 +90,8 @@ struct SessionPipelineTests {
     var artifacts = SessionArtifacts()
     artifacts.captureBytesBySource = [SourceID("mic"): 1_000]
     let stages = SessionPipeline.stages(
-      session: session(sources: ["mic"]), artifacts: artifacts, now: justAfter)
+      session: session(sources: ["mic"]), artifacts: artifacts, now: justAfter,
+      configuredChain: fullChain)
     #expect(stages[1].state == .running)
     #expect(stages[2].state == .waiting)
     #expect(stages[3].state == .waiting)
@@ -94,7 +103,8 @@ struct SessionPipelineTests {
     var artifacts = SessionArtifacts()
     artifacts.captureBytesBySource = [SourceID("mic"): 1_000]
     let stages = SessionPipeline.stages(
-      session: session(sources: ["mic"]), artifacts: artifacts, now: muchLater)
+      session: session(sources: ["mic"]), artifacts: artifacts, now: muchLater,
+      configuredChain: fullChain)
     #expect(stages[1].state == .missing)
     #expect(stages[1].detail == "no transcript on disk")
     #expect(stages[2].state == .missing)
@@ -106,7 +116,7 @@ struct SessionPipelineTests {
     var artifacts = fullArtifacts()
     artifacts.captureBytesBySource = [:]
     let stages = SessionPipeline.stages(
-      session: session(), artifacts: artifacts, now: muchLater)
+      session: session(), artifacts: artifacts, now: muchLater, configuredChain: fullChain)
     #expect(stages[0].state == .done)
     #expect(stages[0].detail == "audio evicted (transcript retained)")
   }
@@ -119,7 +129,7 @@ struct SessionPipelineTests {
     artifacts.captureBytesBySource = [SourceID("mic"): 9_904_279]
     let stages = SessionPipeline.stages(
       session: session(state: .active, sources: ["mic"]), artifacts: artifacts,
-      now: started.advanced(by: 26 * 60))
+      now: started.advanced(by: 26 * 60), configuredChain: fullChain)
     #expect(stages[0].state == .running)
     #expect(stages[0].detail == "9.9 MB mic")
     for stage in stages.dropFirst() {
@@ -135,33 +145,42 @@ struct SessionPipelineTests {
     let active = session(state: .active)
     #expect(
       SessionPipeline.outcome(
-        session: active, artifacts: SessionArtifacts(), now: started.advanced(by: 26 * 60))
+        session: active, artifacts: SessionArtifacts(), now: started.advanced(by: 26 * 60),
+        configuredChain: fullChain)
         == PipelineOutcome(glyph: "●", text: "recording (26m)"))
 
     #expect(
-      SessionPipeline.outcome(session: session(), artifacts: fullArtifacts(), now: muchLater)
+      SessionPipeline.outcome(
+        session: session(), artifacts: fullArtifacts(), now: muchLater, configuredChain: fullChain)
         == PipelineOutcome(glyph: "✓", text: "published"))
 
     var warned = fullArtifacts()
     #expect(
       SessionPipeline.outcome(
-        session: session(warnings: ["w1", "w2"]), artifacts: warned, now: muchLater)
+        session: session(warnings: ["w1", "w2"]), artifacts: warned, now: muchLater,
+        configuredChain: fullChain)
         == PipelineOutcome(glyph: "⚠", text: "published, 2 warnings"))
 
     warned.noteLink = nil
     warned.summaryCount = 0
     #expect(
-      SessionPipeline.outcome(session: session(), artifacts: warned, now: justAfter)
+      SessionPipeline.outcome(
+        session: session(), artifacts: warned, now: justAfter, configuredChain: fullChain)
         == PipelineOutcome(glyph: "·", text: "summarizing"))
     #expect(
-      SessionPipeline.outcome(session: session(), artifacts: warned, now: muchLater)
+      SessionPipeline.outcome(
+        session: session(), artifacts: warned, now: muchLater, configuredChain: fullChain)
         == PipelineOutcome(glyph: "–", text: "transcribed, no note"))
 
     #expect(
-      SessionPipeline.outcome(session: session(), artifacts: SessionArtifacts(), now: justAfter)
+      SessionPipeline.outcome(
+        session: session(), artifacts: SessionArtifacts(), now: justAfter,
+        configuredChain: fullChain)
         == PipelineOutcome(glyph: "·", text: "transcribing"))
     #expect(
-      SessionPipeline.outcome(session: session(), artifacts: SessionArtifacts(), now: muchLater)
+      SessionPipeline.outcome(
+        session: session(), artifacts: SessionArtifacts(), now: muchLater,
+        configuredChain: fullChain)
         == PipelineOutcome(glyph: "–", text: "no transcript"))
   }
 
@@ -170,7 +189,7 @@ struct SessionPipelineTests {
     #expect(
       SessionPipeline.outcome(
         session: session(state: .paused), artifacts: SessionArtifacts(),
-        now: started.advanced(by: 600))
+        now: started.advanced(by: 600), configuredChain: fullChain)
         == PipelineOutcome(glyph: "◐", text: "paused (10m)"))
   }
 
@@ -191,10 +210,12 @@ struct SessionPipelineTests {
 
     // A recorded failure is not in flight, so the grace window doesn't apply.
     #expect(
-      SessionPipeline.outcome(session: failed, artifacts: artifacts, now: justAfter)
+      SessionPipeline.outcome(
+        session: failed, artifacts: artifacts, now: justAfter, configuredChain: fullChain)
         == PipelineOutcome(
           glyph: "✗", text: "transcribed, summarize failed (retryable-upstream), 1 warning"))
-    let stages = SessionPipeline.stages(session: failed, artifacts: artifacts, now: muchLater)
+    let stages = SessionPipeline.stages(
+      session: failed, artifacts: artifacts, now: muchLater, configuredChain: fullChain)
     #expect(
       stages[3]
         == PipelineStage(
@@ -209,7 +230,8 @@ struct SessionPipelineTests {
       PipelineIssue(stage: "summarize", kind: .warning, message: "no notes file")
     ])
     #expect(
-      SessionPipeline.outcome(session: warned, artifacts: fullArtifacts(), now: muchLater)
+      SessionPipeline.outcome(
+        session: warned, artifacts: fullArtifacts(), now: muchLater, configuredChain: fullChain)
         == PipelineOutcome(glyph: "⚠", text: "published, 1 warning"))
   }
 
@@ -230,7 +252,8 @@ struct SessionPipelineTests {
   @Test("an empty transcript renders the later stages as skipped, not missing")
   func emptyTranscriptRendersSkipped() {
     let stages = SessionPipeline.stages(
-      session: session(), artifacts: emptyTranscriptArtifacts(), now: muchLater)
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: muchLater,
+      configuredChain: fullChain)
     #expect(stages[1].state == .done)
     for stage in stages[2...] {
       #expect(stage.state == .skipped)
@@ -241,7 +264,8 @@ struct SessionPipelineTests {
   @Test("skipped outranks the grace window: a just-ended empty session is not 'running'")
   func skippedOutranksRecency() {
     let stages = SessionPipeline.stages(
-      session: session(), artifacts: emptyTranscriptArtifacts(), now: justAfter)
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: justAfter,
+      configuredChain: fullChain)
     #expect(stages.filter { $0.state == .skipped }.map(\.name) == ["cleanup", "summarize", "note"])
   }
 
@@ -249,6 +273,7 @@ struct SessionPipelineTests {
   func disabledGateRendersMissing() {
     let stages = SessionPipeline.stages(
       session: session(), artifacts: emptyTranscriptArtifacts(), now: muchLater,
+      configuredChain: fullChain,
       emptiness: TranscriptEmptinessPolicy(minWords: 0, minSpeechSeconds: 0))
     #expect(!stages.contains { $0.state == .skipped })
     #expect(stages[2].state == .missing)
@@ -260,7 +285,7 @@ struct SessionPipelineTests {
     artifacts.transcriptWords = nil
     artifacts.transcriptSpeechSeconds = nil
     let stages = SessionPipeline.stages(
-      session: session(), artifacts: artifacts, now: muchLater)
+      session: session(), artifacts: artifacts, now: muchLater, configuredChain: fullChain)
     #expect(!stages.contains { $0.state == .skipped })
   }
 
@@ -270,14 +295,15 @@ struct SessionPipelineTests {
     artifacts.transcriptWords = 1
     artifacts.transcriptSpeechSeconds = 0.556
     let stages = SessionPipeline.stages(
-      session: session(), artifacts: artifacts, now: muchLater)
+      session: session(), artifacts: artifacts, now: muchLater, configuredChain: fullChain)
     #expect(stages.allSatisfy { $0.state == .done })
   }
 
   @Test("the sessions list calls an empty session empty, not a stalled pipeline")
   func emptySessionOutcome() {
     let outcome = SessionPipeline.outcome(
-      session: session(), artifacts: emptyTranscriptArtifacts(), now: justAfter)
+      session: session(), artifacts: emptyTranscriptArtifacts(), now: justAfter,
+      configuredChain: fullChain)
     // Inside the grace window it would otherwise claim "summarizing" — a wait
     // that never ends, since nothing downstream was ever going to run.
     #expect(outcome.text == "empty, not summarized")

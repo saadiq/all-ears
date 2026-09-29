@@ -57,7 +57,7 @@ struct StatusDashboardRenderingTests {
         evidenceBySession: [
           meeting().id: AttributionSpeechEvidence(speechCaptures: ["t1"])
         ],
-        recent: [recent]),
+        recent: [recent], configuredChain: OnEndStage.allCases),
       now: now, timeZone: utc)
 
     #expect(
@@ -82,7 +82,7 @@ struct StatusDashboardRenderingTests {
       StatusDashboardInputs(
         status: StatusData(uptimeSeconds: 60, sources: sources(), sessions: [session]),
         evidenceBySession: [session.id: AttributionSpeechEvidence(speechCaptures: ["t1"])],
-        recent: []),
+        recent: [], configuredChain: OnEndStage.allCases),
       now: now, timeZone: utc)
     #expect(text.contains("remote audio (t1)  4.2 MB  carrying speech"))
     #expect(text.contains("t2, t3             5.2 MB  silent"))
@@ -94,7 +94,7 @@ struct StatusDashboardRenderingTests {
       StatusDashboardInputs(
         status: StatusData(uptimeSeconds: 60, sources: sources(), sessions: [meeting()]),
         evidenceBySession: [:],
-        recent: []),
+        recent: [], configuredChain: OnEndStage.allCases),
       now: now, timeZone: utc)
     #expect(!text.contains("carrying speech"))
     #expect(!text.contains("silent"))
@@ -112,7 +112,7 @@ struct StatusDashboardRenderingTests {
           ],
           sessions: []),
         evidenceBySession: [:],
-        recent: []),
+        recent: [], configuredChain: OnEndStage.allCases),
       now: now, timeZone: utc)
     #expect(
       text == """
