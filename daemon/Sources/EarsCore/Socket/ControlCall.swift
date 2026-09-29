@@ -94,28 +94,33 @@ public struct SubscribeParams: Sendable, Hashable, Codable {
 /// idempotent on that identity; without them it creates a manual session.
 /// `sources` seeds the session's source list (`ears session start --source
 /// mic`); the roster's `source` links add more later. `trigger` records
-/// provenance; defaults to `.manual`.
+/// provenance; defaults to `.manual`. `onEndStages` declares this session's
+/// post-processing chain — omit it to take the daemon's default for the
+/// trigger, pass `[]` to run nothing (see ``Session/onEndStages``).
 public struct SessionStartParams: Sendable, Hashable, Codable {
   public var platform: String?
   public var externalID: String?
   public var title: String?
   public var sources: [SourceID]
   public var trigger: TriggerKind?
+  public var onEndStages: [String]?
 
   public init(
     platform: String? = nil, externalID: String? = nil, title: String? = nil,
-    sources: [SourceID] = [], trigger: TriggerKind? = nil
+    sources: [SourceID] = [], trigger: TriggerKind? = nil, onEndStages: [String]? = nil
   ) {
     self.platform = platform
     self.externalID = externalID
     self.title = title
     self.sources = sources
     self.trigger = trigger
+    self.onEndStages = onEndStages
   }
 
   private enum CodingKeys: String, CodingKey {
     case platform, title, sources, trigger
     case externalID = "external_id"
+    case onEndStages = "on_end_stages"
   }
 
   public init(from decoder: any Decoder) throws {
@@ -125,6 +130,9 @@ public struct SessionStartParams: Sendable, Hashable, Codable {
     title = try container.decodeIfPresent(String.self, forKey: .title)
     sources = try container.decodeIfPresent([SourceID].self, forKey: .sources) ?? []
     trigger = try container.decodeIfPresent(TriggerKind.self, forKey: .trigger)
+    // Absent stays `nil` ("undeclared"); an explicit `[]` is a real value
+    // meaning "no chain", so this cannot collapse to a default of `[]`.
+    onEndStages = try container.decodeIfPresent([String].self, forKey: .onEndStages)
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -135,6 +143,7 @@ public struct SessionStartParams: Sendable, Hashable, Codable {
     // Empty means "none named" and is omitted — the canonical wire form.
     if !sources.isEmpty { try container.encode(sources, forKey: .sources) }
     try container.encodeIfPresent(trigger, forKey: .trigger)
+    try container.encodeIfPresent(onEndStages, forKey: .onEndStages)
   }
 
   /// The identity to be idempotent on, when both halves were given.

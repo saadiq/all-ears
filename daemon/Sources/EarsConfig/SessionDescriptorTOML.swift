@@ -23,7 +23,7 @@ public enum SessionDescriptorTOML {
   /// Encodes a ``Session`` into the `ConfigValue` table `session.toml`
   /// serializes to.
   public static func encode(_ session: Session) -> ConfigValue {
-    .table([
+    var table: [String: ConfigValue] = [
       "schema": .int(schemaVersion),
       "id": .string(session.id),
       "platform": .string(session.identity?.platform ?? ""),
@@ -85,7 +85,14 @@ public enum SessionDescriptorTOML {
             "confidence": .string(speaker.confidence.rawValue),
           ])
         }),
-    ])
+    ]
+    // Written only when the starter declared one, so an undeclared session's
+    // descriptor is byte-identical to what earlier builds wrote — and reading
+    // it back yields `nil`, not `[]`.
+    if let stages = session.onEndStages {
+      table["on_end_stages"] = .array(stages.map { .string($0) })
+    }
+    return .table(table)
   }
 
   /// Decodes a ``Session`` from a `ConfigValue` table parsed from
@@ -146,6 +153,16 @@ public enum SessionDescriptorTOML {
     for element in try fields.array("sources") {
       guard case .string(let raw) = element else { throw .invalidField("sources") }
       sources.append(SourceID(raw))
+    }
+
+    var onEndStages: [String]?
+    if let declared = try fields.declaredArray("on_end_stages") {
+      var stages: [String] = []
+      for element in declared {
+        guard case .string(let raw) = element else { throw .invalidField("on_end_stages") }
+        stages.append(raw)
+      }
+      onEndStages = stages
     }
 
     var intervals: [SessionInterval] = []
@@ -244,6 +261,7 @@ public enum SessionDescriptorTOML {
       warnings: warnings,
       sources: sources,
       trigger: trigger,
+      onEndStages: onEndStages,
       transcriptCompleted: transcriptCompleted,
       pipelineIssues: pipelineIssues,
       // Absent = 0: a file from before reconciliation was versioned, which

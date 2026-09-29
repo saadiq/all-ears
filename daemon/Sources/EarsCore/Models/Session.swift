@@ -54,6 +54,11 @@ public struct Session: Sendable, Hashable {
   public var sources: [SourceID]
   /// Provenance: what started this session.
   public var trigger: TriggerKind
+  /// The post-processing chain this session's starter asked for, by stage
+  /// name. `nil` means "not declared — apply the daemon's default for
+  /// ``trigger``"; `[]` means "run nothing", the opt-out for a client that
+  /// runs the stages itself. Names are validated when the session starts.
+  public var onEndStages: [String]?
   /// When this session's transcript last completed **successfully** — the
   /// durable marker retention keys off (`docs/specs/capture-daemon.md`'s
   /// "Retention"). `nil` until a transcript run succeeds; once set, the
@@ -82,6 +87,7 @@ public struct Session: Sendable, Hashable {
     warnings: [String] = [],
     sources: [SourceID] = [],
     trigger: TriggerKind = .manual,
+    onEndStages: [String]? = nil,
     transcriptCompleted: Instant? = nil,
     pipelineIssues: [PipelineIssue] = [],
     reconcilerVersion: Int = 0,
@@ -99,6 +105,7 @@ public struct Session: Sendable, Hashable {
     self.warnings = warnings
     self.sources = sources
     self.trigger = trigger
+    self.onEndStages = onEndStages
     self.transcriptCompleted = transcriptCompleted
     self.pipelineIssues = pipelineIssues
     self.reconcilerVersion = reconcilerVersion
@@ -290,6 +297,7 @@ extension Session: Codable {
     case id, identity, title, state, started, ended, intervals, attendees, speakers, warnings
     case sources, trigger, rev
     case transcriptCompleted = "transcript_completed"
+    case onEndStages = "on_end_stages"
     case pipelineIssues = "pipeline_issues"
   }
 
@@ -307,6 +315,9 @@ extension Session: Codable {
     warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
     sources = try container.decodeIfPresent([SourceID].self, forKey: .sources) ?? []
     trigger = try container.decode(TriggerKind.self, forKey: .trigger)
+    // `decodeIfPresent` keeps the tri-state: an absent key stays `nil`
+    // ("undeclared"), an explicit `[]` decodes as an empty list ("no chain").
+    onEndStages = try container.decodeIfPresent([String].self, forKey: .onEndStages)
     transcriptCompleted = try container.decodeISO8601InstantIfPresent(forKey: .transcriptCompleted)
     pipelineIssues =
       try container.decodeIfPresent([PipelineIssue].self, forKey: .pipelineIssues) ?? []
@@ -330,6 +341,7 @@ extension Session: Codable {
     try container.encode(warnings, forKey: .warnings)
     try container.encode(sources, forKey: .sources)
     try container.encode(trigger, forKey: .trigger)
+    try container.encodeIfPresent(onEndStages, forKey: .onEndStages)
     try container.encodeISO8601InstantIfPresent(transcriptCompleted, forKey: .transcriptCompleted)
     // Omitted when empty, so every frame without issues stays byte-identical
     // to the shared golden fixtures.

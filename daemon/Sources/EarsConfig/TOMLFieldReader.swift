@@ -34,6 +34,18 @@ struct TOMLFieldReader {
     return value
   }
 
+  /// An optional array field, where **an empty array is a value, not the
+  /// absent sentinel**: only a missing key decodes to `nil`. The "empty =>
+  /// absent" convention ``optionalArray(_:)`` uses cannot be applied to
+  /// `session.on_end_stages`, whose whole point is that `[]` ("run no
+  /// stages") differs from undeclared ("apply the daemon's default"), so it
+  /// gets its own reader rather than a sentinel the caller has to remember.
+  func declaredArray(_ key: String) throws(DescriptorTOMLError) -> [ConfigValue]? {
+    guard let entry = table[key] else { return nil }
+    guard case .array(let value) = entry else { throw .invalidField(key) }
+    return value
+  }
+
   /// An optional array field: an absent key decodes to `[]`.
   ///
   /// The tolerant counterpart to ``array(_:)``, for arrays added to a schema
