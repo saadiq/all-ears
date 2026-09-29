@@ -210,7 +210,7 @@ struct ControlServerTests {
     #expect(again["id"] as? String == firstID)
   }
 
-  @Test("session error mapping: not-found, ended, and rename conflict codes")
+  @Test("session error mapping: not-found, ended, conflict, and invalid-request codes")
   func sessionErrorMapping() async throws {
     let dataRoot = try makeDataRoot()
     let clock = ManualClock()
@@ -239,6 +239,11 @@ struct ControlServerTests {
         await server.handle(
           .sessionRename(SessionRenameParams(session: secondID, title: "x", ifRev: 999))))
         == "conflict")
+
+    #expect(
+      try errorCode(
+        await server.handle(.sessionStart(SessionStartParams(onEndStages: ["transcript"]))))
+        == "invalid_request")
   }
 
   @Test("session.list returns live + recent sessions")

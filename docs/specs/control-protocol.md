@@ -164,10 +164,22 @@ Semantics:
   a track, not a person). Absent means unknown (old clients, old files); an upsert that
   omits it leaves the stored value untouched. Reconciliation counts only platform-origin
   rows as named remote participants.
+- **Post-processing is declared at `session.start`, not inferred.** The optional `on_end_stages`
+  names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
+  `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at
+  the call site, instead of editing daemon config. Omit the field and the daemon applies its
+  default for the trigger: browser-extension sessions inherit `[earsd.sessions] on_end_stages`,
+  every other trigger runs nothing. A declared chain is honoured exactly or refused: a name
+  the daemon cannot run — an unknown stage, or `cleanup`/`summarize` with no `transcribe` to
+  feed them — fails the `session.start` call with `invalid_request` rather than resolving to a
+  smaller chain (or to nothing) at session end, hours after the caller could have been told.
+  Config entries stay lenient by contrast: nobody is waiting on a boot warning. The
+  declaration is persisted in `session.toml`, so it survives a daemon restart between start
+  and end, and a re-declare that names a chain replaces the stored one — `[]` on a re-declare
+  is how a client cancels a chain it asked for earlier.
 - **On `session.end`,** the daemon closes the open interval, finalizes the session record
   (`session.toml` holds the intervals and roster that transcription reads directly), and stops
-  capture. For browser-triggered sessions the daemon then runs the on-end pipeline
-  (`transcribe --session <id>`, then `cleanup` and `summarize` over its output — see
+  capture. It then runs whatever chain the session resolved to (`transcribe --session <id>`, then `cleanup` and `summarize` over its output — see
   [capture-daemon](capture-daemon.md#session-end-pipeline)); when the transcribe stage exits 0
   the daemon stamps `transcript_completed`, which starts the retention clock
   ([capture-daemon](capture-daemon.md#storage-maintenance-and-retention)).
@@ -196,7 +208,7 @@ Grouped by capability. All carried in the v2 envelope.
 | — | `hello` | see [Handshake](#handshake) |
 | `observe` | `status` | → `{uptime_s, sources, sessions}` — daemon + per-source state, active sessions |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
-| `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session |
+| `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing"; a chain naming a stage the daemon cannot run → `invalid_request`. A re-declare that names a chain replaces the stored one |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
 | `sessions` | `session.pause` | `{session}` → session. Closes open interval; no-op success if already paused |
 | `sessions` | `session.resume` | `{session}` → session. Opens a new interval; no-op success if active |

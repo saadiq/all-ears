@@ -69,12 +69,18 @@ public struct EarsDaemonConfiguration: Sendable {
   /// id here that the daemon isn't capturing is silently skipped rather than
   /// breaking `transcribe --session`. Default `["mic"]`; `[]` disables.
   public var browserSessionLocalSources: [SourceID]
-  /// `[earsd.sessions].on_end_stages`: the pipeline stages a browser-triggered
-  /// session auto-runs (via the shared ``OnClosePipelineRunner``) when it
-  /// ends, in ``OnEndStage``'s canonical chain order. Default is the full
-  /// `transcribe` → `cleanup` → `summarize` chain; `[]` disables the chain
-  /// entirely — tests inject `[]` so a session end never spawns a real
-  /// subprocess. Resolved and validated by `OnEndStage.resolveList`.
+  /// `[earsd.sessions].on_end_stages`: the **default** chain, in
+  /// ``OnEndStage``'s canonical order, for an ended session whose starter
+  /// declared none of its own. Browser-extension sessions fall back to it;
+  /// every other trigger runs nothing unless it declares a chain — see
+  /// ``OnEndChainPolicy`` for why.
+  ///
+  /// `[]` is the default *here* so that spawning a real subprocess is
+  /// something a caller opts into: `earsd` always passes the resolved config
+  /// list (whose own default is the full `transcribe` → `cleanup` →
+  /// `summarize` chain), while a test that never mentions stages stays
+  /// hermetic instead of shelling out to whatever is on PATH. Resolved and
+  /// validated by `OnEndStage.resolveList`.
   public var onEndStages: [OnEndStage]
   /// `[earsd.sessions] min_words` / `min_speech_seconds`: the thresholds
   /// below which an ended session's transcript reads as empty, and the on-end
@@ -104,7 +110,7 @@ public struct EarsDaemonConfiguration: Sendable {
     controlWebSocket: ControlWebSocketConfiguration? = nil,
     sessionIngestCloseGraceSeconds: Double = 120,
     browserSessionLocalSources: [SourceID] = ["mic"],
-    onEndStages: [OnEndStage] = OnEndStage.allCases,
+    onEndStages: [OnEndStage] = [],
     onEndEmptinessPolicy: TranscriptEmptinessPolicy = .defaults,
     outputRoot: URL = URL(fileURLWithPath: ".")
   ) {
@@ -434,37 +440,41 @@ public actor EarsDaemon {
   public func start() async throws {
 
     // The daemon-owned session lifecycle registry, serving the `session.*`
-    // verbs on both control transports. Session end fires the configured
-    // on-end stage chain (`transcribe --session <id>`, then `cleanup` and
-    // `summarize` over its output — see `OnClosePipelineRunner`).
-    let onSessionEnded: SessionRegistry.EndedHook?
-    if !configuration.onEndStages.isEmpty {
-      let pipeline = OnClosePipelineRunner(
-        log: log,
-        publishJob: { [eventBus] params in await eventBus.publish(.job(params)) })
-      let stages = configuration.onEndStages
-      let emptiness = configuration.onEndEmptinessPolicy
-      onSessionEnded = { [weak self] session in
-        guard session.trigger == .browserExtension else { return }
-        // Spawned in its own task so `session.end` never blocks behind a full
-        // transcription-and-LLM run. On transcribe success — and only
-        // transcribe: the LLM stages are derived artifacts and never gate
-        // retention — stamp the transcript-completion marker, which starts
-        // this session's retention clock.
-        Task { [weak self] in
-          let transcribed = await pipeline.runOnEndChain(
-            sessionID: session.id, stages: stages, emptiness: emptiness,
-            context: "session-end",
-            recordIssues: { [weak self] issues in
-              await self?.recordSessionPipelineIssues(session.id, issues)
-            })
-          if transcribed {
-            await self?.markSessionTranscriptCompleted(session.id)
-          }
+    // verbs on both control transports. Session end fires the on-end stage
+    // chain the session resolves to (`transcribe --session <id>`, then
+    // `cleanup` and `summarize` over its output — see `OnClosePipelineRunner`).
+    //
+    // Always installed: which stages run is a per-session question
+    // (``OnEndChainPolicy``), so a session that declares its own chain is
+    // honoured even on a daemon whose configured default is empty.
+    let pipeline = OnClosePipelineRunner(
+      log: log,
+      publishJob: { [eventBus] params in await eventBus.publish(.job(params)) })
+    let configuredStages = configuration.onEndStages
+    let emptiness = configuration.onEndEmptinessPolicy
+    let onSessionEnded: SessionRegistry.EndedHook? = { [weak self, log] session in
+      let resolved = OnEndChainPolicy.stages(
+        declared: session.onEndStages, trigger: session.trigger, configured: configuredStages)
+      for problem in resolved.problems {
+        log("session.end on_end_stages: session=\(session.id) \(problem)")
+      }
+      guard !resolved.stages.isEmpty else { return }
+      // Spawned in its own task so `session.end` never blocks behind a full
+      // transcription-and-LLM run. On transcribe success — and only
+      // transcribe: the LLM stages are derived artifacts and never gate
+      // retention — stamp the transcript-completion marker, which starts
+      // this session's retention clock.
+      Task { [weak self] in
+        let transcribed = await pipeline.runOnEndChain(
+          sessionID: session.id, stages: resolved.stages, emptiness: emptiness,
+          context: "session-end",
+          recordIssues: { [weak self] issues in
+            await self?.recordSessionPipelineIssues(session.id, issues)
+          })
+        if transcribed {
+          await self?.markSessionTranscriptCompleted(session.id)
         }
       }
-    } else {
-      onSessionEnded = nil
     }
     let sessions = SessionRegistry(
       dataRoot: configuration.dataRoot,

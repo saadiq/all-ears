@@ -122,7 +122,7 @@ A reader reconstructs available audio for any range from `chunk` events, uses `v
 
 ## Sessions (`sessions/<uuid>/`)
 
-The daemon-owned [Session](./specs/control-protocol.md#session) entity — the one lifecycle record. `session.toml` (**schema 3**) carries the fields of the wire's session object — identity, title, state, transcription intervals, roster, sources, trigger, transcript-completion marker — written atomically on every mutation and reloaded at daemon start. Optional scalar fields use an empty string for "absent"; `rev` is deliberately not persisted (revisions are scoped to a daemon boot).
+The daemon-owned [Session](./specs/control-protocol.md#session) entity — the one lifecycle record. `session.toml` (**schema 3**) carries the fields of the wire's session object — identity, title, state, transcription intervals, roster, sources, trigger, declared on-end chain, transcript-completion marker — written atomically on every mutation and reloaded at daemon start. Optional scalar fields use an empty string for "absent"; `on_end_stages` is the exception, where an absent key and an empty array mean different things (see below); `rev` is deliberately not persisted (revisions are scoped to a daemon boot).
 
 ```toml
 schema = 3
@@ -139,6 +139,11 @@ trigger = "browser-extension"           # manual | browser-extension
 sources = ["mic", "browser:meet:t3"]    # source ids are opaque handles: a browser
                                         #   source names a captured track, never a
                                         #   person (see "Roster and speaker map")
+on_end_stages = ["transcribe"]          # the chain this session's starter declared.
+                                        #   Absent key = declared nothing (the daemon
+                                        #   applies its per-trigger default); [] = an
+                                        #   explicit "run no stages". The one field
+                                        #   where absent and empty differ.
 reconciler_version = 4                  # which reconciler derived [[speaker]] below;
                                         #   absent = 0 (a file from before versioning,
                                         #   or a session never reconciled) — see

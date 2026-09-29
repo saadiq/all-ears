@@ -13,6 +13,10 @@ public enum SessionRegistryError: Error, Sendable, Hashable {
   /// `session.rename`'s `if_rev` didn't match the session's current
   /// revision → `conflict`.
   case conflict(String)
+  /// The call named something the daemon cannot honour — e.g. an
+  /// `on_end_stages` chain that resolves to no runnable stage →
+  /// `invalid_request`.
+  case invalidRequest(String)
 }
 
 /// Owns the v2 **Session** lifecycle (`docs/specs/control-protocol.md`):
@@ -306,13 +310,24 @@ public actor SessionRegistry {
   /// above) and never supersedes itself, which absorbs extension reconnect churn
   /// (reconnects carry the same identity tag).
   public func start(_ params: SessionStartParams) async throws -> Session {
+    try Self.validateOnEndStages(params.onEndStages)
+
     if let identity = params.identity,
       let existingID = byIdentity[identity],
       var existing = sessions[existingID],
       existing.state != .ended
     {
       let merged = mergeSources(params.sources + claimPendingLinks(for: identity), into: &existing)
-      if merged {
+      // A re-declare that names a chain replaces the original, so a caller
+      // correcting itself with `[]` (or adding a chain) is honoured rather
+      // than handed the stale declaration back. `nil` still means
+      // "undeclared", so a reconnecting extension that never mentions stages
+      // changes nothing.
+      let restaged = params.onEndStages.map { $0 != existing.onEndStages } ?? false
+      if restaged {
+        existing.onEndStages = params.onEndStages
+      }
+      if merged || restaged {
         try persist(existing)
         await publish(&existing)
       }
@@ -320,7 +335,7 @@ public actor SessionRegistry {
       log(
         "session.start idempotent re-declare: session=\(existing.id) "
           + "identity=\(identityLabel(existing)) merged_sources=\(merged) "
-          + "sources=\(sourceLabel(existing))")
+          + "restaged=\(restaged) sources=\(sourceLabel(existing))")
       // Idempotent daemon-side: re-declaring the same session only starts
       // capture for sources it hasn't already claimed.
       await startCapture(existing.id, existing.sources)
@@ -366,7 +381,8 @@ public actor SessionRegistry {
       started: now,
       intervals: [SessionInterval(start: now)],
       sources: await initialSources(declared: declared, trigger: trigger),
-      trigger: trigger)
+      trigger: trigger,
+      onEndStages: params.onEndStages)
     try persist(session)
     appendEvent(session.id, event: "started", at: now)
     appendEvent(session.id, event: "interval_opened", at: now)
@@ -841,6 +857,25 @@ public actor SessionRegistry {
       sources.append(source)
     }
     return sources
+  }
+
+  /// Rejects a declared `on_end_stages` the daemon could not actually run.
+  ///
+  /// Config entries are resolved leniently — a bad one is dropped with a boot
+  /// warning an operator can read — but a *declared* chain arrives on a call
+  /// whose caller can be told. So it is honoured exactly or refused: any
+  /// entry `OnEndStage.resolveList` would drop fails the call, rather than
+  /// the session quietly running a smaller chain than was asked for (a typo
+  /// or an LLM-only chain would otherwise resolve to nothing at session end,
+  /// with no transcript and no error). `[]` is the explicit opt-out and is
+  /// always accepted.
+  private static func validateOnEndStages(_ declared: [String]?) throws {
+    guard let declared, !declared.isEmpty else { return }
+    let problems = OnEndStage.resolveList(declared).problems
+    guard problems.isEmpty else {
+      throw SessionRegistryError.invalidRequest(
+        "on_end_stages \(declared): " + problems.joined(separator: "; "))
+    }
   }
 
   private func mergeSources(_ sources: [SourceID], into session: inout Session) -> Bool {
