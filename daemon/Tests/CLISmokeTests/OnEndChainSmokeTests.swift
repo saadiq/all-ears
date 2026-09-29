@@ -372,6 +372,18 @@ struct OnEndChainSmokeTests {
       Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
       "the data store must hold intermediates only, never a published clean transcript")
 
+    // Readers find a session's artifacts through this scanner, from config
+    // and the transcript's own frontmatter — never from a stage's envelope.
+    // It must find exactly what the chain wrote.
+    let environment = SessionScanEnvironment(
+      dataRoot: URL(fileURLWithPath: dataRoot),
+      cleanupTemplate: PathTemplate(LLMStagesConfigSchema.defaultCleanupOutput),
+      outputRoot: outputRoot, weekNumbering: .us, onEndChain: OnEndStage.allCases)
+    let scanned = SessionArtifactScanner.scan(session: ended, environment: environment)
+    #expect(
+      scanned.cleanupExists, "scanner resolved \(scanned.cleanupPath ?? "nil"), which is absent")
+    #expect(scanned.summaryPaths.count == 1)
+    #expect(scanned.summaryPaths.allSatisfy { FileManager.default.fileExists(atPath: $0) })
   }
 
   @Test(

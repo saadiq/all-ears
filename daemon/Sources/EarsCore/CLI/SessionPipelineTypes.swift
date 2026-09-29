@@ -30,6 +30,8 @@ public struct SessionArtifacts: Sendable, Equatable {
   public var cleanupSegments: Int?
   /// `*.summary.md` siblings derived from the cleaned transcript.
   public var summaryCount = 0
+  /// Absolute paths of the summaries beside the cleaned transcript, sorted.
+  public var summaryPaths: [String] = []
   /// The `note:` frontmatter link stamped into the cleaned transcript by
   /// `summarize` — the published note, in wikilink or absolute-path form.
   public var noteLink: String?

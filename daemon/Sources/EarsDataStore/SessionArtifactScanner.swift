@@ -106,7 +106,9 @@ public enum SessionArtifactScanner {
     let stem = CleanupPublishedPath.documentStem(cleanupURL)
     let directory = cleanupURL.deletingLastPathComponent()
     if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) {
-      artifacts.summaryCount = SummarySiblings.select(filenames: names, stem: stem).count
+      let summaries = SummarySiblings.select(filenames: names, stem: stem)
+      artifacts.summaryPaths = summaries.map { directory.appendingPathComponent($0).path }
+      artifacts.summaryCount = summaries.count
     }
   }
 
