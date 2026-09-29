@@ -2,7 +2,7 @@
 
 ## Today
 
-There are no packaged (signed, notarized) builds yet, but there is a supported source install: clone the repo and run `make install` from the root (see the [README](../README.md)). It builds `swift build -c release`, signs the binaries, installs the five tools to `$PREFIX/bin` (default `~/.local/bin`), and registers `earsd` as a per-user launchd `LaunchAgent`. `make uninstall` reverses it, leaving user data in place. CI (`.github/workflows/ci.yml`) lint-checks formatting, builds, and runs the test suite on every commit; there is no release or notarization job yet.
+There are no packaged (signed, notarized) builds yet, but there is a supported source install: clone the repo and run `make install` from the root (see the [README](../README.md)). It builds `swift build -c release`, signs the binaries, installs the five tools to `$PREFIX/bin` (default `~/.local/bin`), and registers `earsd` as a per-user launchd `LaunchAgent`. `make menubar` separately assembles, signs, and installs the `All Ears.app` menu bar app to `~/Applications`. `make uninstall` reverses all of it, leaving user data in place. CI (`.github/workflows/ci.yml`) lint-checks formatting, builds, and runs the test suite on every commit; there is no release or notarization job yet.
 
 The install is a plain [`Makefile`](../Makefile) plus a small plist template ([`packaging/net.tomelliot.ears.earsd.plist.in`](../packaging/net.tomelliot.ears.earsd.plist.in), `@PREFIX@`/`@HOME@` substituted at install time) and an entitlements file ([`packaging/earsd.entitlements`](../packaging/earsd.entitlements)) — no external tooling beyond `swift`, `codesign`, and `launchctl`:
 

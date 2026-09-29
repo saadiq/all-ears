@@ -28,7 +28,7 @@ Four cooperating parts:
 
 1. **`earsd`** — the always-running capture daemon. Boots idle and records only while a session is active: a session names its sources, capture starts, and everything recorded lands under that session's own directory. Owns the session lifecycle, the VAD index, retention, and the control plane. It is the only writer to the audio store and is never in the read path.
 2. **The audio store on disk** — the storage contract, one directory per session. Its documented layout *is* the read API. See [data formats](./data-formats.md).
-3. **The frontends** — the `ears` CLI and the browser extension, control clients that start and end sessions over the control plane. The daemon owns the state machine; frontends only signal.
+3. **The frontends** — the `ears` CLI, the browser extension, and the menu bar app (`ears-menubar`), control clients that start and end sessions over the control plane. The daemon owns the state machine; frontends only signal.
 4. **The pipeline tools** — `transcribe`, `cleanup`, `summarize`. Independent binaries that read files (and, for streaming, tail the live index) and write Markdown outputs. The daemon spawns a chain of them when a session ends — the chain that session's starter declared, or, for a session that declared none, the per-trigger default (`on_end_stages`, applied to browser sessions).
 
 ## The disk-as-API contract
@@ -94,9 +94,10 @@ There are two buffers in the capture path, and conflating them is a known bug so
 One Swift package (`daemon/`), split so almost all logic is unit-testable without hardware:
 
 - **`EarsCore`** — pure library, no I/O: VAD-index reading and range reconstruction, segment merging, streaming-delta emission, frontmatter serialisation, socket message types, config layering. Deterministic and tested in isolation.
+- **`EarsMenuKit`** — the menu bar app's pure core (state reduction, rendering, notification policy), tested like `EarsCore`.
 - **Protocol seams at every hardware/model boundary:** `CaptureBackend`, `Transcriber`, `StreamingTranscriber`, `Diarizer`, `VAD`, `PermissionProviding`. Each has a mockable default; the [model interface](./specs/model-interface.md) specifies the ASR/diarization ones.
-- **Thin shims behind those protocols:** `EarsCaptureKit` (Core Audio, process taps), `EarsTranscribeKit` (FluidAudio/Parakeet), `EarsDataStore` (chunk I/O), `EarsIPC` (sockets, WebSocket servers), `EarsLLMKit` (LLM subprocess), plus `EarsConfig`, `EarsLogging`, `EarsCLISupport`, and `EarsDaemonKit` (daemon wiring).
-- **Executables** (`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`) are small — they wire libraries together and own no business logic.
+- **Thin shims behind those protocols:** `EarsCaptureKit` (Core Audio, process taps), `EarsTranscribeKit` (FluidAudio/Parakeet), `EarsDataStore` (chunk and session I/O, and the session scanner every read-only surface shares), `EarsIPC` (sockets, WebSocket servers), `EarsLLMKit` (LLM subprocess), plus `EarsConfig`, `EarsLogging`, `EarsCLISupport`, and `EarsDaemonKit` (daemon wiring).
+- **Executables** (`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`, `ears-menubar`) are small — they wire libraries together and own no business logic.
 
 ## Failure and robustness
 

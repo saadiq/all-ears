@@ -122,7 +122,9 @@ local_sources = ["mic"]
 # this says. A manual session runs nothing unless it asks, via
 # `session.start`'s own on_end_stages (`ears session start --on-end-stage
 # transcribe`), so a scripted capture never spawns a model load you didn't ask
-# for. Per session, `--no-on-end` opts out whatever this says.
+# for. Per session, `--no-on-end` opts out whatever this says. The menu bar
+# app starts sessions with the sources and chain the running daemon reports in
+# `status.configured`, so this setting reaches menu-started recordings too.
 on_end_stages = ["transcribe", "cleanup", "summarize"]
 # The empty-transcript gate. After transcribe, the chain reads the fresh
 # transcript's own word_count and speech_seconds; if either falls below its
