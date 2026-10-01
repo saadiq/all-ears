@@ -191,9 +191,9 @@ enum DaemonConfigResolution {
   }
 
   /// Which entries become capture sources is ``CaptureSourceEntry``'s call, in
-  /// `EarsCore` — shared with the menu bar app, which has to name exactly the
-  /// ids this daemon will capture. What is left here is the part only `earsd`
-  /// needs: turning a capturable entry into a full ``SourceDescriptor``.
+  /// `EarsCore`; clients read the result as `status.configured.sources`. What
+  /// is left here is the part only `earsd` needs: turning a capturable entry
+  /// into a full ``SourceDescriptor``.
   private static func resolveSource(
     _ entry: ConfigValue, defaults: SourceCaptureDefaults, now: Instant
   ) -> SourceResolution {
