@@ -24,4 +24,11 @@ public enum CalendarEnrichment {
     }
     return calls
   }
+
+  /// The error line for an enrichment call that failed. The session is
+  /// already recording by then — enrichment runs only after a successful
+  /// start — so this must not read as a failed start.
+  public static func failureMessage(_ detail: String) -> String {
+    "Recording started, but calendar details were not applied: \(detail)"
+  }
 }

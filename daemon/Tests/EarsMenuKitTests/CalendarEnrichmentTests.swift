@@ -56,4 +56,12 @@ struct CalendarEnrichmentTests {
     #expect(attendees.map(\.isLocal) == [nil, true])
     #expect(attendees.allSatisfy { $0.source == nil })
   }
+
+  @Test("a failed enrichment says recording started, not that the start failed")
+  func failureMessageKeepsTheRecording() {
+    let message = CalendarEnrichment.failureMessage("unknown session")
+    #expect(message.hasPrefix("Recording started"))
+    #expect(message.contains("calendar details were not applied"))
+    #expect(message.contains("unknown session"))
+  }
 }
