@@ -22,7 +22,8 @@ import UserNotifications
     connection: DaemonConnection?, notifier: Notifier,
     prompted: PromptedEpisodeStore = PromptedEpisodeStore()
   ) {
-    controls = connection.map { DetectedMeetingControls(connection: $0) }
+    let calendar = CalendarProvider()
+    controls = connection.map { DetectedMeetingControls(connection: $0, calendar: calendar) }
     self.notifier = notifier
     self.prompted = prompted
   }

@@ -35,5 +35,7 @@
          Settings > Notifications. -->
     <key>NSUserNotificationAlertStyle</key>
     <string>alert</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>All Ears reads your calendar to title detected meetings and record who was invited. Nothing is sent anywhere; it only annotates your local session records.</string>
 </dict>
 </plist>
