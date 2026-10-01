@@ -698,6 +698,19 @@ struct CLISmokeTests {
     #expect(result.stderr.contains("could not reach earsd"))
   }
 
+  @Test("transcribe accepts the spawner's --job-id but does not advertise it")
+  func transcribeJobIDIsHidden() throws {
+    let transcribe = try Self.binaryURL("transcribe")
+    let help = try Self.run(transcribe, ["--help"])
+    #expect(help.exitCode == 0)
+    #expect(!help.stdout.contains("--job-id"))
+    // `--help` short-circuits parsing, so prove the flag parses with a call
+    // that fails validation later, on the conflicting range flags.
+    let withFlag = try Self.run(
+      transcribe, ["--job-id", "transcribe-test", "--last", "5m", "--session", "s"])
+    #expect(!withFlag.stderr.contains("Unknown option"))
+  }
+
   // MARK: - ears: sources add/remove, capture pause/resume, flush (live earsd)
 
   @Test("ears sources add sends sources.add and surfaces the not-yet-supported failure")
@@ -724,6 +737,15 @@ struct CLISmokeTests {
     // surfaces that failure rather than silently accepting it.
     #expect(run.result.exitCode != 0)
     #expect(run.result.stderr.contains("sources.add is not supported"))
+  }
+
+  @Test("ears session start refuses --no-on-end together with --on-end-stage")
+  func sessionStartOnEndFlagsAreExclusive() throws {
+    let result = try Self.runEars([
+      "session", "start", "--no-on-end", "--on-end-stage", "transcribe",
+    ])
+    #expect(result.exitCode != 0)
+    #expect(result.stderr.contains("mutually exclusive"))
   }
 
   @Test("ears sources add rejects an unrecognized --class before it reaches the socket")

@@ -54,16 +54,10 @@ public struct Session: Sendable, Hashable {
   public var sources: [SourceID]
   /// Provenance: what started this session.
   public var trigger: TriggerKind
-  /// The post-processing chain this session's *starter* asked for, by stage
-  /// name (`transcribe`, `cleanup`, `summarize`) — policy declared at the call
-  /// site rather than inferred by the daemon from ``trigger``.
-  ///
-  /// Tri-state, and the distinction is load-bearing: `nil` means "not
-  /// declared, apply the daemon's default for this trigger", while `[]` means
-  /// "explicitly no chain" — the per-session opt-out for a client that intends
-  /// to run the stages itself with its own flags. Stage names are validated
-  /// when the chain is resolved, not here, so an unknown name is reported and
-  /// dropped like a bad config entry rather than failing `session.start`.
+  /// The post-processing chain this session's starter asked for, by stage
+  /// name. `nil` means "not declared — apply the daemon's default for
+  /// ``trigger``"; `[]` means "run nothing", the opt-out for a client that
+  /// runs the stages itself. Names are validated when the session starts.
   public var onEndStages: [String]?
   /// When this session's transcript last completed **successfully** — the
   /// durable marker retention keys off (`docs/specs/capture-daemon.md`'s

@@ -18,7 +18,7 @@ enum StatusDashboardAssembly {
     var evidence: [String: AttributionSpeechEvidence] = [:]
     var recent: [SessionListEntry] = []
     var onEndChain = OnEndStage.allCases
-    switch SessionArtifactScanner.environment(configFlag: configFlag) {
+    switch SessionScanEnvironment.load(configFlag: configFlag) {
     case .failure(let error):
       debug.log("disk scan unavailable, rendering daemon state only: \(error.description)")
     case .success(let environment):
@@ -37,14 +37,14 @@ enum StatusDashboardAssembly {
         .map {
           SessionListEntry(
             session: $0,
-            artifacts: SessionArtifactScanner.scan(session: $0, environment: environment))
+            artifacts: SessionArtifactScanner.scan(
+              session: $0, environment: environment, depth: .outcome))
         }
     }
 
     return StatusDashboardRendering.render(
       StatusDashboardInputs(
-        status: status, evidenceBySession: evidence, recent: recent,
-        configuredChain: onEndChain),
+        status: status, evidenceBySession: evidence, recent: recent, configuredChain: onEndChain),
       now: now, timeZone: timeZone)
   }
 }

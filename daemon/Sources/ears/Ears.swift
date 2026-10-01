@@ -246,7 +246,7 @@ private func runSessionsList(options: ClientOptions, all: Bool) async throws {
   let entries: [SessionListEntry]
   let onEndChain: [OnEndStage]
   let emptiness: TranscriptEmptinessPolicy
-  switch SessionArtifactScanner.environment(configFlag: options.config) {
+  switch SessionScanEnvironment.load(configFlag: options.config) {
   case .failure:
     entries = sessions.map { SessionListEntry(session: $0, artifacts: SessionArtifacts()) }
     onEndChain = OnEndStage.allCases
@@ -254,7 +254,9 @@ private func runSessionsList(options: ClientOptions, all: Bool) async throws {
   case .success(let environment):
     entries = sessions.map {
       SessionListEntry(
-        session: $0, artifacts: SessionArtifactScanner.scan(session: $0, environment: environment))
+        session: $0,
+        artifacts: SessionArtifactScanner.scan(
+          session: $0, environment: environment, depth: .outcome))
     }
     onEndChain = environment.onEndChain
     emptiness = environment.emptiness
@@ -573,8 +575,8 @@ struct SessionShowCommand: AsyncParsableCommand {
   var warnings = false
 
   func run() async throws {
-    let environment: ScanEnvironment
-    switch SessionArtifactScanner.environment(configFlag: options.config) {
+    let environment: SessionScanEnvironment
+    switch SessionScanEnvironment.load(configFlag: options.config) {
     case .failure(let error):
       ControlClientRuntime.writeStderr(error.description)
       throw ExitCode(1)

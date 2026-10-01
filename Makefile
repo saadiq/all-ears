@@ -35,7 +35,6 @@ LOGDIR        := $(HOME)/Library/Logs/ears
 
 MENUBAR_BIN   := ears-menubar
 APP_NAME      := All Ears
-APP_BUNDLE_ID := net.tomelliot.ears.menubar
 APP_STAGE     := $(RELEASE)/$(APP_NAME).app
 APP_DEST      := $(HOME)/Applications/$(APP_NAME).app
 MENUBAR_PLIST := packaging/ears-menubar.Info.plist
@@ -58,7 +57,8 @@ endef
 # Installs are a strict ordered sequence; never parallelize them.
 .NOTPARALLEL:
 
-.PHONY: help build test sign install install-bin install-agent menubar uninstall-menubar \
+.PHONY: help build test sign install install-bin install-agent \
+        menubar menubar-bundle uninstall-menubar \
         uninstall uninstall-bin uninstall-agent reinstall status guard-user
 
 # --- Top-level targets ----------------------------------------------------
@@ -206,10 +206,12 @@ uninstall-bin:
 	  fi; \
 	done
 
-# Assemble, sign, and install the All Ears.app menu bar wrapper: a plain
-# LSUIElement bundle around the ears-menubar binary. Staged under $(RELEASE)
-# so a failed assemble/sign never touches the previously-installed app.
-menubar: build
+# --- Menu bar app (upstream: opt-in; this fork's `make install` also installs it) ---
+
+# Assemble and sign All Ears.app under $(RELEASE): a plain LSUIElement bundle
+# around the ears-menubar binary. Staged, so a failed assemble or sign never
+# touches the installed app.
+menubar-bundle: build
 	@echo "==> Assembling $(APP_NAME).app"
 	@rm -rf "$(APP_STAGE)"
 	@mkdir -p "$(APP_STAGE)/Contents/MacOS" "$(APP_STAGE)/Contents/Resources"
@@ -225,16 +227,25 @@ menubar: build
 	done
 	@iconutil -c icns "$(RELEASE)/AppIcon.iconset" -o "$(APP_STAGE)/Contents/Resources/AppIcon.icns"
 	@$(RESOLVE_IDENTITY); \
+	if [ "$$IDENTITY" = "-" ]; then \
+	  echo "  WARNING: ad-hoc signing $(APP_NAME).app; Launch at Login will not register."; \
+	fi; \
 	echo "  codesign $(APP_NAME).app (identity: $$IDENTITY)"; \
 	codesign --force --options runtime --sign "$$IDENTITY" "$(APP_STAGE)"
+
+# Install the staged bundle to ~/Applications and relaunch it.
+menubar: guard-user menubar-bundle
 	@echo "==> Installing to $(APP_DEST)"
+	@# Quit the old instance and wait for it to exit before replacing it:
+	@# `pkill` only signals, and `open` on a bundle id that is still running
+	@# activates the dying instance instead of launching the new build.
+	@pkill -x $(MENUBAR_BIN) 2>/dev/null || true
+	@i=0; while pgrep -x $(MENUBAR_BIN) >/dev/null && [ $$i -lt 50 ]; do sleep 0.1; i=$$((i+1)); done
 	@mkdir -p "$(HOME)/Applications"
 	@rm -rf "$(APP_DEST)"
 	@cp -R "$(APP_STAGE)" "$(APP_DEST)"
-	@pkill -x $(MENUBAR_BIN) 2>/dev/null || true
-	@# Relaunch, but never fail the target on it: `install` depends on this
-	@# recipe, and `open` exits non-zero with no GUI session (a provisioning
-	@# run over SSH) — which would abort the install after it had succeeded.
+	@# `open` exits non-zero with no GUI session (a run over SSH); the install
+	@# itself has already succeeded, so say so rather than fail the target.
 	@open "$(APP_DEST)" 2>/dev/null || echo "  (could not launch $(APP_NAME).app; open it yourself)"
 
 uninstall-menubar:

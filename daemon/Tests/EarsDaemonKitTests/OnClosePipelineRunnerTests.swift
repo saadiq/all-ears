@@ -631,6 +631,62 @@ struct OnClosePipelineRunnerTests {
     #expect(published[2].job.hasPrefix("summarize-"))
   }
 
+  @Test("done events carry what each LLM stage wrote; other states carry nothing")
+  func doneEventsCarryOutputs() async throws {
+    let dir = try Self.makeTempDirectory("onend-outputs")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let transcript = try Self.makeFile("t.transcript.md", in: dir)
+    let clean = try Self.makeFile("t.clean.md", in: dir)
+    let summary = try Self.makeFile("t.summary.md", in: dir)
+    let jobs = JobCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
+      SpawnOutcome(
+        exitCode: 0,
+        stdout: StageEnvelopeFixtures.summarizeSelectedPresetSuccess(
+          preset: "meeting-notes", path: summary)),
+    ])
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+    let done = jobs.snapshot.filter { $0.state == .done }
+    #expect(done.map(\.kind) == ["cleanup", "summarize"])
+    #expect(done[0].outputs == [clean])
+    #expect(done[1].outputs == [summary])
+    #expect(jobs.snapshot.filter { $0.state != .done }.allSatisfy { $0.outputs == nil })
+  }
+
+  @Test("a summarize that fails after writing some presets reports no outputs")
+  func partialSummarizeFailureCarriesNoOutputs() async throws {
+    let dir = try Self.makeTempDirectory("onend-partial")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let transcript = try Self.makeFile("t.transcript.md", in: dir)
+    let clean = try Self.makeFile("t.clean.md", in: dir)
+    let brief = try Self.makeFile("t.brief.summary.md", in: dir)
+    let decisions = try Self.makeFile("t.decisions.summary.md", in: dir)
+    let jobs = JobCollector()
+    let runner = ScriptedRunner([
+      Self.transcribeOutcome(transcript),
+      Self.cleanupOutcome(clean),
+      SpawnOutcome(
+        exitCode: 4,
+        stderr: StageEnvelopeFixtures.summarizePartialFailureError(
+          briefPath: brief, decisionsPath: decisions)),
+    ])
+    let pipeline = OnClosePipelineRunner(
+      runProcess: runner.runner, log: { _ in }, publishJob: { jobs.append($0) })
+
+    _ = await pipeline.runOnEndChain(sessionID: "s1", stages: OnEndStage.allCases, context: "test")
+
+    let summarize = jobs.snapshot.filter { $0.kind == "summarize" }
+    #expect(summarize.map(\.state) == [.started, .failed])
+    #expect(summarize.last?.detail == "exit 4")
+    #expect(summarize.last?.outputs == nil)
+  }
+
   @Test("a failing cleanup publishes started/failed and no summarize events")
   func failingCleanupPublishesFailed() async throws {
     let dir = try Self.makeTempDirectory("onend-jobs-fail")
@@ -744,33 +800,6 @@ struct OnClosePipelineRunnerTests {
     #expect(published[0].session == "s1")
     #expect(published[0].job.hasPrefix("transcribe-"))
     #expect(runner.calls.count == 1)
-  }
-
-  // MARK: - on_end_stages config resolution
-
-  @Test("resolveList canonicalises order, collapses duplicates, and accepts the full vocabulary")
-  func resolveListValid() {
-    let resolved = OnEndStage.resolveList(["summarize", "transcribe", "cleanup", "transcribe"])
-    #expect(resolved.stages == [.transcribe, .cleanup, .summarize])
-    #expect(resolved.problems.isEmpty)
-    #expect(OnEndStage.resolveList([]).stages.isEmpty)
-    #expect(OnEndStage.resolveList([]).problems.isEmpty)
-  }
-
-  @Test("resolveList drops unknown names with a problem naming the valid vocabulary")
-  func resolveListUnknownName() {
-    let resolved = OnEndStage.resolveList(["transcribe", "sumarize"])
-    #expect(resolved.stages == [.transcribe])
-    let problem = try? #require(resolved.problems.first)
-    #expect(problem?.contains("'sumarize'") == true)
-    #expect(problem?.contains("transcribe, cleanup, summarize") == true)
-  }
-
-  @Test("resolveList drops LLM stages configured without transcribe — they need its output")
-  func resolveListLLMWithoutTranscribe() {
-    let resolved = OnEndStage.resolveList(["cleanup", "summarize"])
-    #expect(resolved.stages.isEmpty)
-    #expect(resolved.problems.contains { $0.contains("require the transcribe stage") })
   }
 
   // MARK: - bounded capture

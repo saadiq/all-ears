@@ -21,7 +21,9 @@ enum RenamePrompt {
     alert.addButton(withTitle: "Rename")
     alert.addButton(withTitle: "Cancel")
     guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-    let title = field.stringValue
+    // The daemon stores whatever it is sent, so a whitespace-only entry would
+    // blank the session's title rather than read as "left it empty".
+    let title = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     return title.isEmpty ? nil : title
   }
 }

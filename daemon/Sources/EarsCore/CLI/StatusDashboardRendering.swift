@@ -10,7 +10,7 @@ public struct StatusDashboardInputs: Sendable {
   public var evidenceBySession: [String: AttributionSpeechEvidence]
   public var recent: [SessionListEntry]
   /// The resolved `[earsd.sessions] on_end_stages` — see
-  /// ``SessionPipeline/outcome(session:artifacts:now:configuredChain:)``.
+  /// ``SessionPipeline/outcome(session:artifacts:now:configuredChain:emptiness:)``.
   public var configuredChain: [OnEndStage]
 
   public init(

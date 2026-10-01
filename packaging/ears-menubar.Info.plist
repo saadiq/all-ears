@@ -22,20 +22,5 @@
     <string>15.0</string>
     <key>LSUIElement</key>
     <true/>
-    <!-- Alert style: notifications stay on screen until acted on or dismissed,
-         and render their action buttons inline instead of behind a hover
-         chevron. A meeting prompt that expires after a few seconds is a prompt
-         missed. It is app-wide, not per-notification — macOS offers no
-         per-notification alert style — so "Summary ready" and "Recording at
-         risk" also wait to be dismissed. The prompt is the one that goes stale
-         while it waits, and the app withdraws it when it does (see
-         `Notifier.withdrawMeetingPrompts`). macOS reads this only when it
-         first registers the app, and the user's own choice wins from then on —
-         on a Mac where All Ears is already registered, flip it once in System
-         Settings > Notifications. -->
-    <key>NSUserNotificationAlertStyle</key>
-    <string>alert</string>
-    <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>All Ears reads your calendar to title detected meetings and record who was invited. Nothing is sent anywhere; it only annotates your local session records.</string>
 </dict>
 </plist>

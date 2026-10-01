@@ -185,4 +185,24 @@ struct SessionDescriptorTOMLTests {
     let decoded = try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(session))
     #expect(decoded.attendees.first?.origin == .calendar)
   }
+
+  @Test("on_end_stages keeps its three states through session.toml")
+  func onEndStagesRoundTrip() throws {
+    var undeclared = Self.referenceSession()
+    undeclared.onEndStages = nil
+    let undeclaredTable = SessionDescriptorTOML.encode(undeclared)
+    guard case .table(let fields) = undeclaredTable else {
+      Issue.record("expected a table")
+      return
+    }
+    #expect(fields["on_end_stages"] == nil)
+    #expect(try SessionDescriptorTOML.decode(undeclaredTable).onEndStages == nil)
+
+    for declared in [[String](), ["transcribe", "summarize"]] {
+      var session = Self.referenceSession()
+      session.onEndStages = declared
+      let decoded = try SessionDescriptorTOML.decode(SessionDescriptorTOML.encode(session))
+      #expect(decoded.onEndStages == declared)
+    }
+  }
 }

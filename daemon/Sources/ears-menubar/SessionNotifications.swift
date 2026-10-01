@@ -17,36 +17,33 @@ import Foundation
   /// daemon warns once per session instead of once per crash.
   private var warnedAtRiskSessions: Set<String> = []
 
-  /// Asks for the grant and wires notification clicks to the artifacts they
-  /// name.
+  /// Asks for the grant and wires notification clicks to the files they name.
   ///
-  /// - Parameter now: reads the clock when a click is resolved, not when this
-  ///   is called — the scan it dates may happen days later.
-  /// - Parameter startDetected: called on a `.startDetected` click, with the
-  ///   source and episode to start recording.
+  /// A click resolves off the main actor (the notifier's resolver is
+  /// `@Sendable async`): falling back to a scan reads the session store, and a
+  /// large store must not stall the menu bar.
+  ///
   /// - Parameter report: receives the resolved availability, here and on every
   ///   later ``refreshAvailability(report:)``.
   func bootstrap(
-    dataRoot: String, provider: RecentSessionsProvider, now: @escaping @Sendable () -> Instant,
-    startDetected: @escaping @MainActor @Sendable (String, String) -> Void,
+    dataRoot: String, loader: RecentsLoader?,
     report: @escaping @MainActor @Sendable (NotificationAvailability) -> Void
   ) {
-    // `@Sendable` and `async`, so resolving a click never runs the provider's
-    // whole-store scan on the main actor — the click arrives on it, and a store
-    // with thousands of sessions would beachball the menu bar.
     notifier.bootstrap { action in
       switch action {
-      case .openSummary(let session):
-        return provider.load(limit: 50, now: now()).first { $0.session.id == session }?
-          .summaries.first
+      case .openSummary(let session, let path):
+        if let written = SummaryTarget.written(
+          path, exists: FileManager.default.fileExists(atPath:))
+        {
+          return written
+        }
+        return loader?.summary(forSession: session, now: AppClock.now())
       case .revealSession(let session):
         return DataStoreLayout.sessionDirectory(
           dataRoot: URL(fileURLWithPath: dataRoot), sessionID: session)
-      case .startDetected, .none:
+      case .none:
         return nil
       }
-    } startDetected: { source, episode in
-      startDetected(source, episode)
     } report: { availability in
       report(availability)
     }
@@ -62,8 +59,10 @@ import Foundation
   }
 
   /// Announces an applied event if the policy says it is worth announcing.
-  func announce(_ frame: EventFrame, state: MenuState) {
-    guard let request = NotificationPolicy.onEvent(frame, state: state) else { return }
+  /// `before` is the state the frame was applied to, which is how the policy
+  /// tells a new failure from one it has already announced.
+  func announce(_ frame: EventFrame, before: MenuState) {
+    guard let request = NotificationPolicy.onEvent(frame, state: before) else { return }
     notifier.post(request)
   }
 
@@ -75,17 +74,5 @@ import Foundation
     else { return }
     warnedAtRiskSessions.insert(session.id)
     notifier.post(request)
-  }
-
-  /// Posts detection prompts the policy produced. The caller marks the
-  /// episodes prompted.
-  func announceMeetingPrompts(_ prompts: [MeetingPrompt]) {
-    for prompt in prompts { notifier.post(prompt.request) }
-  }
-
-  /// Takes back the standing offer for each source — see
-  /// ``Notifier/withdrawMeetingPrompts(sources:)``.
-  func withdrawMeetingPrompts(_ sources: [String]) {
-    notifier.withdrawMeetingPrompts(sources: sources)
   }
 }

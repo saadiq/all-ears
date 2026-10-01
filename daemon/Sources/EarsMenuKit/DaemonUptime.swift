@@ -33,8 +33,8 @@ public struct DaemonUptime: Sendable, Hashable {
   /// degraded one: an anchor is only valid for the process it was read from, so
   /// a caller that could not re-anchor against the daemon now on the socket
   /// must claim nothing rather than count on from the previous process's
-  /// figure — which read as "your restart did nothing" to a user who had just
-  /// restarted it.
+  /// figure, which would tell a user who just restarted it that the restart
+  /// did nothing.
   public static func line(daemon: String?, uptime: DaemonUptime?, now: Instant) -> String {
     guard let daemon else { return "Not connected" }
     guard let uptime else { return daemon }

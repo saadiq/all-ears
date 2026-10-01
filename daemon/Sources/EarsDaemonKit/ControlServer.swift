@@ -47,6 +47,9 @@ public actor ControlServer {
   /// caller with no monitor (no probe injected, detection disabled, or no
   /// `app:*` sources) just returns `[]`.
   private let meetingActivity: @Sendable () async -> [MeetingActivityStatus]
+  /// What the daemon was configured with, reported by `status` so clients
+  /// never re-derive it from config. `nil` omits it.
+  private let configured: StatusData.Configured?
 
   public init(
     captureActors: [SourceID: CaptureActor],
@@ -55,10 +58,12 @@ public actor ControlServer {
     clock: any NowProviding = SystemClock(),
     bus: EventBus? = nil,
     sessions: SessionRegistry? = nil,
-    meetingActivity: @escaping @Sendable () async -> [MeetingActivityStatus] = { [] }
+    meetingActivity: @escaping @Sendable () async -> [MeetingActivityStatus] = { [] },
+    configured: StatusData.Configured? = nil
   ) {
     self.captureActors = captureActors
     self.sessions = sessions
+    self.configured = configured
     self.dataRoot = dataRoot
     self.startInstant = startInstant
     self.clock = clock
@@ -164,7 +169,8 @@ public actor ControlServer {
         uptimeSeconds: uptime,
         sources: await sourceStatuses(),
         sessions: liveSessions,
-        meetingActivity: await meetingActivity()))
+        meetingActivity: await meetingActivity(),
+        configured: configured))
   }
 
   /// Builds the `subscribe` snapshot. The revision is read *before* the

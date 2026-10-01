@@ -7,6 +7,28 @@ import Testing
 /// ``SourcesListData``, and ``IngestOpenData``.
 @Suite("StatusData")
 struct StatusDataTests {
+  @Test("configured round-trips and uses the wire's snake_case")
+  func configuredRoundTrips() throws {
+    let status = StatusData(
+      uptimeSeconds: 5, sources: [],
+      configured: StatusData.Configured(
+        sources: ["mic", "system"], onEndStages: ["transcribe", "cleanup"]))
+    let data = try JSONEncoder().encode(status)
+    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let configured = try #require(object?["configured"] as? [String: Any])
+    #expect(configured["on_end_stages"] as? [String] == ["transcribe", "cleanup"])
+    #expect(try JSONDecoder().decode(StatusData.self, from: data) == status)
+  }
+
+  @Test("a status from a daemon without configured decodes to nil and encodes nothing")
+  func configuredIsAdditive() throws {
+    let legacy = #"{"uptime_s":1,"sources":[],"sessions":[]}"#
+    let decoded = try JSONDecoder().decode(StatusData.self, from: Data(legacy.utf8))
+    #expect(decoded.configured == nil)
+    let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded))
+    #expect((object as? [String: Any])?["configured"] == nil)
+  }
+
   @Test("decodes the spec's literal status example")
   func decodesSpecExample() throws {
     let json = """
@@ -37,6 +59,23 @@ struct StatusDataTests {
     #expect(decoded.meetingActivity.isEmpty)
     let encoded = String(data: try JSONEncoder().encode(decoded), encoding: .utf8)!
     #expect(!encoded.contains("meeting_activity"))
+  }
+
+  @Test("meeting_activity and configured travel together in one status")
+  func meetingActivityAndConfiguredCoexist() throws {
+    let status = StatusData(
+      uptimeSeconds: 5, sources: [],
+      meetingActivity: [
+        MeetingActivityStatus(
+          source: "app:us.zoom.xos", bundleID: "us.zoom.xos", label: "Zoom", active: true,
+          episode: "us.zoom.xos#1")
+      ],
+      configured: StatusData.Configured(sources: ["mic", "app:us.zoom.xos"], onEndStages: []))
+    let data = try JSONEncoder().encode(status)
+    let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["meeting_activity"] != nil)
+    #expect(object["configured"] != nil)
+    #expect(try JSONDecoder().decode(StatusData.self, from: data) == status)
   }
 }
 

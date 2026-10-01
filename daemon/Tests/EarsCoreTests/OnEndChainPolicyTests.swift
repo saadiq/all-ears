@@ -77,10 +77,10 @@ struct OnEndChainPolicyTests {
   /// The schema's default list is what most readers actually see: the full
   /// config schema materialises it, so the absent-key fallback above is only
   /// reachable for a reader loading a partial schema (`ears`'s scanner). The
-  /// three readers of `[earsd.sessions] on_end_stages` therefore agree only
-  /// while this literal names every stage — a new `OnEndStage` case must be
-  /// added to the schema default too, or the scanner would run a longer chain
-  /// than the daemon and menu bar believe in, with nothing failing.
+  /// readers of `[earsd.sessions] on_end_stages` therefore agree only while
+  /// this literal names every stage — a new `OnEndStage` case must be added
+  /// to the schema default too, or the scanner would expect a longer chain
+  /// than the daemon runs, with nothing failing.
   @Test("the schema's default on_end_stages names the whole stage vocabulary")
   func schemaDefaultNamesEveryStage() {
     guard case .table(let root) = EarsdConfigSchema.defaults,

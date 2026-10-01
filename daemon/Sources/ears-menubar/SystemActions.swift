@@ -7,12 +7,11 @@ enum SystemActions {
   /// `launchctl kickstart -k` — same restart the Makefile documents.
   ///
   /// - Returns: `nil` on success, else why the restart did not happen. The
-  ///   caller bounces the socket either way, so a discarded failure here
-  ///   showed the user the menu getting *worse* after a repair action — down
-  ///   to "⚠ Daemon not running" — with nothing saying the restart never ran.
-  ///   The common case is a LaunchAgent that was never loaded (a `swift build`
-  ///   install rather than `make install`), where kickstart exits non-zero
-  ///   with "Could not find service".
+  ///   caller bounces the socket either way, so without this the menu would
+  ///   drop to "⚠ Daemon not running" with nothing saying the restart never
+  ///   ran. The common case is a LaunchAgent that was never loaded (a
+  ///   `swift build` install rather than `make install`), where kickstart
+  ///   exits non-zero with "Could not find service".
   static func restartDaemon() async -> String? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -50,9 +49,8 @@ enum SystemActions {
 
   /// The Notifications pane, where a denied grant is the only thing that can
   /// turn results back on — the prompt is one-shot, so the app cannot re-ask.
-  /// The identifier is the System Settings *extension* bundle id used since
-  /// Ventura, not the old `com.apple.preference.notifications` pane, which no
-  /// longer resolves on the macOS 15 floor this app targets.
+  /// The identifier is the System Settings *extension* bundle id, the scheme
+  /// that resolves on the macOS 15 floor this app targets.
   static func openNotificationSettings() {
     guard
       let url = URL(

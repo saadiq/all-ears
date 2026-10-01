@@ -279,26 +279,31 @@ public enum JobState: String, Sendable, Hashable, Codable, CaseIterable {
 public struct JobPublishParams: Sendable, Hashable, Codable {
   /// Client-chosen job id, e.g. `transcribe-4fd1a2b0`.
   public var job: String
-  /// `transcribe` (self-reported), or `cleanup`/`summarize` (reported by the
-  /// daemon's on-end chain).
+  /// `transcribe` (self-reported), or `cleanup`/`summarize` (published by the daemon's on-end chain).
   public var kind: String
   public var session: String?
   public var state: JobState
   public var detail: String?
+  /// On `done`: the absolute paths the stage wrote — the cleaned transcript
+  /// for `cleanup`, each written summary for `summarize`. Lets a subscriber
+  /// open exactly what was produced instead of re-deriving it from path
+  /// templates. Omitted when there is nothing to report.
+  public var outputs: [String]?
 
   public init(
     job: String, kind: String, session: String? = nil,
-    state: JobState, detail: String? = nil
+    state: JobState, detail: String? = nil, outputs: [String]? = nil
   ) {
     self.job = job
     self.kind = kind
     self.session = session
     self.state = state
     self.detail = detail
+    self.outputs = outputs
   }
 
   private enum CodingKeys: String, CodingKey {
     case session
-    case job, kind, state, detail
+    case job, kind, state, detail, outputs
   }
 }

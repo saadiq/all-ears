@@ -24,8 +24,9 @@ public enum OnEndChainPolicy {
   ///   - configured: the resolved `[earsd.sessions] on_end_stages` chain.
   /// - Returns: the stages to run, plus one human-readable problem per
   ///   declared entry dropped (unknown name, or LLM stages with no
-  ///   `transcribe` to feed them) — reported like a bad config entry rather
-  ///   than failing the session.
+  ///   `transcribe` to feed them). `session.start` refuses such a chain, so
+  ///   these arise only from a descriptor written some other way; they are
+  ///   reported like a bad config entry rather than failing the session.
   public static func stages(
     declared: [String]?, trigger: TriggerKind, configured: [OnEndStage]
   ) -> (stages: [OnEndStage], problems: [String]) {

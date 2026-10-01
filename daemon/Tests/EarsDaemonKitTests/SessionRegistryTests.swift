@@ -110,10 +110,10 @@ struct SessionRegistryTests {
         onEndStages: ["transcribe", "cleanup", "summarize"]))
 
     // The caller changed its mind: it will run the stages itself, with its own
-    // flags. Dropping this on the idempotent path meant the daemon spawned the
-    // original chain anyway at session end — a model load and a per-preset LLM
-    // bill the caller explicitly opted out of — and returned the stale
-    // declaration, so nothing signalled that the opt-out was ignored.
+    // flags. Dropping this on the idempotent path would have the daemon spawn
+    // the original chain anyway at session end — a model load and a per-preset
+    // LLM bill the caller explicitly opted out of — and return the stale
+    // declaration, so nothing would signal that the opt-out was ignored.
     let optedOut = try await registry.start(
       SessionStartParams(platform: "meet", externalID: "abc", onEndStages: []))
     #expect(optedOut.id == first.id)
@@ -150,8 +150,8 @@ struct SessionRegistryTests {
     let registry = makeRegistry(dataRoot: dataRoot, clock: ManualClock(base))
 
     // A typo, and an LLM-only chain: both resolve to no stages at session end,
-    // so accepting them meant a session that was never transcribed while
-    // `session start` exited 0 echoing back exactly what was asked for.
+    // so accepting them would mean a session that is never transcribed while
+    // `session start` exits 0 echoing back exactly what was asked for.
     for bad in [["transcript"], ["summarize"], ["transcribe", "nope"]] {
       await #expect(throws: SessionRegistryError.self) {
         try await registry.start(SessionStartParams(sources: ["mic"], onEndStages: bad))

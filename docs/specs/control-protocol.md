@@ -122,6 +122,8 @@ scoped to its lifetime. Persisted as `sessions/<uuid>/session.toml` (schema 3, +
   ],
   "sources": ["mic", "browser:meet:jane-a1b2"],
   "trigger": "browser-extension",         // manual | browser-extension | app-detected
+  "on_end_stages": ["transcribe"],        // optional: the chain the starter declared;
+                                          // absent = undeclared, [] = run nothing
   "transcript_completed": null,           // set when the auto-transcribe exits 0
   "pipeline_issues": [                    // omitted when empty; see capture-daemon.md
     {"stage": "summarize", "kind": "failed", "exit_class": "retryable-upstream",
@@ -180,8 +182,7 @@ Semantics:
   is how a client cancels a chain it asked for earlier.
 - **On `session.end`,** the daemon closes the open interval, finalizes the session record
   (`session.toml` holds the intervals and roster that transcription reads directly), and stops
-  capture. It then runs whatever chain the session resolved to (`transcribe --session <id>`,
-  then `cleanup` and `summarize` over its output — see
+  capture. It then runs whatever chain the session resolved to (`transcribe --session <id>`, then `cleanup` and `summarize` over its output — see
   [capture-daemon](capture-daemon.md#session-end-pipeline)); when the transcribe stage exits 0
   the daemon stamps `transcript_completed`, which starts the retention clock
   ([capture-daemon](capture-daemon.md#storage-maintenance-and-retention)).
@@ -208,7 +209,7 @@ Grouped by capability. All carried in the v2 envelope.
 | Capability | Method | Params → result |
 |---|---|---|
 | — | `hello` | see [Handshake](#handshake) |
-| `observe` | `status` | → `{uptime_s, sources, sessions, meeting_activity?}` — daemon + per-source state, active sessions, watched-app meeting activity (omitted when none) |
+| `observe` | `status` | → `{uptime_s, sources, sessions, configured?, meeting_activity?}` — daemon + per-source state, active sessions, watched-app meeting activity (`meeting_activity`, omitted when none), and `configured: {sources, on_end_stages}`: the capturable config-declared sources in declaration order and the resolved `[earsd.sessions] on_end_stages`, as loaded at boot. A client starting a manual session declares these rather than reading daemon config |
 | `observe` | `subscribe` | `{events?, sources?}` → **snapshot** (see [State sync](#state-sync)) |
 | `sessions` | `session.start` | `{platform?, external_id?, title?, sources?, trigger?, on_end_stages?}` → full session object. Idempotent on identity; without identity creates a manual session; supersedes any other live session. `on_end_stages` declares this session's end-of-session chain — omitted means "daemon default for the trigger", `[]` means "run nothing"; a chain naming a stage the daemon cannot run → `invalid_request`. A re-declare that names a chain replaces the stored one |
 | `sessions` | `session.end` | `{session}` → final session object. Closes the open interval, stops capture |
@@ -219,7 +220,7 @@ Grouped by capability. All carried in the v2 envelope.
 | `sessions` | `session.list` | `{}` → live + recent sessions (ended history is read from disk, not the socket) |
 | `sessions` | `session.get` | `{session}` → session |
 | `publish` | `segment.publish` | `{session, speaker, start, end, text}` → `{}`. Notification-only republish from `transcribe --follow` |
-| `publish` | `job.publish` | `{job, kind: "transcribe"\|"cleanup"\|"summarize", session?, state: "started"\|"running"\|"done"\|"failed", detail?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing. `transcribe` reports itself; the daemon's on-end chain reports `cleanup` and `summarize`. |
+| `publish` | `job.publish` | `{job, kind: "transcribe"\|"cleanup"\|"summarize", session?, state: "started"\|"running"\|"done"\|"failed", detail?, outputs?}` → `{}`. Notification-only, same pattern as `segment.publish`: pipeline tools report progress, the daemon persists nothing, subscribers get real state instead of guessing. `transcribe` reports itself; the daemon's on-end chain reports `cleanup`/`summarize`, and a `transcribe` that died before it could report. `outputs` (on `done`) lists the absolute paths the stage wrote. |
 | `sources` | `sources.list` / `sources.enable` / `sources.disable` | source listing and enable/disable |
 | `admin` | `sources.add` / `sources.remove` / `capture.pause` / `capture.resume` / `flush` | runtime source mutation and capture control |
 

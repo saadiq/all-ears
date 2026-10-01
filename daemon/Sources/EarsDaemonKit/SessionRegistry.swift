@@ -349,12 +349,11 @@ public actor SessionRegistry {
       existing.state != .ended
     {
       let merged = mergeSources(params.sources + claimPendingLinks(for: identity), into: &existing)
-      // A re-declare that names a chain replaces the original: the tri-state
-      // is the whole point, and merging only sources meant the first
-      // declaration won forever — a caller correcting itself with `[]` (or
-      // adding a chain) was silently ignored, and got the stale declaration
-      // back with nothing to signal that. `nil` still means "undeclared", so a
-      // reconnecting extension that never mentions stages changes nothing.
+      // A re-declare that names a chain replaces the original, so a caller
+      // correcting itself with `[]` (or adding a chain) is honoured rather
+      // than handed the stale declaration back. `nil` still means
+      // "undeclared", so a reconnecting extension that never mentions stages
+      // changes nothing.
       let restaged = params.onEndStages.map { $0 != existing.onEndStages } ?? false
       if restaged {
         existing.onEndStages = params.onEndStages
@@ -977,17 +976,13 @@ public actor SessionRegistry {
   /// Rejects a declared `on_end_stages` the daemon could not actually run.
   ///
   /// Config entries are resolved leniently — a bad one is dropped with a boot
-  /// warning an operator can read — but a *declared* chain arrives on a call,
-  /// and the caller is right there to be told. Without this, a typo
-  /// (`--on-end-stage transcript`) or an LLM-only chain was echoed back
-  /// verbatim under exit 0 and then resolved to nothing at session end: no
-  /// transcript, no output file, no error, and the only trace a log line the
-  /// user has no reason to read.
-  ///
-  /// A declared chain is therefore honoured exactly or refused: any entry
-  /// `OnEndStage.resolveList` would drop fails the call, rather than the
-  /// session quietly running a smaller chain than the caller asked for. `[]`
-  /// is not a mistake — it is the explicit opt-out — and is always accepted.
+  /// warning an operator can read — but a *declared* chain arrives on a call
+  /// whose caller can be told. So it is honoured exactly or refused: any
+  /// entry `OnEndStage.resolveList` would drop fails the call, rather than
+  /// the session quietly running a smaller chain than was asked for (a typo
+  /// or an LLM-only chain would otherwise resolve to nothing at session end,
+  /// with no transcript and no error). `[]` is the explicit opt-out and is
+  /// always accepted.
   private static func validateOnEndStages(_ declared: [String]?) throws {
     guard let declared, !declared.isEmpty else { return }
     let problems = OnEndStage.resolveList(declared).problems

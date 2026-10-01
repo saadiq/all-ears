@@ -1,7 +1,6 @@
 import EarsCore
 import EarsDataStore
 import EarsIPC
-import EarsMenuKit
 import Foundation
 import Testing
 
@@ -16,10 +15,9 @@ import Testing
 /// (inherited by the spawned `transcribe`), and a scripted `[llm] command`
 /// for the LLM stages. The stage binaries are resolved from the build
 /// products directory via the daemon's `PATH` — the same `/usr/bin/env`
-/// resolution production uses. The browser-extension trigger — one of the
-/// hook's now-multiple trigger kinds — is driven over the real control
-/// socket with `EarsIPC.ControlSocketClient`, since `ears` deliberately has
-/// no flag for it.
+/// resolution production uses. The browser-extension trigger is driven over
+/// the real control socket with `EarsIPC.ControlSocketClient`, since `ears`
+/// deliberately has no flag for it.
 @Suite("CLI Smoke: on-end --json chain")
 struct OnEndChainSmokeTests {
   private final class BundleMarker {}
@@ -28,6 +26,46 @@ struct OnEndChainSmokeTests {
   /// live as siblings of the test bundle (see `CLISmokeTests.binaryURL`).
   private static func productsDirectory() throws -> URL {
     Bundle(for: BundleMarker.self).bundleURL.deletingLastPathComponent()
+  }
+
+  /// Stops `earsd` and waits for it to exit. Not `Process.waitUntilExit()`:
+  /// that spins the calling thread's run loop until Foundation observes the
+  /// exit, and an async test that launched the daemon on one cooperative
+  /// thread can resume on another, where under load the exit is never
+  /// observed and the wait never returns. `waitpid` waits on the child itself.
+  private static func stop(_ daemon: Process) {
+    daemon.terminate()
+    var status: Int32 = 0
+    _ = waitpid(daemon.processIdentifier, &status, 0)
+  }
+
+  /// Collects `job` events until every kind in `kinds` has reported `done`.
+  private static func collectJobs(
+    _ events: AsyncStream<EventFrame>, until kinds: Set<String>
+  ) -> Task<[JobPublishParams], Never> {
+    Task {
+      var jobs: [JobPublishParams] = []
+      for await frame in events {
+        guard case .job(let params) = frame.event else { continue }
+        jobs.append(params)
+        if Set(jobs.filter { $0.state == .done }.map(\.kind)).isSuperset(of: kinds) { break }
+      }
+      return jobs
+    }
+  }
+
+  /// The collector is unstructured, so the test's time limit cannot cancel
+  /// it; bound the wait so a missing event fails the test instead of hanging
+  /// it, and return whatever arrived.
+  private static func awaitJobs(
+    _ collector: Task<[JobPublishParams], Never>, within limit: Duration = .seconds(10)
+  ) async -> [JobPublishParams] {
+    let deadline = Task {
+      try await Task.sleep(for: limit)
+      collector.cancel()
+    }
+    defer { deadline.cancel() }
+    return await collector.value
   }
 
   private static func binaryURL(_ name: String) throws -> URL {
@@ -214,8 +252,7 @@ struct OnEndChainSmokeTests {
       Thread.sleep(forTimeInterval: 0.02)
     }
     guard socketReady else {
-      daemon.terminate()
-      daemon.waitUntilExit()
+      Self.stop(daemon)
       throw SetupError.socketNeverAppeared(socketPath)
     }
 
@@ -232,14 +269,20 @@ struct OnEndChainSmokeTests {
   func onEndChainRunsRealStagesWithJSONEnvelopes() async throws {
     let harness = try Self.bootOnEndDaemon(label: "onend-e2e")
     defer {
-      harness.daemon.terminate()
-      harness.daemon.waitUntilExit()
+      Self.stop(harness.daemon)
       try? FileManager.default.removeItem(atPath: harness.socketPath)
     }
     let socketPath = harness.socketPath
     let dataRoot = harness.dataRoot.path
     let outputRoot = harness.outputRoot.path
     let daemonLogPath = harness.daemonLogPath
+
+    // A subscriber sees the chain's job events: the LLM stages are reported
+    // by the daemon, which is the only way anyone learns a summary is ready.
+    let watcher = try await ControlSocketClient.connect(toPath: socketPath)
+    try await watcher.hello(client: "on-end-chain-smoke-watch")
+    let (_, events) = try await watcher.subscribe(SubscribeParams(events: [.job]))
+    let collector = Self.collectJobs(events, until: ["cleanup", "summarize"])
 
     // Drive the browser-triggered variant of the on-end hook over the real
     // control socket.
@@ -273,7 +316,7 @@ struct OnEndChainSmokeTests {
     // really were parsed (a parse failure would log "exited 0 but failed"
     // and stop the chain before summarize).
     // `--job-id` carries the daemon's own job identity into the child, so the
-    // two event streams are one row (see OnClosePipelineRunner).
+    // two event streams are one job (see OnClosePipelineRunner).
     #expect(
       daemonLog.contains("spawning transcribe --session \(session.id) --job-id transcribe-"),
       "expected the transcribe spawn line with --job-id; daemon log:\n\(daemonLog)")
@@ -299,6 +342,16 @@ struct OnEndChainSmokeTests {
     #expect(!daemonLog.contains("exited 0 but failed"))
     #expect(!daemonLog.contains("schema mismatch"))
 
+    let jobs = await Self.awaitJobs(collector)
+    await watcher.close()
+    for kind in ["cleanup", "summarize"] {
+      #expect(jobs.contains { $0.kind == kind && $0.state == .started }, "missing \(kind) started")
+      #expect(jobs.contains { $0.kind == kind && $0.state == .done }, "missing \(kind) done")
+    }
+    #expect(jobs.allSatisfy { $0.session == session.id })
+    let summaryDone = jobs.first { $0.kind == "summarize" && $0.state == .done }
+    #expect(summaryDone?.outputs?.first?.hasSuffix(".summary.md") == true)
+
     // The chain's artifacts exist on disk: each stage's envelope named a real
     // file that fed the next stage.
     // The raw transcript is an intermediate: it lands in the session's own
@@ -319,39 +372,18 @@ struct OnEndChainSmokeTests {
       Self.files(withSuffix: ".clean.md", under: dataRoot).isEmpty,
       "the data store must hold intermediates only, never a published clean transcript")
 
-    // The menu bar app resolves these same paths from config and the raw
-    // transcript's own frontmatter — it never sees a stage's envelope. That
-    // agreement is a real seam between two modules and it has broken silently
-    // once already, when the published layout changed and the menu went on
-    // looking in the old one; asserting the exact paths here is what makes the
-    // next such change fail the build instead of the Recent Sessions menu.
-    let publishing = PublishingSettings(
-      outputRoot: outputRoot, cleanupOutput: LLMStagesConfigSchema.defaultCleanupOutput,
-      weekNumbering: .us, presets: [PublishingSettings.Preset(name: "brief")])
-    let rawTranscript = SessionArtifactLocator.rawTranscript(
-      dataRoot: dataRoot, sessionID: ended.id)
-    let document = try TranscriptParser.parse(
-      markdown: String(contentsOf: rawTranscript, encoding: .utf8),
-      jsonSidecar: try? String(
-        contentsOf: rawTranscript.deletingPathExtension().appendingPathExtension("json"),
-        encoding: .utf8))
-    let located = SessionArtifactLocator.published(
-      frontmatter: document.frontmatter, transcriptPath: rawTranscript.path,
-      settings: publishing)
+    // Readers find a session's artifacts through this scanner, from config
+    // and the transcript's own frontmatter — never from a stage's envelope.
+    // It must find exactly what the chain wrote.
+    let environment = SessionScanEnvironment(
+      dataRoot: URL(fileURLWithPath: dataRoot),
+      cleanupTemplate: PathTemplate(LLMStagesConfigSchema.defaultCleanupOutput),
+      outputRoot: outputRoot, weekNumbering: .us, onEndChain: OnEndStage.allCases)
+    let scanned = SessionArtifactScanner.scan(session: ended, environment: environment)
     #expect(
-      FileManager.default.fileExists(atPath: located.clean.path),
-      "the menu locates the published transcript at \(located.clean.path), which does not exist")
-    #expect(
-      SessionArtifactLocator.rawTranscript(dataRoot: dataRoot, sessionID: session.id).path
-        == URL(fileURLWithPath: dataRoot)
-        .appendingPathComponent("sessions/\(session.id)/transcript.md").path)
-    let summaries = SessionArtifactLocator.siblingSummaries(
-      filenames: (try? FileManager.default.contentsOfDirectory(
-        atPath: located.summaryDirectory.path)) ?? [],
-      stem: located.summaryStem)
-    #expect(
-      summaries == ["\(located.summaryStem).summary.md"],
-      "the menu sweeps summaries out of \(located.summaryDirectory.path); found \(summaries)")
+      scanned.cleanupExists, "scanner resolved \(scanned.cleanupPath ?? "nil"), which is absent")
+    #expect(scanned.summaryPaths.count == 1)
+    #expect(scanned.summaryPaths.allSatisfy { FileManager.default.fileExists(atPath: $0) })
   }
 
   @Test(
@@ -360,8 +392,7 @@ struct OnEndChainSmokeTests {
   func undeclaredManualSessionSpawnsNothing() async throws {
     let harness = try Self.bootOnEndDaemon(label: "onend-inert")
     defer {
-      harness.daemon.terminate()
-      harness.daemon.waitUntilExit()
+      Self.stop(harness.daemon)
     }
 
     let client = try await ControlSocketClient.connect(toPath: harness.socketPath)
@@ -389,28 +420,18 @@ struct OnEndChainSmokeTests {
   func declaredManualSessionEndPublishesJobEvents() async throws {
     let harness = try Self.bootOnEndDaemon(label: "onend-manual")
     defer {
-      harness.daemon.terminate()
-      harness.daemon.waitUntilExit()
+      Self.stop(harness.daemon)
     }
 
     let watcher = try await ControlSocketClient.connect(toPath: harness.socketPath)
     try await watcher.hello(client: "onend-manual-watch")
     let (_, events) = try await watcher.subscribe(SubscribeParams(events: [.job]))
-    let collector = Task { () -> [JobPublishParams] in
-      var jobs: [JobPublishParams] = []
-      for await frame in events {
-        guard case .job(let params) = frame.event else { continue }
-        jobs.append(params)
-        let doneKinds = Set(jobs.filter { $0.state == .done }.map(\.kind))
-        if doneKinds.isSuperset(of: ["transcribe", "cleanup", "summarize"]) { break }
-      }
-      return jobs
-    }
+    let collector = Self.collectJobs(events, until: ["transcribe", "cleanup", "summarize"])
 
     let client = try await ControlSocketClient.connect(toPath: harness.socketPath)
     try await client.hello(client: "onend-manual")
     // A manual session gets no chain by default — it has to ask, which is the
-    // contract this test exists to pin (the menu bar app asks the same way).
+    // contract this test exists to pin.
     let session = try await client.send(
       .sessionStart(
         SessionStartParams(
@@ -423,7 +444,7 @@ struct OnEndChainSmokeTests {
     let ended = try await client.send(.sessionEnd(session: session.id), expecting: Session.self)
     #expect(ended.state == .ended)
 
-    let jobs = await collector.value
+    let jobs = await Self.awaitJobs(collector, within: .seconds(90))
     for kind in ["transcribe", "cleanup", "summarize"] {
       #expect(jobs.contains { $0.kind == kind && $0.state == .started }, "missing \(kind) started")
       #expect(jobs.contains { $0.kind == kind && $0.state == .done }, "missing \(kind) done")
@@ -489,8 +510,7 @@ struct OnEndChainSmokeTests {
     daemon.standardError = Pipe()
     try daemon.run()
     defer {
-      daemon.terminate()
-      daemon.waitUntilExit()
+      Self.stop(daemon)
     }
 
     var socketReady = false

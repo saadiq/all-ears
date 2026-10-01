@@ -1,6 +1,5 @@
 import AppKit
 import EarsMenuKit
-import ServiceManagement
 import SwiftUI
 
 struct MenuContentView: View {
@@ -33,17 +32,15 @@ struct MenuContentView: View {
     }
     Divider()
     Menu("Recent Sessions") {
-      if model.recents.isEmpty {
+      if model.recents.items.isEmpty {
         Text("No ended sessions")
       }
-      ForEach(model.recents) { item in
+      ForEach(model.recents.items) { item in
         // The glyph rides the row, not just the notification: a user who
         // denied the notification grant would otherwise never learn that a
         // name in the transcript may be the wrong person's, or that a chain
         // stopped short of publishing. It is `ears sessions`' own glyph, so
-        // the two surfaces say the same thing about the same session — and it
-        // subsumes the plain ⚠ marker this row used to carry, since a session
-        // with warnings resolves to ⚠ anyway.
+        // the two surfaces say the same thing about the same session.
         Menu("\(item.outcome.glyph) \(item.session.title)") {
           Text(item.outcome.text)
           ForEach(item.session.warnings, id: \.self) { warning in
@@ -88,7 +85,6 @@ struct MenuContentView: View {
   private func label(for verb: Verb) -> String {
     switch verb {
     case .startRecording: return "Start Recording"
-    case .startDetected(_, _, let label): return "Start Recording ‘\(label)’ Meeting"
     case .pause: return "Pause"
     case .resume: return "Resume"
     case .rename: return "Rename Session…"
@@ -117,54 +113,6 @@ extension IconVariant {
     case .paused: return "pause.circle"
     case .busy: return "ear.badge.checkmark"
     case .attention: return "ear.trianglebadge.exclamationmark"
-    }
-  }
-}
-
-/// The Launch at Login switch, plus whatever the user has to be told for it to
-/// mean anything.
-///
-/// Two states used to read identically — as the checkmark silently refusing to
-/// stick. `register()` succeeding with status `.requiresApproval` (the
-/// documented outcome when the item was previously disabled in System
-/// Settings, and common on first registration) is a *success* the user must
-/// finish by hand; and `register()` throwing is a real failure, likely here
-/// because `make install` falls back to ad-hoc signing when no Developer ID
-/// identity is present, and `SMAppService` will not register an ad-hoc-signed
-/// bundle. Both are now said out loud.
-struct LaunchAtLoginToggle: View {
-  @State private var status = SMAppService.mainApp.status
-  @State private var failure: String?
-
-  var body: some View {
-    if Bundle.main.bundleIdentifier != nil {
-      Toggle(
-        "Launch at Login",
-        isOn: Binding(
-          get: { status == .enabled || status == .requiresApproval },
-          set: { wanted in
-            do {
-              if wanted {
-                try SMAppService.mainApp.register()
-              } else {
-                try SMAppService.mainApp.unregister()
-              }
-              failure = nil
-            } catch {
-              failure = error.localizedDescription
-            }
-            status = SMAppService.mainApp.status
-          }
-        )
-      )
-      if status == .requiresApproval {
-        Menu("⚠ Approve All Ears in Login Items") {
-          Button("Open Login Items Settings") { SystemActions.openLoginItemsSettings() }
-        }
-      }
-      if let failure {
-        Text("⚠ \(failure)")
-      }
     }
   }
 }

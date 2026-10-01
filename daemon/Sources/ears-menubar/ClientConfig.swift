@@ -1,80 +1,44 @@
 import EarsConfig
 import EarsCore
-import EarsMenuKit
+import EarsDataStore
 import Foundation
 
-/// A resolved-config failure, wrapped so ``ClientConfig/resolve()`` can
-/// return it through `Result`'s `Failure: Error` constraint while staying a
-/// plain human-readable message — there's no richer taxonomy to preserve
-/// here. Mirrors `ears/ControlClientRuntime.ConfigResolutionError` (that one
-/// is internal to the `ears` target, hence the duplicate rather than a
-/// shared import).
-struct ConfigResolutionError: Error, CustomStringConvertible, Sendable {
+struct ClientConfigError: Error, Sendable, CustomStringConvertible {
   var description: String
 }
 
-/// Resolves the same config layers every tool honors: defaults → TOML →
-/// EARS_* env. Mirrors ears' ControlClientRuntime (internal there).
-///
-/// Loaded against ``FullConfigSchema`` rather than one tool's slice, because
-/// the menu spans two tools' settings: starting a session needs `earsd`'s
-/// `[[earsd.source]]` — including its built-in default (one enabled `mic`),
-/// which a zero-config install never spells out — and finding what the
-/// on-end chain wrote needs the LLM stages' `[cleanup] output` and
-/// `[[summarize.preset]]`. No tool validates against the full schema, but
-/// nothing here writes config; it only needs to read every slice the menu
-/// surfaces.
+/// Where the daemon is and how to read its sessions back — the only config
+/// this app reads. What a session records and runs comes from the daemon
+/// itself (`status.configured`), never from here.
 struct ClientConfig: Sendable {
   var socketPath: String
-  var dataRoot: String
-  /// Where the on-end chain publishes — see ``PublishingSettings``.
-  var publishing: PublishingSettings
-  /// The sources a manually started session declares — see
-  /// ``ManualSessionSources``.
-  var sources: [SourceID]
-  /// The on-end chain a manually started session declares — see
-  /// ``ManualSessionStages``.
-  var onEndStages: [String]
-  /// The chain a session that *inherits* one runs, which is what a recent
-  /// session's outcome is read against — see ``ConfiguredOnEndChain``.
-  var onEndChain: [OnEndStage]
-  /// The thresholds below which the daemon stops that chain after transcribe,
-  /// so the menu reads a deliberately stopped chain as stopped rather than as
-  /// a note that never arrives — see ``ConfiguredEmptiness``.
-  var emptiness: TranscriptEmptinessPolicy
+  var environment: SessionScanEnvironment
 
-  static func resolve() -> Result<ClientConfig, ConfigResolutionError> {
+  /// The same layered resolution `ears` does, so the app dials the socket
+  /// `ears` would.
+  static func resolve() -> Result<ClientConfig, ClientConfigError> {
     let inputs = ConfigLoadInputs(
       environment: ProcessInfo.processInfo.environment,
       homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
-    switch loadConfig(
-      inputs, defaults: FullConfigSchema.defaults, schema: FullConfigSchema.schema)
-    {
+    switch loadConfig(inputs) {
     case .failure(let error):
-      return .failure(ConfigResolutionError(description: "config load failed: \(error)"))
+      return .failure(ClientConfigError(description: "config load failed: \(error)"))
     case .success(let loaded):
-      let dataRoot = string(loaded.value, "data_root")
       let configured = string(loaded.value, "socket_path")
       let socketPath =
-        configured.isEmpty ? DefaultSocketPath.resolve(dataRoot: dataRoot) : configured
+        configured.isEmpty
+        ? DefaultSocketPath.resolve(dataRoot: string(loaded.value, "data_root")) : configured
       if let message = DefaultSocketPath.lengthError(forPath: socketPath) {
-        return .failure(ConfigResolutionError(description: message))
+        return .failure(ClientConfigError(description: message))
       }
       return .success(
         ClientConfig(
-          socketPath: socketPath, dataRoot: dataRoot,
-          publishing: PublishingSettings.resolve(from: loaded.value),
-          sources: ManualSessionSources.resolve(from: loaded.value),
-          onEndStages: ManualSessionStages.resolve(from: loaded.value),
-          onEndChain: ConfiguredOnEndChain.resolve(from: loaded.value),
-          emptiness: ConfiguredEmptiness.resolve(from: loaded.value)))
+          socketPath: socketPath, environment: SessionScanEnvironment.resolve(from: loaded.value)))
     }
   }
 
-  private static func string(_ value: ConfigValue, _ key: String) -> String {
-    guard case .table(let table) = value, let entry = table[key],
-      case .string(let text) = entry
-    else { return "" }
-    return text
+  private static func string(_ config: ConfigValue, _ key: String) -> String {
+    guard case .table(let root) = config, case .string(let value)? = root[key] else { return "" }
+    return value
   }
 }

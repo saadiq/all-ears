@@ -21,7 +21,8 @@ struct NotificationPolicyTests {
     #expect(
       request
         == NotificationRequest(
-          title: "Summary ready", body: "Weekly sync", action: .openSummary(session: "s1")))
+          title: "Summary ready", body: "Weekly sync",
+          action: .openSummary(session: "s1", path: nil)))
   }
 
   /// The reconciler's attribution warnings are the one failure that looks
@@ -52,7 +53,7 @@ struct NotificationPolicyTests {
           body:
             "Weekly sync — speaker attribution: could not identify which roster entry is you "
             + "(+1 more)",
-          action: .openSummary(session: "s1")))
+          action: .openSummary(session: "s1", path: nil)))
   }
 
   @Test("a lone warning is quoted without a count")
@@ -80,7 +81,7 @@ struct NotificationPolicyTests {
     #expect(
       NotificationPolicy.onEvent(frame, state: stateWithEndedSession())
         == NotificationRequest(
-          title: "Summary ready", body: "nope", action: .openSummary(session: "nope")))
+          title: "Summary ready", body: "nope", action: .openSummary(session: "nope", path: nil)))
   }
 
   @Test("any failed stage notifies with a reveal action")
@@ -93,6 +94,23 @@ struct NotificationPolicyTests {
         == NotificationRequest(
           title: "Transcription failed", body: "Weekly sync", action: .revealSession(session: "s1"))
     )
+  }
+
+  /// The daemon re-states a transcribe failure under the job id the child
+  /// already failed under, so a subscriber sees two `failed` frames for one
+  /// failure. The second is not news.
+  @Test("a failure re-stated under the same job id notifies once")
+  func restatedFailureNotifiesOnce() {
+    var state = stateWithEndedSession()
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(
+          job: "transcribe-1", kind: "transcribe", session: "s1", state: .failed,
+          detail: "exit 4")))
+
+    #expect(NotificationPolicy.onEvent(frame, state: state) != nil)
+    #expect(MenuStateReducer.apply(&state, frame) == .applied)
+    #expect(NotificationPolicy.onEvent(frame, state: state) == nil)
   }
 
   @Test("the quiet cases stay quiet")
@@ -225,5 +243,21 @@ struct NotificationPolicyTests {
         == NotificationRequest(
           title: "Transcription failed", body: "session", action: .none)
     )
+  }
+
+  @Test("summary ready carries the path the daemon reported writing")
+  func summaryCarriesWrittenPath() {
+    var state = MenuState()
+    state.sessions = [
+      Session(id: "s1", title: "Weekly sync", state: .ended, started: Instant(secondsSinceEpoch: 0))
+    ]
+    let frame = EventFrame(
+      event: .job(
+        JobPublishParams(
+          job: "summarize-1", kind: "summarize", session: "s1", state: .done,
+          outputs: ["/n/sync.summary.md"])))
+    let request = NotificationPolicy.onEvent(frame, state: state)
+    #expect(request?.title == "Summary ready")
+    #expect(request?.action == .openSummary(session: "s1", path: "/n/sync.summary.md"))
   }
 }

@@ -156,6 +156,35 @@ struct SessionPipelineChainTests {
     #expect(stages[2].detail == "12 segments cleaned")
     #expect(stages[3].state == .notRequested)
     #expect(stages[4].state == .notRequested)
+    // The one-line outcome agrees with the stage view: the furthest artifact
+    // on disk, not just the last stage the chain asked for.
+    #expect(
+      SessionPipeline.outcome(
+        session: record, artifacts: artifacts, now: muchLater, configuredChain: fullChain)
+        == PipelineOutcome(glyph: "✓", text: "cleaned"))
+  }
+
+  @Test("a hand-transcribed capture-only session reads as transcribed, not merely recorded")
+  func handTranscribedManualSessionIsTranscribed() {
+    var artifacts = capturedOnly()
+    artifacts.transcriptExists = true
+    #expect(
+      SessionPipeline.outcome(
+        session: session(trigger: .manual), artifacts: artifacts, now: muchLater,
+        configuredChain: fullChain)
+        == PipelineOutcome(glyph: "✓", text: "transcribed"))
+  }
+
+  @Test("a transcribe-only chain with a hand-run cleanup reads as cleaned")
+  func handCleanedBeyondTranscribeOnlyChain() {
+    var artifacts = capturedOnly()
+    artifacts.transcriptExists = true
+    artifacts.cleanupExists = true
+    #expect(
+      SessionPipeline.outcome(
+        session: session(trigger: .manual, onEndStages: ["transcribe"]), artifacts: artifacts,
+        now: muchLater, configuredChain: fullChain)
+        == PipelineOutcome(glyph: "✓", text: "cleaned"))
   }
 
   /// The 2026-08-20 605-second session's measurements: one word over 0.556s

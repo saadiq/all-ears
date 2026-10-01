@@ -50,11 +50,11 @@ let package = Package(
       exclude: ["README.md"]
     ),
 
-    // EarsDataStore is here for `DataStoreLayout`'s path vocabulary alone —
-    // the menu locates a session's raw transcript, it never reads the store.
+    // The menu bar app's pure core: state reduction, rendering, notification
+    // policy. No I/O, so it is tested like EarsCore.
     .target(
       name: "EarsMenuKit",
-      dependencies: ["EarsCore", "EarsDataStore"]
+      dependencies: ["EarsCore"]
     ),
 
     // Shared bootstrap glue for the five executable stubs: config
@@ -298,6 +298,8 @@ let package = Package(
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
       ]
     ),
+    // A thin SwiftUI client: learns what to record from `status.configured`
+    // and reads sessions back through the shared scanner.
     .executableTarget(
       name: "ears-menubar",
       dependencies: ["EarsMenuKit", "EarsCore", "EarsConfig", "EarsIPC", "EarsDataStore"]
@@ -347,14 +349,9 @@ let package = Package(
       // of the session-end hook, and `ears` deliberately has no flag for that
       // trigger, so the test speaks `session.start` over the live socket
       // itself.
-      // `EarsMenuKit` lets that same test assert the menu bar app resolves the
-      // chain's published paths to exactly the files it wrote. The menu never
-      // sees a stage envelope — it derives paths from config and the session
-      // record — so that agreement is a cross-module seam with no compiler
-      // check behind it, and it has already broken silently once.
       dependencies: [
-        "EarsCore", "EarsDataStore", "EarsIPC", "EarsMenuKit", "earsd", "ears", "transcribe",
-        "cleanup", "summarize",
+        "EarsCore", "EarsDataStore", "EarsIPC", "earsd", "ears", "transcribe", "cleanup",
+        "summarize",
       ]
     ),
     .testTarget(

@@ -160,7 +160,8 @@ public enum SessionPipeline {
           ? "transcribed, \(failed)" : failed)
     }
     guard expected.contains(.transcribe) else {
-      return PipelineOutcome(glyph: "✓", text: "recorded")
+      return handRun(session: session, artifacts: artifacts)
+        ?? PipelineOutcome(glyph: "✓", text: "recorded")
     }
     guard transcribeDone(session: session, artifacts: artifacts) else {
       return recent
@@ -174,7 +175,8 @@ public enum SessionPipeline {
         : PipelineOutcome(glyph: "–", text: "transcribed, no note")
     }
     guard expected.contains(.cleanup) else {
-      return PipelineOutcome(glyph: "✓", text: "transcribed")
+      return handRun(session: session, artifacts: artifacts)
+        ?? PipelineOutcome(glyph: "✓", text: "transcribed")
     }
     if skipped { return PipelineOutcome(glyph: "–", text: "empty, not cleaned") }
     guard artifacts.cleanupExists else {
@@ -183,6 +185,18 @@ public enum SessionPipeline {
         : PipelineOutcome(glyph: "–", text: "transcribed, not cleaned")
     }
     return PipelineOutcome(glyph: "✓", text: "cleaned")
+  }
+
+  /// The furthest artifact on disk once the session's own chain is done, for
+  /// a stage someone ran by hand beyond it — so the one-line outcome agrees
+  /// with ``stages(session:artifacts:now:configuredChain:emptiness:)``, which
+  /// renders such a stage done. `nil` when nothing lies past the transcript.
+  private static func handRun(session: Session, artifacts: SessionArtifacts) -> PipelineOutcome? {
+    if artifacts.cleanupExists { return PipelineOutcome(glyph: "✓", text: "cleaned") }
+    if transcribeDone(session: session, artifacts: artifacts) {
+      return PipelineOutcome(glyph: "✓", text: "transcribed")
+    }
+    return nil
   }
 
   // MARK: - Stage helpers

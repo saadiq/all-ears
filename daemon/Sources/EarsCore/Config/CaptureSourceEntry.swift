@@ -1,14 +1,10 @@
 /// One `[[earsd.source]]` config entry, reduced to the question every reader of
 /// that table actually asks: *will `earsd` capture this?*
 ///
-/// It lives here, in the pure core, because two callers need the same answer
-/// and the second copy is where they drift: `earsd` builds its capture
-/// descriptors from these entries (`DaemonConfigResolution`), and the menu bar
-/// app names sources in the sessions it starts (`ManualSessionSources`). A
-/// manual session records exactly the sources it names and the daemon silently
-/// skips any id it holds no descriptor for, so a menu that named an entry the
-/// daemon rejects would start a session that captures nothing while the menu
-/// reports "● Recording".
+/// `earsd` builds its capture descriptors from these entries
+/// (`DaemonConfigResolution`), and reports the capturable ids back to clients
+/// as `status.configured.sources` — so a client never re-derives this
+/// predicate from config, and never names an entry the daemon would skip.
 ///
 /// Deliberately never throws: a malformed entry is skipped and reported, never
 /// fatal — `docs/specs/capture-daemon.md`'s per-source policy ("logs an error

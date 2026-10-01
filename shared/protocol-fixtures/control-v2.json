@@ -191,6 +191,22 @@
       }
     },
     {
+      "name": "status-result",
+      "expecting": "status",
+      "frame": {
+        "id": 1,
+        "result": {
+          "uptime_s": 3600,
+          "sources": [{ "id": "mic", "state": "capturing", "codec": "aac", "bytes_used": 0 }],
+          "sessions": [],
+          "configured": {
+            "sources": ["mic", "system"],
+            "on_end_stages": ["transcribe", "cleanup", "summarize"]
+          }
+        }
+      }
+    },
+    {
       "name": "error-session-not-found",
       "expecting": "error",
       "frame": {
@@ -282,7 +298,8 @@
           "job": "summarize-9be04d11",
           "kind": "summarize",
           "session": "0d5e1111-aaaa-bbbb-cccc-222233334444",
-          "state": "done"
+          "state": "done",
+          "outputs": ["/Users/me/Documents/Transcripts/2026-08-03 standup.summary.md"]
         }
       }
     },

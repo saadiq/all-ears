@@ -28,20 +28,20 @@ cd all-ears
 make install
 ```
 
-`make install` builds the release binaries, signs them, installs the five CLI/daemon
-tools (`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`) to `~/.local/bin`,
-assembles and installs the **All Ears.app** menu bar app (`ears-menubar`) to
-`~/Applications`, and registers `earsd` as a per-user launchd **LaunchAgent** —
-started at login, kept alive, and restarted on crash. The menu bar app is also
-buildable on its own with `make menubar`. Check it's running:
+`make install` builds the release binaries, signs them, installs the five tools
+(`earsd`, `ears`, `transcribe`, `cleanup`, `summarize`) to `~/.local/bin`, and
+registers `earsd` as a per-user launchd **LaunchAgent** — started at login, kept
+alive, and restarted on crash. The **All Ears.app** menu bar app is opt-in:
+`make menubar` builds, signs, and installs it to `~/Applications` and launches
+it. Check it's running:
 
 ```sh
 ears status
 ```
 
 - **Where things go.** Binaries → `$PREFIX/bin` (default `~/.local`; if that
-  isn't on your `PATH`, `make install` prints the line to add). Menu bar app →
-  `~/Applications/All Ears.app`. LaunchAgent →
+  isn't on your `PATH`, `make install` prints the line to add). Menu bar app
+  (with `make menubar`) → `~/Applications/All Ears.app`. LaunchAgent →
   `~/Library/LaunchAgents/net.tomelliot.ears.earsd.plist`. Pre-logger crash
   output → `~/Library/Logs/ears/`. Your config lives under `~/.config/ears`,
   recordings and raw transcripts under `~/Library/Application Support/ears`,
@@ -59,7 +59,8 @@ ears status
 - **Upgrade.** Re-run `make install` (or `make reinstall`) after `git pull`; it
   rebuilds, re-signs, and reloads the agent onto the new binary.
 - **Uninstall.** `make uninstall` stops and removes the agent, the binaries, and
-  the menu bar app. Your recordings, config, and transcripts are left untouched.
+  the menu bar app.
+  Your recordings, config, and transcripts are left untouched.
 
 ### Build without installing
 
@@ -192,7 +193,7 @@ frontmatter = false     # the vault owns its own frontmatter
 
 ## How it works
 
-A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends, for whichever sessions asked for it (the menu bar app and the browser extension do; `ears session start` stays inert unless you pass `--on-end-stage`). Five small tools operate on that store and its output:
+A single always-on daemon (`earsd`) owns the recording session lifecycle: it boots idle, records each session's sources into that session's own directory on disk (compressed, deleted shortly after the transcript lands), and runs the transcribe → clean → summarise chain when a session ends, for whichever sessions asked for it (the browser extension and the menu bar app do; `ears session start` stays inert unless you pass `--on-end-stage`). Five small tools operate on that store and its output:
 
 | Tool | Job |
 |------|-----|

@@ -19,7 +19,6 @@ struct MenuBarApp: App {
   var body: some Scene {
     MenuBarExtra {
       MenuContentView(model: model)
-        .onAppear { model.menuWillOpen() }
     } label: {
       MenuBarLabel(variant: model.content.icon)
     }

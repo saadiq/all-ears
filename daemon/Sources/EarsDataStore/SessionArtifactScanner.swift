@@ -1,88 +1,33 @@
-import EarsConfig
 import EarsCore
-import EarsDataStore
 import Foundation
-
-/// The config-derived facts a disk scan needs: where the data root is, how
-/// `cleanup` resolves its published path, and the on-end chain an undeclared
-/// session inherits. One `loadConfig` pass, shared by every session the
-/// command scans.
-struct ScanEnvironment {
-  var dataRoot: URL
-  var cleanupTemplate: PathTemplate
-  var outputRoot: String
-  var weekNumbering: WeekNumbering
-  var onEndChain: [OnEndStage]
-  /// `[earsd.sessions] min_words` / `min_speech_seconds` as the daemon
-  /// resolved them, so the pipeline view names a stopped chain for what it is
-  /// (`skipped (empty transcript)`) instead of reporting absent artifacts.
-  var emptiness: TranscriptEmptinessPolicy = .defaults
-}
 
 /// Assembles a ``SessionArtifacts`` for one session by reading what is on
 /// disk — the I/O half of the pipeline reconstruction, feeding
 /// ``SessionPipeline``'s pure derivation. Everything is best-effort reads: a
 /// missing or unparseable artifact leaves its fields at their defaults, and
 /// the derivation renders the absence rather than this scanner failing.
-enum SessionArtifactScanner {
-  /// Resolves the scan environment from the same layered config every tool
-  /// reads. `[cleanup] output`, `output_root`, and `week_numbering` mirror
-  /// exactly what `CleanupRuntime` resolves, so the reconstructed published
-  /// path can only agree with the writer's.
-  static func environment(configFlag: String?) -> Result<ScanEnvironment, ConfigResolutionError> {
-    let inputs = ConfigLoadInputs(
-      configFlag: configFlag,
-      environment: ProcessInfo.processInfo.environment,
-      homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
-    switch loadConfig(inputs) {
-    case .failure(let error):
-      return .failure(ConfigResolutionError(description: "error: could not load config: \(error)"))
-    case .success(let loaded):
-      let dataRoot = stringValue(loaded.value, ["data_root"])
-      let template = stringValue(loaded.value, ["cleanup", "output"])
-      return .success(
-        ScanEnvironment(
-          dataRoot: URL(fileURLWithPath: dataRoot.isEmpty ? "." : dataRoot),
-          cleanupTemplate: PathTemplate(
-            template.isEmpty ? LLMStagesConfigSchema.defaultCleanupOutput : template),
-          outputRoot: stringValue(loaded.value, ["output_root"]),
-          weekNumbering: WeekNumbering(configValue: stringValue(loaded.value, ["week_numbering"])),
-          onEndChain: onEndChain(loaded.value),
-          emptiness: emptinessPolicy(loaded.value)))
-    }
+///
+/// The one implementation every read-only surface uses, so they agree on
+/// where a session's transcript, cleaned copy and summaries are.
+public enum SessionArtifactScanner {
+  /// How much of a session to read.
+  public enum Depth: Sendable {
+    /// Everything `ears session show` renders, including a size walk of every
+    /// source directory.
+    case full
+    /// Only what a one-line outcome reads — the transcript chain. List views
+    /// scan many sessions per render, where the size walk is wasted.
+    case outcome
   }
 
-  /// The resolved `[earsd.sessions] on_end_stages` — see
-  /// ``OnEndChainPolicy/configured(fromRaw:)`` for how an absent key, an
-  /// explicit list, and `[]` differ.
-  private static func onEndChain(_ config: ConfigValue) -> [OnEndStage] {
-    OnEndChainPolicy.configured(
-      fromRaw: stringArray(config, ["earsd", "sessions", "on_end_stages"]))
-  }
-
-  /// `[earsd.sessions]`'s two emptiness thresholds, each falling back to the
-  /// shipped default when unset — the same resolution
-  /// `DaemonConfigResolution` does for the daemon, so both ends agree on
-  /// which transcripts are empty.
-  private static func emptinessPolicy(_ value: ConfigValue) -> TranscriptEmptinessPolicy {
-    var policy = TranscriptEmptinessPolicy.defaults
-    if case .int(let words)? = nestedValue(value, ["earsd", "sessions", "min_words"]) {
-      policy.minWords = words
-    }
-    // `.int` as well as `.double`: TOML's `5` and `5.0` are different
-    // literals, and the schema accepts either (`ConfigValueKind.satisfies`).
-    switch nestedValue(value, ["earsd", "sessions", "min_speech_seconds"]) {
-    case .double(let seconds)?: policy.minSpeechSeconds = seconds
-    case .int(let seconds)?: policy.minSpeechSeconds = Double(seconds)
-    default: break
-    }
-    return policy
-  }
-
-  static func scan(session: Session, environment: ScanEnvironment) -> SessionArtifacts {
+  public static func scan(
+    session: Session, environment: SessionScanEnvironment, depth: Depth = .full
+  ) -> SessionArtifacts {
     var artifacts = SessionArtifacts()
-    scanCapture(session: session, environment: environment, into: &artifacts)
-    scanAttribution(session: session, environment: environment, into: &artifacts)
+    if depth == .full {
+      scanCapture(session: session, environment: environment, into: &artifacts)
+      scanAttribution(session: session, environment: environment, into: &artifacts)
+    }
     scanTranscriptChain(session: session, environment: environment, into: &artifacts)
     return artifacts
   }
@@ -90,7 +35,7 @@ enum SessionArtifactScanner {
   // MARK: - Per-area scans
 
   private static func scanCapture(
-    session: Session, environment: ScanEnvironment, into artifacts: inout SessionArtifacts
+    session: Session, environment: SessionScanEnvironment, into artifacts: inout SessionArtifacts
   ) {
     let sourcesDirectory = DataStoreLayout.sessionDirectory(
       dataRoot: environment.dataRoot, sessionID: session.id
@@ -114,7 +59,7 @@ enum SessionArtifactScanner {
   }
 
   private static func scanAttribution(
-    session: Session, environment: ScanEnvironment, into artifacts: inout SessionArtifacts
+    session: Session, environment: SessionScanEnvironment, into artifacts: inout SessionArtifacts
   ) {
     let url = SessionAttributionLog.fileURL(
       dataRoot: environment.dataRoot, sessionID: session.id)
@@ -124,7 +69,7 @@ enum SessionArtifactScanner {
   }
 
   private static func scanTranscriptChain(
-    session: Session, environment: ScanEnvironment, into artifacts: inout SessionArtifacts
+    session: Session, environment: SessionScanEnvironment, into artifacts: inout SessionArtifacts
   ) {
     let transcriptURL = DataStoreLayout.sessionTranscriptFile(
       dataRoot: environment.dataRoot, sessionID: session.id)
@@ -173,8 +118,9 @@ enum SessionArtifactScanner {
     let stem = CleanupPublishedPath.documentStem(cleanupURL)
     let directory = cleanupURL.deletingLastPathComponent()
     if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) {
-      artifacts.summaryCount =
-        names.filter { $0.hasPrefix(stem) && $0.hasSuffix(".summary.md") }.count
+      let summaries = SummarySiblings.select(filenames: names, stem: stem)
+      artifacts.summaryPaths = summaries.map { directory.appendingPathComponent($0).path }
+      artifacts.summaryCount = summaries.count
     }
   }
 
@@ -196,31 +142,5 @@ enum SessionArtifactScanner {
       total += (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
     }
     return total
-  }
-
-  private static func stringValue(_ config: ConfigValue, _ path: [String]) -> String {
-    guard case .string(let value)? = nestedValue(config, path) else { return "" }
-    return value
-  }
-
-  /// `nil` when the key is absent — a distinction the caller needs, since an
-  /// explicit `[]` means something different from no key at all.
-  private static func stringArray(_ config: ConfigValue, _ path: [String]) -> [String]? {
-    guard case .array(let entries)? = nestedValue(config, path) else { return nil }
-    return entries.compactMap { entry in
-      guard case .string(let value) = entry else { return nil }
-      return value
-    }
-  }
-
-  /// The value at a dotted config path, or `nil` when any segment is absent
-  /// or isn't a table.
-  private static func nestedValue(_ config: ConfigValue, _ path: [String]) -> ConfigValue? {
-    var current = config
-    for key in path {
-      guard case .table(let table) = current, let next = table[key] else { return nil }
-      current = next
-    }
-    return current
   }
 }

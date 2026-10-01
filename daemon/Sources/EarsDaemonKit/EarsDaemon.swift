@@ -75,9 +75,9 @@ public struct EarsDaemonConfiguration: Sendable {
   public var detection: DetectionSettings
   /// `[earsd.sessions].on_end_stages`: the **default** chain, in
   /// ``OnEndStage``'s canonical order, for an ended session whose starter
-  /// declared none of its own. Only browser-extension sessions fall back to
-  /// it — see ``OnEndChainPolicy`` for why, and for the per-session override
-  /// that any client can send instead.
+  /// declared none of its own. Browser-extension and app-detected sessions
+  /// fall back to it; every other trigger runs nothing unless it declares a
+  /// chain — see ``OnEndChainPolicy`` for why.
   ///
   /// `[]` is the default *here* so that spawning a real subprocess is
   /// something a caller opts into: `earsd` always passes the resolved config
@@ -470,12 +470,13 @@ public actor EarsDaemon {
   public func start() async throws {
 
     // The daemon-owned session lifecycle registry, serving the `session.*`
-    // verbs on both control transports. Session end fires the configured
-    // on-end stage chain (`transcribe --session <id>`, then `cleanup` and
-    // `summarize` over its output — see `OnClosePipelineRunner`).
-    // Always installed: which stages run is now a per-session question
-    // (``OnEndChainPolicy``), so a session that declares its own chain must
-    // still be honored on a daemon whose configured default is empty.
+    // verbs on both control transports. Session end fires the on-end stage
+    // chain the session resolves to (`transcribe --session <id>`, then
+    // `cleanup` and `summarize` over its output — see `OnClosePipelineRunner`).
+    //
+    // Always installed: which stages run is a per-session question
+    // (``OnEndChainPolicy``), so a session that declares its own chain is
+    // honoured even on a daemon whose configured default is empty.
     let pipeline = OnClosePipelineRunner(
       log: log,
       publishJob: { [eventBus] params in await eventBus.publish(.job(params)) })
@@ -563,7 +564,10 @@ public actor EarsDaemon {
       // snapshots read the bus's revision.
       bus: eventBus,
       sessions: sessions,
-      meetingActivity: { await monitor?.snapshot() ?? [] })
+      meetingActivity: { await monitor?.snapshot() ?? [] },
+      configured: StatusData.Configured(
+        sources: configuration.sources.map(\.id),
+        onEndStages: configuration.onEndStages.map(\.rawValue)))
 
     let socketDirectory = URL(fileURLWithPath: configuration.socketPath).deletingLastPathComponent()
     try FileManager.default.createDirectory(
