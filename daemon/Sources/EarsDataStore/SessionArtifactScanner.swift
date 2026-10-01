@@ -92,18 +92,23 @@ public enum SessionArtifactScanner {
 
     // Where cleanup published (or will publish): the same template context
     // the stage itself expands, off this document's own frontmatter.
-    let cleanupPath = environment.cleanupTemplate.expand(
-      CleanupPublishedPath.context(
-        outputRoot: environment.outputRoot,
-        weekNumbering: environment.weekNumbering,
-        frontmatter: frontmatter,
-        transcriptPath: transcriptURL.path))
+    let context = CleanupPublishedPath.context(
+      outputRoot: environment.outputRoot,
+      weekNumbering: environment.weekNumbering,
+      frontmatter: frontmatter,
+      transcriptPath: transcriptURL.path)
+    let cleanupPath = environment.cleanupTemplate.expand(context)
     artifacts.cleanupPath = cleanupPath
+    let cleanupURL = URL(fileURLWithPath: cleanupPath)
+    // Summaries are looked up whether or not the cleaned copy is still where
+    // cleanup put it: a summary the user filed elsewhere still opens.
+    artifacts.summaryPaths = summaryPaths(
+      environment: environment, context: context, cleanupURL: cleanupURL)
+    artifacts.summaryCount = artifacts.summaryPaths.count
 
     // The published copy lives in the user's vault, where other tooling may
     // have reformatted the frontmatter — TranscriptParser reads any valid
     // YAML style, so the vault-linted shape parses like our own.
-    let cleanupURL = URL(fileURLWithPath: cleanupPath)
     guard let cleanMarkdown = try? String(contentsOf: cleanupURL, encoding: .utf8) else { return }
     artifacts.cleanupExists = true
     artifacts.noteLink = (try? TranscriptParser.parseFrontmatter(cleanMarkdown))?.note
@@ -117,20 +122,44 @@ public enum SessionArtifactScanner {
     {
       artifacts.cleanupSegments = clean.segments.count
     }
+  }
 
-    // Summaries land as `<stem>.summary.md` / `<stem>.<preset>.summary.md`
-    // siblings of the cleaned transcript (SummarizePipeline's default
-    // naming); presets that publish elsewhere surface through `note:` above.
-    let stem = CleanupPublishedPath.documentStem(cleanupURL)
+  /// Every summary on disk for this transcript. A preset that names its own
+  /// `out` can write anywhere (an Obsidian daily note, say), so those are
+  /// listed outright, first; the rest land as `<stem>.summary.md` /
+  /// `<stem>.<preset>.summary.md` siblings of the cleaned transcript
+  /// (SummarizePipeline's default naming) and are swept, so a summary written
+  /// under a preset since renamed still opens. Each path appears once.
+  private static func summaryPaths(
+    environment: SessionScanEnvironment, context: PathTemplate.Context, cleanupURL: URL
+  ) -> [String] {
+    var seen = Set<String>()
+    var paths: [String] = []
+    func add(_ path: String) {
+      let key = URL(fileURLWithPath: path).standardizedFileURL.path
+      if seen.insert(key).inserted { paths.append(path) }
+    }
+    for template in environment.summaryOutputs {
+      let path = template.expand(context)
+      if isRegularFile(path) { add(path) }
+    }
     let directory = cleanupURL.deletingLastPathComponent()
     if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) {
-      let summaries = SummarySiblings.select(filenames: names, stem: stem)
-      artifacts.summaryPaths = summaries.map { directory.appendingPathComponent($0).path }
-      artifacts.summaryCount = summaries.count
+      let stem = CleanupPublishedPath.documentStem(cleanupURL)
+      for name in SummarySiblings.select(filenames: names, stem: stem) {
+        add(directory.appendingPathComponent(name).path)
+      }
     }
+    return paths
   }
 
   // MARK: - Small helpers
+
+  private static func isRegularFile(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+      && !isDirectory.boolValue
+  }
 
   private static func sidecarText(for markdownURL: URL) -> String? {
     try? String(

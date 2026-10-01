@@ -95,4 +95,55 @@ struct SessionArtifactScannerTests {
     #expect(artifacts.noteLink == "[[notes]]")
     #expect(artifacts.summaryCount == 2)
   }
+
+  @Test("a preset's own `out` is listed ahead of the siblings when it exists")
+  func explicitPresetOutputs() throws {
+    var (environment, session, published) = try Self.makeStore()
+    defer { try? FileManager.default.removeItem(at: environment.dataRoot) }
+    let vault = environment.dataRoot.appendingPathComponent("vault")
+    try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+    let daily = vault.appendingPathComponent("4a1f9c22-0d18-4a71-9f0b-2c4e6d8a1b33.md")
+    try Data("x".utf8).write(to: daily)
+    environment.summaryOutputs = [
+      PathTemplate(vault.path + "/{session}.md"),
+      // Configured, but never written: not offered.
+      PathTemplate(vault.path + "/missing.md"),
+      // Already a sibling: listed once.
+      PathTemplate(published.path + "/notes.summary.md"),
+    ]
+
+    let artifacts = SessionArtifactScanner.scan(
+      session: session, environment: environment, depth: .outcome)
+
+    #expect(
+      artifacts.summaryPaths == [
+        daily.path,
+        published.appendingPathComponent("notes.summary.md").path,
+        published.appendingPathComponent("notes.brief.summary.md").path,
+      ])
+    #expect(artifacts.summaryCount == 3)
+  }
+
+  @Test("summary outputs resolve from each preset's `out`, `{notes}` through its `notes`")
+  func resolvesPresetOutputs() {
+    func preset(_ fields: [String: String]) -> ConfigValue {
+      .table(fields.mapValues { .string($0) })
+    }
+    let config = ConfigValue.table([
+      "summarize": .table([
+        "preset": .array([
+          preset(["name": "plain"]),
+          preset(["name": "filed", "out": "/vault/{date}.md"]),
+          preset(["name": "daily", "notes": "/vault/daily/{date}.md", "out": "{notes}"]),
+          // `{notes}` with no `notes` names no file at all.
+          preset(["name": "broken", "out": "{notes}"]),
+        ])
+      ])
+    ])
+
+    let environment = SessionScanEnvironment.resolve(from: config)
+
+    #expect(
+      environment.summaryOutputs.map(\.raw) == ["/vault/{date}.md", "/vault/daily/{date}.md"])
+  }
 }

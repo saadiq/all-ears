@@ -17,11 +17,16 @@ public struct SessionScanEnvironment: Sendable {
   /// resolved them, so the pipeline view names a stopped chain for what it is
   /// (`skipped (empty transcript)`) instead of reporting absent artifacts.
   public var emptiness: TranscriptEmptinessPolicy
+  /// Each `[[summarize.preset]]`'s own `out` template, for the presets that
+  /// name one — the summaries a sibling sweep beside the cleaned transcript
+  /// cannot find. `{notes}` is already replaced by the preset's `notes`
+  /// template, which is what `summarize` expands it to.
+  public var summaryOutputs: [PathTemplate]
 
   public init(
     dataRoot: URL, cleanupTemplate: PathTemplate, outputRoot: String,
     weekNumbering: WeekNumbering, onEndChain: [OnEndStage],
-    emptiness: TranscriptEmptinessPolicy = .defaults
+    emptiness: TranscriptEmptinessPolicy = .defaults, summaryOutputs: [PathTemplate] = []
   ) {
     self.dataRoot = dataRoot
     self.cleanupTemplate = cleanupTemplate
@@ -29,6 +34,7 @@ public struct SessionScanEnvironment: Sendable {
     self.weekNumbering = weekNumbering
     self.onEndChain = onEndChain
     self.emptiness = emptiness
+    self.summaryOutputs = summaryOutputs
   }
 
   /// Loads the same layered config every tool reads and resolves the scan
@@ -63,7 +69,27 @@ public struct SessionScanEnvironment: Sendable {
       outputRoot: stringValue(config, ["output_root"]),
       weekNumbering: WeekNumbering(configValue: stringValue(config, ["week_numbering"])),
       onEndChain: onEndChain(config),
-      emptiness: emptinessPolicy(config))
+      emptiness: emptinessPolicy(config),
+      summaryOutputs: summaryOutputs(config))
+  }
+
+  /// `[[summarize.preset]]` `out` templates. A preset's `{notes}` names the
+  /// file its `notes` template resolves to, so the two compose textually; an
+  /// `out` that uses `{notes}` on a preset with no `notes` names no file and
+  /// is dropped. (`summarize` may also *locate* a note near the templated
+  /// path; that file is found through the cleaned copy's `note:` link.)
+  private static func summaryOutputs(_ config: ConfigValue) -> [PathTemplate] {
+    guard case .array(let presets)? = nestedValue(config, ["summarize", "preset"]) else {
+      return []
+    }
+    return presets.compactMap { preset in
+      let out = stringValue(preset, ["out"])
+      guard !out.isEmpty else { return nil }
+      guard out.contains("{notes}") else { return PathTemplate(out) }
+      let notes = stringValue(preset, ["notes"])
+      guard !notes.isEmpty else { return nil }
+      return PathTemplate(out.replacingOccurrences(of: "{notes}", with: notes))
+    }
   }
 
   /// The resolved `[earsd.sessions] on_end_stages` — see
