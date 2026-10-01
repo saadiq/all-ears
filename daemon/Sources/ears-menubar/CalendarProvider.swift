@@ -16,16 +16,16 @@ import Foundation
 final class CalendarProvider {
   private let store = EKEventStore()
 
-  /// Events overlapping a window around now (4 h back, 2 h forward), or
-  /// `nil` when access is denied or the request fails — the caller starts
+  /// Events overlapping ``CalendarMatching/fetchWindow(around:)`` at `now`,
+  /// or `nil` when access is denied or the request fails — the caller starts
   /// the session unenriched either way (calendar is a garnish, never a gate).
-  func eventsAroundNow() async -> [CalendarEventInfo]? {
+  func events(around now: Instant) async -> [CalendarEventInfo]? {
     let granted = (try? await store.requestFullAccessToEvents()) ?? false
     guard granted else { return nil }
-    let now = Date()
+    let window = CalendarMatching.fetchWindow(around: now)
     let predicate = store.predicateForEvents(
-      withStart: now.addingTimeInterval(-4 * 3_600),
-      end: now.addingTimeInterval(2 * 3_600),
+      withStart: Date(timeIntervalSince1970: window.start.secondsSinceEpoch),
+      end: Date(timeIntervalSince1970: window.end.secondsSinceEpoch),
       calendars: nil)
     return store.events(matching: predicate).map { event in
       let matchText = [event.location, event.notes, event.url?.absoluteString]

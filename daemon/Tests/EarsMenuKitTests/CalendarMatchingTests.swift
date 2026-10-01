@@ -14,6 +14,16 @@ struct CalendarMatchingTests {
       isAllDay: isAllDay)
   }
 
+  @Test("the fetch window spans every event a match at now can choose")
+  func fetchWindowCoversMatchableEvents() {
+    let now = Instant(secondsSinceEpoch: 100_000)
+    let window = CalendarMatching.fetchWindow(around: now)
+    #expect(window.start == Instant(secondsSinceEpoch: 100_000 - 4 * 3_600))
+    #expect(window.end == Instant(secondsSinceEpoch: 100_000 + 2 * 3_600))
+    // An event starting within the join slack is matchable, so it is fetched.
+    #expect(now.advanced(by: CalendarMatching.joinSlackSeconds) <= window.end)
+  }
+
   @Test("an all-day row is never the meeting, even as the only candidate")
   func allDayRowsAreExcluded() {
     // "PTO" spans the whole day, so it overlaps every meeting on it.

@@ -53,6 +53,13 @@ public enum CalendarMatching {
   /// How early before an event's start a join still counts as that event.
   public static let joinSlackSeconds: Double = 600
 
+  /// The span of events to fetch for a match at `now`: 4 h back, 2 h
+  /// forward. Taken from the same `now` ``best(events:now:platformMarker:)``
+  /// matches against, so the fetch and the match never read two clocks.
+  public static func fetchWindow(around now: Instant) -> (start: Instant, end: Instant) {
+    (now.advanced(by: -4 * 3_600), now.advanced(by: 2 * 3_600))
+  }
+
   public static func marker(forBundleID bundleID: String) -> String? {
     KnownMeetingApp.matching(bundleID: bundleID)?.linkMarker
   }

@@ -39,9 +39,10 @@ struct DetectedMeetingControls: Sendable {
   /// such — the recording is already running, so it must not read as a
   /// failed start.
   private func enrich(session: Session, source: SourceID) async -> String? {
-    guard let events = await calendar.eventsAroundNow(),
+    let now = AppClock.now()
+    guard let events = await calendar.events(around: now),
       let matched = CalendarMatching.best(
-        events: events, now: AppClock.now(),
+        events: events, now: now,
         platformMarker: CalendarMatching.marker(forBundleID: source.detail ?? ""))
     else { return nil }
     for call in CalendarEnrichment.calls(session: session.id, event: matched) {
