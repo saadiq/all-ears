@@ -29,13 +29,14 @@ import os
   let dataRoot: String
   private let configError: String?
   private let connection: DaemonConnection?
-  private let announcements = SessionNotifications()
+  private let announcements: SessionNotifications
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "app")
 
   init(config: ClientConfig) {
     dataRoot = config.environment.dataRoot.path
     connection = DaemonConnection(socketPath: config.socketPath)
     recents = RecentsStore(loader: RecentsLoader(environment: config.environment))
+    announcements = SessionNotifications(notifier: Notifier())
     configError = nil
   }
 
@@ -43,6 +44,7 @@ import os
     dataRoot = ""
     connection = nil
     recents = RecentsStore(loader: nil)
+    announcements = SessionNotifications(notifier: Notifier())
     configError = message
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }

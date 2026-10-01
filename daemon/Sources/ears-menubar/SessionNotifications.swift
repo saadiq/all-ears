@@ -12,10 +12,16 @@ import Foundation
 /// the at-risk warning — so `AppModel` handles events rather than the
 /// notification centre.
 @MainActor final class SessionNotifications {
-  private let notifier = Notifier()
+  /// Shared, not owned: `UNUserNotificationCenter` has one delegate, so every
+  /// part of the app that posts or answers notifications goes through it.
+  private let notifier: Notifier
   /// Sessions already warned about via "Recording at risk", so a crash-looping
   /// daemon warns once per session instead of once per crash.
   private var warnedAtRiskSessions: Set<String> = []
+
+  init(notifier: Notifier) {
+    self.notifier = notifier
+  }
 
   /// Asks for the grant and wires notification clicks to the files they name.
   ///

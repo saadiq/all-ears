@@ -11,6 +11,10 @@ final class Notifier: NSObject {
   /// `async` and `@Sendable`, so it does not inherit this actor: resolving a
   /// click reads the session store, which must not run on the main actor.
   private var resolve: (@Sendable (NotificationRequest.Action) async -> URL?)?
+  /// Categories other parts of the app registered, each with the handler
+  /// its notifications' responses go to. `UNNotificationCategory` is not
+  /// `Sendable`; this type is `@MainActor`, so storing one here is legal.
+  private var categories: [String: RegisteredCategory] = [:]
   private let log = Logger(subsystem: "net.tomelliot.ears.menubar", category: "notify")
 
   /// - Parameter report: called once the grant resolves, so the menu can say
@@ -29,6 +33,7 @@ final class Notifier: NSObject {
     self.resolve = resolve
     let center = UNUserNotificationCenter.current()
     center.delegate = self
+    applyCategories()
     let log = self.log
     center.requestAuthorization(options: [.alert, .sound]) { granted, error in
       // Arrives off the main actor, and `report` mutates the model.
@@ -72,23 +77,58 @@ final class Notifier: NSObject {
     }
   }
 
+  /// Registers a notification category with the handler its responses go
+  /// to. Safe before ``bootstrap(resolve:report:)``, which applies whatever
+  /// was registered first.
+  func register(
+    _ category: UNNotificationCategory,
+    onResponse: @escaping @MainActor @Sendable (NotificationResponseKind, [String: String]) -> Void
+  ) {
+    categories[category.identifier] = RegisteredCategory(category: category, handler: onResponse)
+    if available { applyCategories() }
+  }
+
   func post(_ request: NotificationRequest) {
+    // A fresh id per post: each notification is history the moment it lands,
+    // and a stable id would let a second summary overwrite the first.
+    post(title: request.title, body: request.body, userInfo: Self.encode(request.action))
+  }
+
+  /// Posts a notification. `identifier` names one the caller may need to
+  /// replace or withdraw later; `nil` mints a fresh one. `category` claims a
+  /// registered category's buttons and response handler.
+  func post(
+    title: String, body: String, userInfo: [String: String], identifier: String? = nil,
+    category: String? = nil
+  ) {
     guard available else { return }
     let content = UNMutableNotificationContent()
-    content.title = request.title
-    content.body = request.body
-    content.userInfo = Self.encode(request.action)
+    content.title = title
+    content.body = body
+    content.userInfo = userInfo
+    content.categoryIdentifier = category ?? ""
     // The `.sound` grant plays nothing on its own; the content has to ask.
     content.sound = .default
     let log = self.log
-    // A fresh id per post: each notification is history the moment it lands,
-    // and a stable id would let a second summary overwrite the first.
     UNUserNotificationCenter.current().add(
-      UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+      UNNotificationRequest(
+        identifier: identifier ?? UUID().uuidString, content: content, trigger: nil)
     ) { error in
       guard let error else { return }
       log.error("notification post failed: \(error.localizedDescription, privacy: .public)")
     }
+  }
+
+  /// Takes back delivered notifications by id. Delivered only: these are
+  /// posted with no trigger, so there is never a pending request to cancel.
+  func withdraw(identifiers: [String]) {
+    guard available, !identifiers.isEmpty else { return }
+    UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
+  }
+
+  private func applyCategories() {
+    UNUserNotificationCenter.current().setNotificationCategories(
+      Set(categories.values.map(\.category)))
   }
 
   nonisolated static func encode(_ action: NotificationRequest.Action) -> [String: String] {
@@ -118,19 +158,17 @@ extension Notifier: UNUserNotificationCenterDelegate {
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
-    // Only a click on the body acts; any other response (a system dismiss,
-    // say) is acknowledged and ignored rather than treated as a click.
-    guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else {
-      completionHandler()
-      return
+    // Only `Sendable` pieces cross to the main actor, where the registered
+    // categories live.
+    let content = response.notification.request.content
+    let category = content.categoryIdentifier
+    let actionID = response.actionIdentifier
+    let info = content.userInfo.reduce(into: [String: String]()) { info, entry in
+      if let key = entry.key as? String, let value = entry.value as? String { info[key] = value }
     }
-    let action = Notifier.decode(response.notification.request.content.userInfo)
+    let action = Notifier.decode(content.userInfo)
     Task { @MainActor [weak self] in
-      guard let resolve = self?.resolve, let url = await resolve(action) else { return }
-      switch action {
-      case .revealSession: NSWorkspace.shared.activateFileViewerSelecting([url])
-      default: NSWorkspace.shared.open(url)
-      }
+      self?.respond(category: category, actionID: actionID, info: info, action: action)
     }
     completionHandler()
   }
@@ -143,5 +181,42 @@ extension Notifier: UNUserNotificationCenterDelegate {
     // `.list` too: this fires only while the app is frontmost, and without it
     // a notification presented in that window is gone for good once it fades.
     completionHandler([.banner, .list, .sound])
+  }
+}
+
+extension Notifier {
+  struct RegisteredCategory {
+    var category: UNNotificationCategory
+    var handler: @MainActor @Sendable (NotificationResponseKind, [String: String]) -> Void
+  }
+
+  /// A registered category's response goes to its handler, mapped to a
+  /// ``NotificationResponseKind``. Anything else takes the default path: only
+  /// a click on the body acts; any other response (a system dismiss, say) is
+  /// acknowledged and ignored rather than treated as a click.
+  fileprivate func respond(
+    category: String, actionID: String, info: [String: String],
+    action: NotificationRequest.Action
+  ) {
+    if let registered = categories[category] {
+      let kind: NotificationResponseKind
+      if actionID == UNNotificationDefaultActionIdentifier {
+        kind = .body
+      } else if registered.category.actions.contains(where: { $0.identifier == actionID }) {
+        kind = .button(actionID)
+      } else {
+        kind = .other
+      }
+      registered.handler(kind, info)
+      return
+    }
+    guard actionID == UNNotificationDefaultActionIdentifier, let resolve else { return }
+    Task {
+      guard let url = await resolve(action) else { return }
+      switch action {
+      case .revealSession: NSWorkspace.shared.activateFileViewerSelecting([url])
+      default: NSWorkspace.shared.open(url)
+      }
+    }
   }
 }
