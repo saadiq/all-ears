@@ -7,7 +7,9 @@ import Foundation
 /// dropped stream invalidates the generation so stale loops exit silently.
 actor DaemonConnection {
   enum Event: Sendable {
-    case ready(daemon: String, snapshot: SnapshotData)
+    /// `bootID` scopes the detected-meeting prompt history, whose episode ids
+    /// restart with every daemon boot (see `PromptedEpisodePolicy`).
+    case ready(daemon: String, bootID: String, snapshot: SnapshotData)
     case event(EventFrame)
     case down
   }
@@ -42,7 +44,8 @@ actor DaemonConnection {
         let dialled = try await ControlSocketClient.connect(toPath: socketPath)
         pending = dialled
         let hello = try await dialled.hello(client: "menubar/\(Self.version)")
-        let (snapshot, frames) = try await dialled.subscribe(SubscribeParams(events: [.job]))
+        let (snapshot, frames) = try await dialled.subscribe(
+          SubscribeParams(events: [.job, .meetingActivity]))
         guard generation == mine else {
           // A bounce() landed mid-dial and already owns a newer generation;
           // abandon this connection instead of adopting it as `client`.
@@ -53,7 +56,7 @@ actor DaemonConnection {
         client = dialled
         pending = nil  // adopted: the teardown below owns it as `client`
         attempt = 0
-        continuation.yield(.ready(daemon: hello.daemon, snapshot: snapshot))
+        continuation.yield(.ready(daemon: hello.daemon, bootID: hello.bootID, snapshot: snapshot))
         for await frame in frames {
           guard generation == mine else { break }
           continuation.yield(.event(frame))
@@ -113,5 +116,20 @@ actor DaemonConnection {
   func status() async -> StatusData? {
     guard let client else { return nil }
     return try? await client.send(.status, expecting: StatusData.self)
+  }
+
+  /// `session.start`, decoding the full session result — the menu needs the
+  /// daemon-assigned id back to upsert calendar attendees against it.
+  func startSession(_ params: SessionStartParams) async -> Result<Session, WireError> {
+    guard let client else {
+      return .failure(WireError(code: .internalError, message: "not connected to earsd"))
+    }
+    do {
+      return .success(try await client.send(.sessionStart(params), expecting: Session.self))
+    } catch let error as WireError {
+      return .failure(error)
+    } catch {
+      return .failure(WireError(code: .internalError, message: "\(error)"))
+    }
   }
 }

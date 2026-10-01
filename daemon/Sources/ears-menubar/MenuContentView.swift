@@ -15,6 +15,9 @@ struct MenuContentView: View {
         Button("Open Notification Settings") { SystemActions.openNotificationSettings() }
       }
     }
+    ForEach(model.meetings.offers(menu: model.state)) { offer in
+      Button(offer.menuTitle) { model.startDetected(source: offer.source, episode: offer.episode) }
+    }
     ForEach(model.content.verbs, id: \.self) { verb in
       Button(label(for: verb)) { model.perform(verb) }
     }

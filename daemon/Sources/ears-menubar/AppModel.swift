@@ -26,6 +26,8 @@ import os
   /// is still resolving.
   private(set) var notifications: NotificationAvailability = .authorized
   let recents: RecentsStore
+  /// Meetings the daemon detected, offered as rows above the verbs.
+  let meetings: DetectedMeetings
   let dataRoot: String
   private let configError: String?
   private let connection: DaemonConnection?
@@ -34,9 +36,11 @@ import os
 
   init(config: ClientConfig) {
     dataRoot = config.environment.dataRoot.path
-    connection = DaemonConnection(socketPath: config.socketPath)
+    let connection = DaemonConnection(socketPath: config.socketPath)
+    self.connection = connection
     recents = RecentsStore(loader: RecentsLoader(environment: config.environment))
     announcements = SessionNotifications(notifier: Notifier())
+    meetings = DetectedMeetings(connection: connection)
     configError = nil
   }
 
@@ -45,6 +49,7 @@ import os
     connection = nil
     recents = RecentsStore(loader: nil)
     announcements = SessionNotifications(notifier: Notifier())
+    meetings = DetectedMeetings(connection: nil)
     configError = message
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }
@@ -77,6 +82,19 @@ import os
     }
   }
 
+  /// Accepts a detected meeting's offer, settling the error line like
+  /// ``perform(_:)``.
+  func startDetected(source: String, episode: String) {
+    let menu = state
+    Task {
+      if let message = await meetings.accept(source: source, episode: episode, menu: menu) {
+        report(message)
+      } else {
+        actionError = nil
+      }
+    }
+  }
+
   func dismiss(jobID: String) {
     MenuStateReducer.dismissJob(&state, id: jobID)
     rerender()
@@ -98,10 +116,11 @@ import os
   private func pump(_ connection: DaemonConnection) async {
     for await event in connection.events {
       switch event {
-      case .ready(let daemon, let snapshot):
+      case .ready(let daemon, _, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
+        meetings.connected()
         actionError = nil
-        anchorUptime(connection)
+        catchUp(connection)
         recents.refresh()
       case .event(let frame):
         let before = state
@@ -114,6 +133,7 @@ import os
             await connection.bounce()
           }
         case .applied:
+          meetings.handle(frame)
           announcements.announce(frame, before: before)
           if RecentsRefreshPolicy.shouldRefresh(for: frame) { recents.refresh() }
         case .ignoredStale:
@@ -129,15 +149,22 @@ import os
     }
   }
 
-  /// Re-anchors uptime against the process now on the socket. A failed
-  /// `status` leaves no anchor rather than the previous process's.
-  private func anchorUptime(_ connection: DaemonConnection) {
+  /// One `status` after (re)connecting: re-anchors uptime against the process
+  /// now on the socket, and refills detected-meeting activity, which is
+  /// telemetry and so absent from the subscribe snapshot. A failed `status`
+  /// leaves no anchor rather than the previous process's. The edit mark is
+  /// taken before asking, so an answer a live edge or reconnect overtook is
+  /// dropped.
+  private func catchUp(_ connection: DaemonConnection) {
+    let mark = meetings.editMark
     Task { [weak self] in
       let status = await connection.status()
-      self?.uptime = status.map {
+      guard let self else { return }
+      uptime = status.map {
         DaemonUptime(reported: Double($0.uptimeSeconds), anchor: AppClock.now())
       }
-      self?.rerender()
+      if let status { meetings.catchUp(status.meetingActivity, mark: mark) }
+      rerender()
     }
   }
 
