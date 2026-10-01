@@ -100,4 +100,16 @@ public enum MeetingPromptPolicy {
       }
     return MeetingPromptDecision(post: prompts, markPrompted: prompts.map(\.episode))
   }
+
+  /// Whether a frame that moved the menu from `before` to `after` calls for a
+  /// fresh ``decide(activity:menu:alreadyPrompted:)``: meeting activity
+  /// changed, or a session went live or stopped being live. The second is
+  /// what withdraws every other source's standing prompt once an accepted
+  /// offer (or a session started any other way) is recording — a session
+  /// frame, not a meeting one, is what says so.
+  public static func needsReconcile(
+    activityChanged: Bool, before: MenuState, after: MenuState
+  ) -> Bool {
+    activityChanged || (before.activeSession == nil) != (after.activeSession == nil)
+  }
 }

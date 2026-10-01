@@ -172,7 +172,9 @@ ignored. Each episode is prompted at most once. A live session withdraws every s
 prompt and drops (marks prompted) every active episode; an episode merely going inactive
 withdraws nothing, because Zoom releases and retakes the mic ~17s after joining and
 withdrawing on that edge cancelled prompts before anyone could answer. Prompts are
-re-evaluated on each `meeting.activity` frame, after the connect catch-up, and on accept.
+re-evaluated on each `meeting.activity` frame, whenever a session goes live or stops being
+live (so accepting one offer withdraws the rest once that session's frame arrives), and
+after the connect catch-up.
 
 **Alert style.** `NSUserNotificationAlertStyle = alert`, so a prompt waits to be
 answered. It is app-wide (summary and at-risk notices wait too) and macOS reads it only

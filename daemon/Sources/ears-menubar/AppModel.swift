@@ -140,7 +140,12 @@ import os
             await connection.bounce()
           }
         case .applied:
-          if meetings.handle(frame) { meetings.reconcile(menu: state) }
+          let activityChanged = meetings.handle(frame)
+          if MeetingPromptPolicy.needsReconcile(
+            activityChanged: activityChanged, before: before, after: state)
+          {
+            meetings.reconcile(menu: state)
+          }
           announcements.announce(frame, before: before)
           if RecentsRefreshPolicy.shouldRefresh(for: frame) { recents.refresh() }
         case .ignoredStale:

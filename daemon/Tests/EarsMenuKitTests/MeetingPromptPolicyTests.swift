@@ -80,6 +80,22 @@ struct MeetingPromptPolicyTests {
     #expect(decision == MeetingPromptDecision())
   }
 
+  @Test("prompts are re-evaluated when activity changes or a session starts or ends")
+  func reconcileTriggers() {
+    let idle = menu()
+    let live = menu(sessions: [makeSession()])
+    let paused = menu(sessions: [makeSession(state: .paused)])
+    // An accepted offer (or a session started any other way) must withdraw the
+    // other sources' standing prompts without waiting for a meeting frame.
+    #expect(MeetingPromptPolicy.needsReconcile(activityChanged: false, before: idle, after: live))
+    #expect(MeetingPromptPolicy.needsReconcile(activityChanged: false, before: live, after: idle))
+    #expect(MeetingPromptPolicy.needsReconcile(activityChanged: true, before: idle, after: idle))
+    #expect(!MeetingPromptPolicy.needsReconcile(activityChanged: false, before: idle, after: idle))
+    // Pausing keeps the session live, so nothing about the offers changes.
+    #expect(
+      !MeetingPromptPolicy.needsReconcile(activityChanged: false, before: live, after: paused))
+  }
+
   @Test("prompts are posted under one id per source, not per episode")
   func notificationIDIsPerSource() {
     let first = MeetingPrompt(source: "app:us.zoom.xos", episode: "us.zoom.xos#1", label: "Zoom")
