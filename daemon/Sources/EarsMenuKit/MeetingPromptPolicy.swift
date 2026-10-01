@@ -70,6 +70,13 @@ public struct MeetingPromptDecision: Sendable, Hashable {
 /// Decides which detected meetings deserve a prompt right now. Policy, not
 /// state: the caller owns the already-prompted set (persisted across app
 /// restarts, keyed on the daemon's episode ids) and applies the decision.
+///
+/// An episode is marked prompted when its prompt is *posted*, whether or not
+/// macOS shows it: with notifications denied the post is dropped, and the
+/// episode still counts as offered. That is deliberate — the menu row offers
+/// the same meeting regardless, and an episode re-prompted the moment
+/// notifications come back on would arrive mid-call, long after the join it
+/// was for. Turning notifications on applies from the next episode.
 public enum MeetingPromptPolicy {
   public static func decide(
     activity: MeetingActivityState, menu: MenuState, alreadyPrompted: Set<String>
