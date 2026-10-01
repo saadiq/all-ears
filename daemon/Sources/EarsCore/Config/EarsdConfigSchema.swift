@@ -175,8 +175,8 @@ public enum EarsdConfigSchema {
                     type: .array,
                     description:
                       "Default pipeline stages for a session that declares none of its own, from "
-                      + "transcribe|cleanup|summarize. Only browser-extension sessions fall back to "
-                      + "it; a session that declares its own chain runs that instead. "
+                      + "transcribe|cleanup|summarize. Only browser-extension and app-detected sessions "
+                      + "fall back to it; a session that declares its own chain runs that instead. "
                       + "cleanup/summarize require transcribe; [] disables this default."),
                   "min_words": ConfigSchema.Field(
                     type: .int,
