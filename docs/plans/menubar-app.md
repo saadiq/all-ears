@@ -130,9 +130,9 @@ Each is additive and useful to any client:
 
 `make menubar`: build, assemble `All Ears.app` (`Info.plist` with `LSUIElement`, bundle
 id `net.tomelliot.ears.menubar`, an icon rendered from `docs/brand/exports`), codesign
-with the identity `make install` resolves, install to `~/Applications`, relaunch. It is
-opt-in: `make install` does not bundle or install the app (its release build compiles
-the target along with every other product). `make uninstall` removes it.
+with the identity `make install` resolves, install to `~/Applications`, relaunch.
+Upstream it is opt-in; this fork's `make install` also runs `make menubar`. `make
+uninstall` removes it.
 Signed-and-notarized distribution remains a suite-wide non-goal for now.
 
 ## Testing
