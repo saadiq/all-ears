@@ -171,8 +171,8 @@ Semantics:
   names the chain this session runs when it ends (`["transcribe","cleanup","summarize"]`), and
   `[]` explicitly means "run nothing" — a client doing its own post-processing says so once, at
   the call site, instead of editing daemon config. Omit the field and the daemon applies its
-  default for the trigger: browser-extension sessions inherit `[earsd.sessions] on_end_stages`,
-  every other trigger runs nothing. A declared chain is honoured exactly or refused: a name
+  default for the trigger: browser-extension and app-detected sessions inherit
+  `[earsd.sessions] on_end_stages`, every other trigger runs nothing. A declared chain is honoured exactly or refused: a name
   the daemon cannot run — an unknown stage, or `cleanup`/`summarize` with no `transcribe` to
   feed them — fails the `session.start` call with `invalid_request` rather than resolving to a
   smaller chain (or to nothing) at session end, hours after the caller could have been told.
