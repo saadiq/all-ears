@@ -104,6 +104,17 @@ Third `TriggerKind` case (`EarsCore/Models/TriggerKind.swift`) alongside
 
 ## Menu bar app
 
+> **Since the 2026-09 convergence** with the upstream menu bar stack, the app half
+> lives in its own types beside the stack's menu state: `MeetingActivityReducer`,
+> `MeetingOffers`, `MeetingPromptPolicy`, `MeetingPromptResponse`,
+> `DetectedSessionStart`, `CalendarEnrichment` and `PromptedEpisodes` in
+> `EarsMenuKit`, behind the `DetectedMeetings`/`DetectedMeetingControls` shims. The
+> app no longer reads daemon config: `mic` is declared only when
+> `status.configured` lists it, and a start is refused when the running daemon no
+> longer captures the app source. See the fork layer in
+> [`docs/plans/menubar-app.md`](../../plans/menubar-app.md). The implementation plan
+> beside this spec predates that and names the earlier types.
+
 ### Prompt
 
 `ears-menubar` subscribes to `meeting.activity`. When an episode begins and

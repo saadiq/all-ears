@@ -57,7 +57,8 @@ Two targets, mirroring the repo's "logic in a library, executables are shims" ru
   this target.
 - `DaemonConnection`, an actor over `EarsIPC`'s socket client: Unix socket → `hello`
   (`client: "menubar/<bundle version>"`) → `subscribe(events: ["job"])` → frames feed
-  the reducer. It reconnects with backoff; a generation counter retires stale loops. A
+  the reducer. (This fork subscribes to `["job", "meeting.activity"]` — see
+  [Fork layer](#fork-layer-saadiqall-ears-only).) It reconnects with backoff; a generation counter retires stale loops. A
   rev gap drops the state back to `connecting` before bouncing the socket, so the menu
   stops offering verbs it can no longer deliver.
 - `SessionControls`: the verbs as control calls. Every failure is surfaced in the menu,
@@ -147,3 +148,73 @@ Signed-and-notarized distribution remains a suite-wide non-goal for now.
   its file; a failure notification; restarting the daemon while recording (the at-risk
   notice fires once); Launch at Login, signed and ad-hoc; the notifications-denied
   warning.
+
+## Fork layer (saadiq/all-ears only)
+
+This fork adds native-meeting detection and calendar enrichment on top of stage 1. The
+daemon does the detecting ([`[earsd.detection]`](../superpowers/specs/2026-08-17-native-meeting-detection-design.md),
+`meeting.activity` telemetry, auto-end); the app offers, prompts, starts and enriches.
+It lives in its own types beside the stack's, so `MenuState`, the reducer, the renderer,
+`Verb`, `NotificationPolicy` and `StartRecording` are untouched.
+
+**Menu offer row.** While connected with no active or paused session, one row per active
+meeting, in `meeting_activity` order, above the plain verbs: `Start Recording ‘<label>’
+Meeting` (`<label>` is the source's descriptor label, else its id). Plain `Start
+Recording` still follows.
+
+**Prompt notification.** On the daemon's confirmed active edge (`debounce_s` plus the
+monitor's 1s poll): title `<label> meeting detected`, body `Start recording?`, sound, in
+category `meeting-detected` with buttons `start-recording` ("Start Recording") and
+`not-now` ("Not Now"), neither `.foreground`. Its id is `meeting-detected:<source>` —
+per source, so a newer episode for the same app replaces the alert instead of stacking.
+Only a body click or Start accepts; Not Now, a system dismiss and anything unknown are
+ignored. Each episode is prompted at most once. A live session withdraws every standing
+prompt and drops (marks prompted) every active episode; an episode merely going inactive
+withdraws nothing, because Zoom releases and retakes the mic ~17s after joining and
+withdrawing on that edge cancelled prompts before anyone could answer. Prompts are
+re-evaluated on each `meeting.activity` frame, after the connect catch-up, and on accept.
+
+**Alert style.** `NSUserNotificationAlertStyle = alert`, so a prompt waits to be
+answered. It is app-wide (summary and at-risk notices wait too) and macOS reads it only
+at first registration.
+
+**Prompt history.** UserDefaults `promptedMeetingEpisodes` (≤50, oldest evicted) and
+`promptedMeetingEpisodesBootID`. Episode ids restart with each daemon boot, so the
+history is reset whenever `hello`'s `boot_id` changes — before any catch-up can prompt.
+
+**Catch-up.** A connect clears activity; the one `status` call that anchors uptime
+refills `meeting_activity` unless a live edge or reconnect landed while it was in
+flight (an edit-mark compare).
+
+**Accept** (row or prompt): withdraw that source's prompt and mark the episode; if a
+session is live, stop silently. Otherwise `status`, then `session.start` with `trigger:
+app-detected`, `platform` from `KnownMeetingApp` (`zoom-app`, `teams-app`, `slack-app`,
+`facetime-app`, else the bundle id), `external_id` = the episode, `sources` = `mic` if
+`status.configured` lists it, then the app source; no `title`, no `on_end_stages` (the
+daemon's `OnEndChainPolicy` runs the configured chain). Refused if the daemon is too old
+or no longer captures the app source. Failures land on the menu's `⚠` line.
+
+**Calendar enrichment**, only after a successful start, so the first-run permission
+dialog never delays capture: `requestFullAccessToEvents` lazily, events from now − 4h to
+now + 2h. `CalendarMatching.best` drops all-day rows, takes events overlapping now (600s
+early-join slack), prefers one carrying the platform's link marker, then the nearest
+start, then title. Then `session.rename` to its title (if any) and one `session.attendee`
+per attendee: id `calendar-<i>`, origin `calendar`, `self` only for the current user, no
+source binding. The first failure is reported and stops the rest. Denied access or no
+match leaves the session unenriched, silently. `Info.plist` carries
+`NSCalendarsFullAccessUsageDescription`; without it macOS terminates the app on the
+access request.
+
+**Code.** `EarsMenuKit` (tier 0, tested): `MeetingActivityReducer`, `MeetingOffers`,
+`MeetingPromptPolicy`, `MeetingPromptResponse`, `DetectedSessionStart`,
+`CalendarEnrichment`, `PromptedEpisodes`, plus `KnownMeetingApp`, `CalendarMatching` and
+`PromptedEpisodePolicy`. `ears-menubar` shims: `DetectedMeetings` (the observable slice
+`AppModel` hooks into), `DetectedMeetingControls`, `CalendarProvider` (all EventKit),
+`PromptedEpisodeStore`. `Notifier` has generic hooks — category registration with a
+response handler, stable ids, withdrawal — shared with `SessionNotifications`.
+
+**Tier 2** (manual): join a call → alert and menu row; Not Now → no re-prompt; leave and
+rejoin → the prompt replaces, not stacks; Start → mic + app source, `app-detected`,
+calendar title and attendees applied; auto-end after the call, then the summary notice;
+relaunch the app mid-call → no re-prompt; restart the daemon → a new prompt; deny
+calendar access → unenriched, no error.
