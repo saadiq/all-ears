@@ -7,8 +7,9 @@ import os
 
 /// The menu's observable state and the loop that keeps it in step with the
 /// daemon: socket frames → ``MenuStateReducer`` → ``MenuRenderer``. Verbs go
-/// through ``SessionControls``, recent sessions through ``RecentsStore``, and
-/// notifications through ``SessionNotifications``.
+/// through ``SessionControls``, recent sessions through ``RecentsStore``,
+/// notifications through ``SessionNotifications``, and detected meetings
+/// (offers, prompts, and their accepts) through ``DetectedMeetings``.
 @MainActor @Observable final class AppModel {
   private(set) var state = MenuState()
   private(set) var content = MenuContent(
@@ -39,8 +40,10 @@ import os
     let connection = DaemonConnection(socketPath: config.socketPath)
     self.connection = connection
     recents = RecentsStore(loader: RecentsLoader(environment: config.environment))
-    announcements = SessionNotifications(notifier: Notifier())
-    meetings = DetectedMeetings(connection: connection)
+    // One notifier for both: `UNUserNotificationCenter` has one delegate.
+    let notifier = Notifier()
+    announcements = SessionNotifications(notifier: notifier)
+    meetings = DetectedMeetings(connection: connection, notifier: notifier)
     configError = nil
   }
 
@@ -48,14 +51,18 @@ import os
     dataRoot = ""
     connection = nil
     recents = RecentsStore(loader: nil)
-    announcements = SessionNotifications(notifier: Notifier())
-    meetings = DetectedMeetings(connection: nil)
+    let notifier = Notifier()
+    announcements = SessionNotifications(notifier: notifier)
+    meetings = DetectedMeetings(connection: nil, notifier: notifier)
     configError = message
     content = MenuContent(icon: .attention, header: "⚠ \(message)", verbs: [], pipeline: [])
   }
 
   func start() {
     guard let connection else { return }
+    meetings.start { [weak self] source, episode in
+      self?.startDetected(source: source, episode: episode)
+    }
     announcements.bootstrap(dataRoot: dataRoot, loader: recents.loader) { [weak self] in
       self?.notifications = $0
     }
@@ -116,9 +123,9 @@ import os
   private func pump(_ connection: DaemonConnection) async {
     for await event in connection.events {
       switch event {
-      case .ready(let daemon, _, let snapshot):
+      case .ready(let daemon, let bootID, let snapshot):
         MenuStateReducer.connected(&state, daemon: daemon, snapshot: snapshot)
-        meetings.connected()
+        meetings.connected(bootID: bootID)
         actionError = nil
         catchUp(connection)
         recents.refresh()
@@ -133,7 +140,7 @@ import os
             await connection.bounce()
           }
         case .applied:
-          meetings.handle(frame)
+          if meetings.handle(frame) { meetings.reconcile(menu: state) }
           announcements.announce(frame, before: before)
           if RecentsRefreshPolicy.shouldRefresh(for: frame) { recents.refresh() }
         case .ignoredStale:
@@ -164,6 +171,8 @@ import os
         DaemonUptime(reported: Double($0.uptimeSeconds), anchor: AppClock.now())
       }
       if let status { meetings.catchUp(status.meetingActivity, mark: mark) }
+      // Whether or not `status` answered: live edges may have landed meanwhile.
+      meetings.reconcile(menu: state)
       rerender()
     }
   }
