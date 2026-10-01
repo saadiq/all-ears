@@ -124,6 +124,30 @@ struct SessionArtifactScannerTests {
     #expect(artifacts.summaryCount == 3)
   }
 
+  @Test("the note the cleaned copy links to is listed, as summarize found it")
+  func noteLinkedSummary() throws {
+    let (environment, session, published) = try Self.makeStore()
+    defer { try? FileManager.default.removeItem(at: environment.dataRoot) }
+    // `published` is a vault, and summarize located (rather than templated)
+    // the daily note it wrote into, then linked it from the cleaned copy.
+    try FileManager.default.createDirectory(
+      at: published.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+    let located = published.appendingPathComponent("daily/2026-08-20 - standup.md")
+    try FileManager.default.createDirectory(
+      at: located.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: located)
+    let linked = EmptySessionTranscripts.substantive.replacingOccurrences(
+      of: "kind: transcript\n",
+      with: "kind: transcript\nnote: \"[[daily/2026-08-20 - standup.md]]\"\n")
+    try Data(linked.utf8).write(to: published.appendingPathComponent("notes.md"))
+
+    let artifacts = SessionArtifactScanner.scan(
+      session: session, environment: environment, depth: .outcome)
+
+    #expect(artifacts.summaryPaths.first == located.standardizedFileURL.path)
+    #expect(artifacts.summaryCount == 3)
+  }
+
   @Test("summary outputs resolve from each preset's `out`, `{notes}` through its `notes`")
   func resolvesPresetOutputs() {
     func preset(_ fields: [String: String]) -> ConfigValue {

@@ -75,6 +75,29 @@ struct VaultPathTests {
     #expect(VaultPath.linkTarget(file.path) == file.standardizedFileURL.path)
   }
 
+  @Test("a note link resolves back to the file linkTarget named, from inside the same vault")
+  func resolvesNoteLinks() throws {
+    let vault = try Self.makeVault("resolve")
+    defer { try? FileManager.default.removeItem(at: vault.deletingLastPathComponent()) }
+    let note = vault.appendingPathComponent("daily/2026-08-20.md")
+    let transcript = vault.appendingPathComponent("Transcripts/call.md")
+    try Self.touch(note)
+    try Self.touch(transcript)
+    let link = "[[\(VaultPath.linkTarget(note.path))]]"
+
+    #expect(
+      VaultPath.resolve(noteLink: link, near: transcript.path) == note.standardizedFileURL.path)
+    // An alias or heading suffix does not change the file the link names.
+    #expect(
+      VaultPath.resolve(noteLink: "[[daily/2026-08-20.md|today#Notes]]", near: transcript.path)
+        == note.standardizedFileURL.path)
+    // An absolute link (a file outside any vault) is already its own path.
+    #expect(
+      VaultPath.resolve(noteLink: "[[/elsewhere/x.md]]", near: "/tmp/y.md") == "/elsewhere/x.md")
+    // A vault-relative link with no vault around the anchor resolves nowhere.
+    #expect(VaultPath.resolve(noteLink: "[[daily/x.md]]", near: "/tmp/nowhere/y.md") == nil)
+  }
+
   @Test("a plain file beside a .obsidian *file* is not treated as being in a vault")
   func markerMustBeADirectory() throws {
     let directory = FileManager.default.temporaryDirectory

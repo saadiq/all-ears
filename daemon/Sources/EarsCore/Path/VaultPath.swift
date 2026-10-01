@@ -58,6 +58,31 @@ public enum VaultPath {
       ?? URL(fileURLWithPath: path).standardizedFileURL.path
   }
 
+  /// The inverse of ``linkTarget(_:fileManager:)``: the absolute path a
+  /// `note:` wikilink (`[[target]]`, optionally `|alias` or `#heading`) names,
+  /// read from a document at `anchor`. A vault-relative target is resolved
+  /// against the vault enclosing `anchor`; `nil` when there is none.
+  public static func resolve(
+    noteLink: String, near anchor: String, fileManager: FileManager = .default
+  ) -> String? {
+    var target = Substring(noteLink.trimmingCharacters(in: .whitespaces))
+    if target.hasPrefix("[["), target.hasSuffix("]]") {
+      target = target.dropFirst(2).dropLast(2)
+    }
+    if let cut = target.firstIndex(where: { $0 == "|" || $0 == "#" }) {
+      target = target[..<cut]
+    }
+    guard !target.isEmpty else { return nil }
+    if target.hasPrefix("/") { return String(target) }
+    var directory = URL(fileURLWithPath: anchor).standardizedFileURL.deletingLastPathComponent()
+    while !isVaultRoot(directory, fileManager: fileManager) {
+      let parent = directory.deletingLastPathComponent().standardizedFileURL
+      guard parent.path != directory.path else { return nil }
+      directory = parent
+    }
+    return directory.appendingPathComponent(String(target)).standardizedFileURL.path
+  }
+
   private static func isVaultRoot(_ directory: URL, fileManager: FileManager) -> Bool {
     var isDirectory: ObjCBool = false
     let marker = directory.appendingPathComponent(markerName).path

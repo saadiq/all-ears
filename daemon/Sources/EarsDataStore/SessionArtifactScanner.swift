@@ -100,38 +100,45 @@ public enum SessionArtifactScanner {
     let cleanupPath = environment.cleanupTemplate.expand(context)
     artifacts.cleanupPath = cleanupPath
     let cleanupURL = URL(fileURLWithPath: cleanupPath)
-    // Summaries are looked up whether or not the cleaned copy is still where
-    // cleanup put it: a summary the user filed elsewhere still opens.
-    artifacts.summaryPaths = summaryPaths(
-      environment: environment, context: context, cleanupURL: cleanupURL)
-    artifacts.summaryCount = artifacts.summaryPaths.count
 
     // The published copy lives in the user's vault, where other tooling may
     // have reformatted the frontmatter — TranscriptParser reads any valid
     // YAML style, so the vault-linted shape parses like our own.
-    guard let cleanMarkdown = try? String(contentsOf: cleanupURL, encoding: .utf8) else { return }
-    artifacts.cleanupExists = true
-    artifacts.noteLink = (try? TranscriptParser.parseFrontmatter(cleanMarkdown))?.note
-    // The cleaned sidecar stays in the data store beside the input transcript
-    // (CleanupPublishedPath.cleanSidecarURL) — only the Markdown publishes.
-    let cleanSidecar = try? String(
-      contentsOf: CleanupPublishedPath.cleanSidecarURL(forInput: transcriptURL),
-      encoding: .utf8)
-    if let clean = try? TranscriptParser.parse(
-      markdown: cleanMarkdown, jsonSidecar: cleanSidecar)
-    {
-      artifacts.cleanupSegments = clean.segments.count
+    if let cleanMarkdown = try? String(contentsOf: cleanupURL, encoding: .utf8) {
+      artifacts.cleanupExists = true
+      artifacts.noteLink = (try? TranscriptParser.parseFrontmatter(cleanMarkdown))?.note
+      // The cleaned sidecar stays in the data store beside the input
+      // transcript (CleanupPublishedPath.cleanSidecarURL) — only the Markdown
+      // publishes.
+      let cleanSidecar = try? String(
+        contentsOf: CleanupPublishedPath.cleanSidecarURL(forInput: transcriptURL),
+        encoding: .utf8)
+      if let clean = try? TranscriptParser.parse(
+        markdown: cleanMarkdown, jsonSidecar: cleanSidecar)
+      {
+        artifacts.cleanupSegments = clean.segments.count
+      }
     }
+
+    // Summaries are looked up whether or not the cleaned copy is still where
+    // cleanup put it: a summary the user filed elsewhere still opens.
+    artifacts.summaryPaths = summaryPaths(
+      environment: environment, context: context, cleanupURL: cleanupURL,
+      noteLink: artifacts.noteLink)
+    artifacts.summaryCount = artifacts.summaryPaths.count
   }
 
   /// Every summary on disk for this transcript. A preset that names its own
   /// `out` can write anywhere (an Obsidian daily note, say), so those are
-  /// listed outright, first; the rest land as `<stem>.summary.md` /
+  /// listed outright, first, followed by the file the cleaned copy's `note:`
+  /// link names (where `summarize` actually wrote, even when it located a
+  /// note the config alone cannot predict); the rest land as `<stem>.summary.md` /
   /// `<stem>.<preset>.summary.md` siblings of the cleaned transcript
   /// (SummarizePipeline's default naming) and are swept, so a summary written
   /// under a preset since renamed still opens. Each path appears once.
   private static func summaryPaths(
-    environment: SessionScanEnvironment, context: PathTemplate.Context, cleanupURL: URL
+    environment: SessionScanEnvironment, context: PathTemplate.Context, cleanupURL: URL,
+    noteLink: String?
   ) -> [String] {
     var seen = Set<String>()
     var paths: [String] = []
@@ -142,6 +149,11 @@ public enum SessionArtifactScanner {
     for template in environment.summaryOutputs {
       let path = template.expand(context)
       if isRegularFile(path) { add(path) }
+    }
+    if let noteLink, let path = VaultPath.resolve(noteLink: noteLink, near: cleanupURL.path),
+      isRegularFile(path)
+    {
+      add(path)
     }
     let directory = cleanupURL.deletingLastPathComponent()
     if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) {
