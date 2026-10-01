@@ -66,4 +66,33 @@ struct SessionArtifactScannerTests {
     #expect(light.transcriptExists && light.cleanupExists)
     #expect(light.summaryPaths == full.summaryPaths)
   }
+
+  @Test("a damaged body or sidecar still resolves the published tier from the frontmatter")
+  func frontmatterAloneResolvesThePublishedTier() throws {
+    let (environment, session, published) = try Self.makeStore()
+    defer { try? FileManager.default.removeItem(at: environment.dataRoot) }
+    let transcript = DataStoreLayout.sessionTranscriptFile(
+      dataRoot: environment.dataRoot, sessionID: session.id)
+    // A sidecar that will not decode makes the raw transcript's full parse
+    // throw; a vault-reflowed body does the same for the cleaned copy.
+    try Data("not json".utf8).write(
+      to: transcript.deletingPathExtension().appendingPathExtension("json"))
+    let reflowed = EmptySessionTranscripts.substantive
+      .replacingOccurrences(
+        of: "kind: transcript\n", with: "kind: transcript\nnote: \"[[notes]]\"\n"
+      )
+      .replacingOccurrences(of: "**[09:15:04] You**", with: "a reflowed paragraph")
+    try Data(reflowed.utf8).write(to: published.appendingPathComponent("notes.md"))
+    #expect(throws: (any Error).self) {
+      try TranscriptParser.parse(markdown: reflowed)
+    }
+
+    let artifacts = SessionArtifactScanner.scan(
+      session: session, environment: environment, depth: .outcome)
+
+    #expect(artifacts.transcriptWords == 214)
+    #expect(artifacts.cleanupExists)
+    #expect(artifacts.noteLink == "[[notes]]")
+    #expect(artifacts.summaryCount == 2)
+  }
 }

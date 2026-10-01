@@ -76,13 +76,19 @@ public enum SessionArtifactScanner {
     guard let markdown = try? String(contentsOf: transcriptURL, encoding: .utf8) else { return }
     artifacts.transcriptExists = true
     artifacts.transcriptPath = transcriptURL.path
-    guard
-      let document = try? TranscriptParser.parse(
-        markdown: markdown, jsonSidecar: sidecarText(for: transcriptURL))
-    else { return }
-    artifacts.transcriptSegments = document.segments.count
-    artifacts.transcriptWords = document.frontmatter.wordCount
-    artifacts.transcriptSpeechSeconds = document.frontmatter.speechSeconds
+    // Frontmatter only for everything but the segment counts: the published
+    // path, the gate's measurements and the `note:` link never read the body
+    // or the JSON sidecar, and the full parse refuses a document whose body a
+    // vault tool reflowed (or whose sidecar is damaged) even though the
+    // frontmatter this needs is intact.
+    guard let frontmatter = try? TranscriptParser.parseFrontmatter(markdown) else { return }
+    artifacts.transcriptWords = frontmatter.wordCount
+    artifacts.transcriptSpeechSeconds = frontmatter.speechSeconds
+    if let document = try? TranscriptParser.parse(
+      markdown: markdown, jsonSidecar: sidecarText(for: transcriptURL))
+    {
+      artifacts.transcriptSegments = document.segments.count
+    }
 
     // Where cleanup published (or will publish): the same template context
     // the stage itself expands, off this document's own frontmatter.
@@ -90,7 +96,7 @@ public enum SessionArtifactScanner {
       CleanupPublishedPath.context(
         outputRoot: environment.outputRoot,
         weekNumbering: environment.weekNumbering,
-        frontmatter: document.frontmatter,
+        frontmatter: frontmatter,
         transcriptPath: transcriptURL.path))
     artifacts.cleanupPath = cleanupPath
 
@@ -100,6 +106,7 @@ public enum SessionArtifactScanner {
     let cleanupURL = URL(fileURLWithPath: cleanupPath)
     guard let cleanMarkdown = try? String(contentsOf: cleanupURL, encoding: .utf8) else { return }
     artifacts.cleanupExists = true
+    artifacts.noteLink = (try? TranscriptParser.parseFrontmatter(cleanMarkdown))?.note
     // The cleaned sidecar stays in the data store beside the input transcript
     // (CleanupPublishedPath.cleanSidecarURL) — only the Markdown publishes.
     let cleanSidecar = try? String(
@@ -109,7 +116,6 @@ public enum SessionArtifactScanner {
       markdown: cleanMarkdown, jsonSidecar: cleanSidecar)
     {
       artifacts.cleanupSegments = clean.segments.count
-      artifacts.noteLink = clean.frontmatter.note
     }
 
     // Summaries land as `<stem>.summary.md` / `<stem>.<preset>.summary.md`
