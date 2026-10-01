@@ -3,7 +3,7 @@
 ///
 /// Detected-meeting episode ids are `<bundle>#<n>`, minted from a counter
 /// that restarts at every daemon boot (`MeetingEpisodeTracker`). The prompt
-/// history persists across menu bar restarts (``PromptedEpisodeStore``), but
+/// history persists across menu bar restarts (``PromptedEpisodes``), but
 /// not across daemon restarts: without this check, boot 2's
 /// `us.zoom.xos#1` collides with boot 1's already-prompted
 /// `us.zoom.xos#1`, so the first N meetings of every daemon boot after the
